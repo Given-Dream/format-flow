@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, globalShortcut, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, shell } from 'electron'
 import { promises as fs } from 'node:fs'
 import fsSync from 'node:fs'
 import path from 'node:path'
@@ -811,6 +811,17 @@ function registerIpc(): void {
   ipcMain.handle('github:importPrompt', (_event, result: GithubSearchResult) => importGithubPrompt(result))
   ipcMain.handle('mcps:importConfig', () => importMcpConfig())
   ipcMain.handle('mcps:restoreBackup', () => restoreMcpFromBackup())
+  ipcMain.handle('clipboard:writeText', (_event, text: string) => {
+    try {
+      clipboard.writeText(text)
+      return { ok: true, message: '已复制到剪贴板' }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : '写入剪贴板失败'
+      }
+    }
+  })
   ipcMain.handle('shortcut:set', async (_event, accelerator: string) => {
     const result = registerShortcut(accelerator)
     if (result.ok) {

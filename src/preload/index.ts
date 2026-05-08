@@ -35,6 +35,8 @@ const api = {
     ipcRenderer.invoke('github:importPrompt', result),
   importMcpConfig: (): Promise<ImportResult<McpServer>> => ipcRenderer.invoke('mcps:importConfig'),
   restoreMcpFromBackup: (): Promise<ImportResult<McpServer>> => ipcRenderer.invoke('mcps:restoreBackup'),
+  writeClipboardText: (text: string): Promise<{ ok: boolean; message: string }> =>
+    ipcRenderer.invoke('clipboard:writeText', text),
   setShortcut: (accelerator: string): Promise<ShortcutResult> => ipcRenderer.invoke('shortcut:set', accelerator),
   openPath: (targetPath: string): Promise<string> => ipcRenderer.invoke('shell:openPath', targetPath),
   onOpenLauncher: (listener: () => void): (() => void) => {

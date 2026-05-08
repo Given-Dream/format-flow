@@ -76,6 +76,20 @@ type ReviewMessage = {
 
 const formatFlow = getFormatFlowApi()
 
+async function writeClipboardText(text: string): Promise<{ ok: boolean; message: string }> {
+  if (!text.trim()) return { ok: false, message: '没有可复制的内容' }
+  if (formatFlow.writeClipboardText) return formatFlow.writeClipboardText(text)
+  try {
+    await navigator.clipboard.writeText(text)
+    return { ok: true, message: '已复制到剪贴板' }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : '写入剪贴板失败'
+    }
+  }
+}
+
 const tabs: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'prompts', label: '提示词', description: '按分类标签管理、搜索和调用' },
   { id: 'skills', label: 'Skills', description: '扫描、导入、安装和索引 Skill' },
@@ -236,7 +250,11 @@ export function App(): JSX.Element {
   }
 
   async function copyToClipboard(text: string, success: string): Promise<void> {
-    await navigator.clipboard.writeText(text)
+    const result = await writeClipboardText(text)
+    if (!result.ok) {
+      setNotice(result.message)
+      throw new Error(result.message)
+    }
     setNotice(success)
   }
 
@@ -538,7 +556,14 @@ function PromptPanel({
                 <button type="button" onClick={() => setEditing(prompt)}>
                   编辑
                 </button>
-                <button type="button" onClick={() => void navigator.clipboard.writeText(prompt.content)}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void writeClipboardText(prompt.content).then((result) =>
+                      setNotice(result.ok ? `已复制提示词：${prompt.title}` : result.message)
+                    )
+                  }
+                >
                   复制
                 </button>
               </div>
@@ -1060,7 +1085,11 @@ function RunnerPanel({
 
   async function sendCurrentTask(): Promise<void> {
     if (!executionPrompt) return
-    await navigator.clipboard.writeText(executionPrompt)
+    const clipboardResult = await writeClipboardText(executionPrompt)
+    if (!clipboardResult.ok) {
+      setNotice(clipboardResult.message)
+      return
+    }
     if (targetKind === 'browser-plugin') {
       window.postMessage(
         {
@@ -1115,7 +1144,11 @@ function RunnerPanel({
 
     setReviewDialog((items) => [...items, message])
     setReviewDraft('')
-    await navigator.clipboard.writeText(linkedPrompt)
+    const clipboardResult = await writeClipboardText(linkedPrompt)
+    if (!clipboardResult.ok) {
+      setNotice(clipboardResult.message)
+      return
+    }
     if (targetKind === 'browser-plugin') {
       window.postMessage(
         {
@@ -1921,7 +1954,11 @@ function LauncherModal({
       <div className="launcher-list">
         {mode === 'prompt' &&
           promptItems.map((prompt) => (
-            <button key={prompt.id} type="button" onClick={() => void copyToClipboard(prompt.content, `已复制提示词：${prompt.title}`).then(close)}>
+            <button
+              key={prompt.id}
+              type="button"
+              onClick={() => void copyToClipboard(prompt.content, `已复制提示词：${prompt.title}`).then(close).catch(() => undefined)}
+            >
               <strong>{prompt.title}</strong>
               <span>{prompt.summary}</span>
             </button>
@@ -1932,7 +1969,9 @@ function LauncherModal({
               key={skill.id}
               type="button"
               onClick={() =>
-                void copyToClipboard(`使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`, `已复制 Skill 调用信息：${skill.title}`).then(close)
+                void copyToClipboard(`使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`, `已复制 Skill 调用信息：${skill.title}`)
+                  .then(close)
+                  .catch(() => undefined)
               }
             >
               <strong>{skill.title}</strong>
@@ -1950,8 +1989,11 @@ function LauncherModal({
                   ? buildExecutionPrompt(firstNode, store.prompts, skills, '', store.mcpServers)
                   : `调用工作流：${workflow.title}\n${workflow.description}`
                 void copyToClipboard(task, `已复制工作流首个顺序运行任务：${workflow.title}`)
-                setActiveTab('runner')
-                close()
+                  .then(() => {
+                    setActiveTab('runner')
+                    close()
+                  })
+                  .catch(() => undefined)
               }}
             >
               <strong>{workflow.title}</strong>
@@ -2094,6 +2136,9 @@ function ResourceGroupManager({
   footer?: ReactNode
 }): JSX.Element {
   const [contextMenu, setContextMenu] = useState<{ group: GroupItem; x: number; y: number } | null>(null)
+  const [groupDraft, setGroupDraft] = useState<
+    { mode: 'root'; name: string } | { mode: 'child'; parentId: string; parentName: string; name: string } | null
+  >(null)
 
   useEffect(() => {
     if (!contextMenu) return
@@ -2108,16 +2153,26 @@ function ResourceGroupManager({
     }
   }, [contextMenu])
 
-  async function addRootGroup(): Promise<void> {
-    const name = window.prompt('新分组名称')
-    if (!name?.trim()) return
-    await onChange([...groups, groupFromTag(name)])
+  async function saveGroupDraft(): Promise<void> {
+    if (!groupDraft) return
+    const name = groupDraft.name.trim()
+    if (!name) return
+    if (groupDraft.mode === 'root') {
+      await onChange([...groups, groupFromTag(name)])
+    } else {
+      await onChange(
+        updateGroupById(groups, groupDraft.parentId, (group) => ({
+          ...group,
+          children: [...group.children, groupFromTag(name)]
+        }))
+      )
+    }
+    setGroupDraft(null)
   }
 
-  async function addChildGroup(parent: GroupItem): Promise<void> {
-    const name = window.prompt(`给「${parent.name}」添加小类`)
-    if (!name?.trim()) return
-    await onChange(updateGroupById(groups, parent.id, (group) => ({ ...group, children: [...group.children, groupFromTag(name)] })))
+  function openChildGroupDialog(parent: GroupItem): void {
+    setContextMenu(null)
+    setGroupDraft({ mode: 'child', parentId: parent.id, parentName: parent.name, name: '' })
   }
 
   async function moveGroup(group: GroupItem, direction: -1 | 1): Promise<void> {
@@ -2139,7 +2194,6 @@ function ResourceGroupManager({
             selectedTag={selectedTag}
             countForTag={countForTag}
             onSelect={onSelect}
-            addChild={addChildGroup}
             moveGroup={moveGroup}
             deleteGroup={onDelete}
             openMenu={(menuGroup, event) => {
@@ -2149,7 +2203,7 @@ function ResourceGroupManager({
           />
         ))}
       </div>
-      <button type="button" onClick={() => void addRootGroup()}>
+      <button type="button" onClick={() => setGroupDraft({ mode: 'root', name: '' })}>
         添加分组
       </button>
       {footer && <div className="group-footer">{footer}</div>}
@@ -2161,13 +2215,37 @@ function ResourceGroupManager({
           <button type="button" onClick={() => void moveGroup(contextMenu.group, 1).then(() => setContextMenu(null))}>
             下移
           </button>
-          <button type="button" onClick={() => void addChildGroup(contextMenu.group).then(() => setContextMenu(null))}>
+          <button type="button" onClick={() => openChildGroupDialog(contextMenu.group)}>
             添加小类
           </button>
           <button className="danger" type="button" onClick={() => void onDelete(contextMenu.group).then(() => setContextMenu(null))}>
             删除分组/小类
           </button>
         </div>
+      )}
+      {groupDraft && (
+        <Modal title={groupDraft.mode === 'root' ? '添加分组' : `给「${groupDraft.parentName}」添加小类`} close={() => setGroupDraft(null)}>
+          <label className="form-field">
+            名称
+            <input
+              autoFocus
+              value={groupDraft.name}
+              onChange={(event) => setGroupDraft({ ...groupDraft, name: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void saveGroupDraft()
+                if (event.key === 'Escape') setGroupDraft(null)
+              }}
+            />
+          </label>
+          <div className="inline-actions">
+            <button type="button" onClick={() => void saveGroupDraft()}>
+              保存
+            </button>
+            <button type="button" onClick={() => setGroupDraft(null)}>
+              取消
+            </button>
+          </div>
+        </Modal>
       )}
     </div>
   )
@@ -2178,7 +2256,6 @@ function GroupTreeItem({
   selectedTag,
   countForTag,
   onSelect,
-  addChild,
   moveGroup,
   deleteGroup,
   openMenu,
@@ -2188,7 +2265,6 @@ function GroupTreeItem({
   selectedTag: string
   countForTag: (tag: string) => number
   onSelect: (tag: string) => void
-  addChild: (group: GroupItem) => Promise<void>
   moveGroup: (group: GroupItem, direction: -1 | 1) => Promise<void>
   deleteGroup: (group: GroupItem) => Promise<void>
   openMenu: (group: GroupItem, event: MouseEvent) => void
@@ -2216,7 +2292,6 @@ function GroupTreeItem({
           selectedTag={selectedTag}
           countForTag={countForTag}
           onSelect={onSelect}
-          addChild={addChild}
           moveGroup={moveGroup}
           deleteGroup={deleteGroup}
           openMenu={openMenu}
@@ -2462,6 +2537,17 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     },
     importMcpConfig: async () => desktopOnly('浏览器审查模式不能读取本地 MCP 配置'),
     restoreMcpFromBackup: async () => desktopOnly('浏览器审查模式不能读取本地 MCP 备份'),
+    writeClipboardText: async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text)
+        return { ok: true, message: '已复制到剪贴板' }
+      } catch (error) {
+        return {
+          ok: false,
+          message: error instanceof Error ? error.message : '写入剪贴板失败'
+        }
+      }
+    },
     setShortcut: async (accelerator: string) => ({ ok: !accelerator.startsWith('MouseButton'), accelerator, message: '浏览器审查模式已保存快捷键预览' }),
     openPath: async () => '',
     onOpenLauncher: () => () => undefined

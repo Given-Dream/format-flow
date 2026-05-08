@@ -1,0 +1,66 @@
+{
+  "name": "format-flow",
+  "version": "0.1.0",
+  "description": "Local prompt and Codex Skill workflow manager",
+  "main": "./out/main/index.js",
+  "private": true,
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "web:dev": "vite --config vite.web.config.ts --host 127.0.0.1",
+    "web:build": "vite build --config vite.web.config.ts",
+    "build": "tsc --noEmit && electron-vite build",
+    "dist": "npm.cmd run build && set CSC_IDENTITY_AUTO_DISCOVERY=false&& electron-builder --win nsis --x64",
+    "test": "vitest run && node browser-extension/tests/selector-smoke.mjs",
+    "extension:test": "node browser-extension/tests/selector-smoke.mjs",
+    "preview": "electron-vite preview",
+    "start": "electron-vite preview"
+  },
+  "dependencies": {
+    "@xyflow/react": "12.10.2",
+    "adm-zip": "0.5.17",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "0.5.8",
+    "@types/node": "25.6.2",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.2",
+    "electron": "42.0.0",
+    "electron-builder": "26.8.1",
+    "electron-vite": "5.0.0",
+    "typescript": "6.0.3",
+    "vite": "7.3.3",
+    "vitest": "4.1.5"
+  },
+  "build": {
+    "appId": "com.songyu.formatflow",
+    "productName": "Format Flow",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json",
+      "README.md"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

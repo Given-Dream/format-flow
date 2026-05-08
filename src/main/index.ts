@@ -1,0 +1,847 @@
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, shell } from 'electron'
+import { promises as fs } from 'node:fs'
+import fsSync from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import { execFile as execFileCallback } from 'node:child_process'
+import { promisify } from 'node:util'
+import AdmZip from 'adm-zip'
+import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
+import type {
+  AppPaths,
+  AppStore,
+  BackupResult,
+  GithubSearchResult,
+  ImportResult,
+  McpServer,
+  PromptItem,
+  ShortcutResult,
+  SkillItem
+} from '../shared/types'
+
+let mainWindow: BrowserWindow | null = null
+let isQuitting = false
+const execFile = promisify(execFileCallback)
+
+function getDataDirectoryPreferencePath(): string {
+  return path.join(app.getPath('userData'), 'data-location.json')
+}
+
+function readDataDirectoryPreference(): string {
+  try {
+    const content = fsSync.readFileSync(getDataDirectoryPreferencePath(), 'utf8')
+    const parsed = JSON.parse(content) as { dataDirectory?: string }
+    return typeof parsed.dataDirectory === 'string' ? parsed.dataDirectory : ''
+  } catch {
+    return ''
+  }
+}
+
+async function writeDataDirectoryPreference(dataDirectory: string): Promise<void> {
+  const preferencePath = getDataDirectoryPreferencePath()
+  await fs.mkdir(path.dirname(preferencePath), { recursive: true })
+  await fs.writeFile(preferencePath, `${JSON.stringify({ dataDirectory }, null, 2)}\n`, 'utf8')
+}
+
+function getDataRoot(): string {
+  return readDataDirectoryPreference() || app.getPath('userData')
+}
+
+function getStorePath(): string {
+  return path.join(getDataRoot(), 'format-flow-store.json')
+}
+
+function getManagedSkillDirectory(): string {
+  return path.join(getDataRoot(), 'managed-skills')
+}
+
+function getDefaultBackupDirectory(): string {
+  return path.join(getDataRoot(), 'backups')
+}
+
+function defaultSkillDirectories(): string[] {
+  const candidates = [
+    process.env.CODEX_HOME ? path.join(process.env.CODEX_HOME, 'skills') : '',
+    path.join(os.homedir(), '.codex', 'skills'),
+    getManagedSkillDirectory()
+  ].filter(Boolean)
+
+  return Array.from(new Set(candidates))
+}
+
+async function loadStore(): Promise<AppStore> {
+  const storePath = getStorePath()
+  try {
+    const content = await fs.readFile(storePath, 'utf8')
+    return normalizeStore(JSON.parse(content) as Partial<AppStore>)
+  } catch {
+    const store = normalizeStore(null)
+    await saveStore(store)
+    return store
+  }
+}
+
+async function saveStore(store: AppStore): Promise<AppStore> {
+  const normalized = normalizeStore(store)
+  if (normalized.settings.dataDirectory) {
+    await writeDataDirectoryPreference(normalized.settings.dataDirectory)
+  }
+  const storePath = getStorePath()
+  await fs.mkdir(path.dirname(storePath), { recursive: true })
+  await fs.writeFile(storePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8')
+  return normalized
+}
+
+function getPaths(): AppPaths {
+  return {
+    userData: app.getPath('userData'),
+    dataDirectory: getDataRoot(),
+    defaultBackupDirectory: getDefaultBackupDirectory(),
+    storePath: getStorePath(),
+    managedSkillDirectory: getManagedSkillDirectory(),
+    dataDirectoryPreferencePath: getDataDirectoryPreferencePath(),
+    defaultSkillDirectories: defaultSkillDirectories()
+  }
+}
+
+async function chooseDataDirectory(): Promise<{ ok: boolean; path: string; message: string }> {
+  const selection = await dialog.showOpenDialog({
+    title: 'Choose Format Flow data directory',
+    properties: ['openDirectory', 'createDirectory']
+  })
+  if (selection.canceled || !selection.filePaths[0]) {
+    return { ok: false, path: '', message: 'Data directory selection cancelled' }
+  }
+
+  const selectedPath = selection.filePaths[0]
+  await fs.mkdir(selectedPath, { recursive: true })
+  await writeDataDirectoryPreference(selectedPath)
+  return { ok: true, path: selectedPath, message: 'Data directory selected' }
+}
+
+async function chooseBackupDirectory(): Promise<{ ok: boolean; path: string; message: string }> {
+  const selection = await dialog.showOpenDialog({
+    title: 'Choose Format Flow backup directory',
+    properties: ['openDirectory', 'createDirectory']
+  })
+  if (selection.canceled || !selection.filePaths[0]) {
+    return { ok: false, path: '', message: 'Backup directory selection cancelled' }
+  }
+
+  const selectedPath = selection.filePaths[0]
+  await fs.mkdir(selectedPath, { recursive: true })
+  return { ok: true, path: selectedPath, message: 'Backup directory selected' }
+}
+
+async function scanSkills(directories: string[]): Promise<SkillItem[]> {
+  const uniqueDirectories = Array.from(new Set(directories.filter(Boolean)))
+  const files = (
+    await Promise.all(uniqueDirectories.map((directory) => findSkillFiles(directory, 0)))
+  ).flat()
+  const uniqueFiles = Array.from(new Set(files))
+  const skills: SkillItem[] = []
+
+  for (const file of uniqueFiles) {
+    try {
+      const content = await fs.readFile(file, 'utf8')
+      const stat = await fs.stat(file)
+      skills.push({
+        ...parseSkillMarkdown(content, file),
+        updatedAt: stat.mtime.toISOString()
+      })
+    } catch {
+      // Ignore unreadable skills; broken files should not block the manager.
+    }
+  }
+
+  return skills.sort((left, right) => left.name.localeCompare(right.name))
+}
+
+async function findSkillFiles(directory: string, depth: number): Promise<string[]> {
+  if (depth > 7) return []
+
+  try {
+    const entries = await fs.readdir(directory, { withFileTypes: true })
+    const directSkill = entries.find((entry) => entry.isFile() && entry.name === 'SKILL.md')
+    if (directSkill) return [path.join(directory, directSkill.name)]
+
+    const childDirectories = entries
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => !['node_modules', '.git', 'dist', 'out'].includes(entry.name))
+      .map((entry) => path.join(directory, entry.name))
+
+    return (await Promise.all(childDirectories.map((child) => findSkillFiles(child, depth + 1)))).flat()
+  } catch {
+    return []
+  }
+}
+
+async function importExistingSkills(): Promise<ImportResult<SkillItem>> {
+  const selection = await dialog.showOpenDialog({
+    title: 'Import existing Skill',
+    properties: ['openFile', 'openDirectory', 'multiSelections'],
+    filters: [{ name: 'Codex Skill', extensions: ['md'] }]
+  })
+  if (selection.canceled) return emptyImport('Import cancelled')
+
+  return importSkillTargets(selection.filePaths)
+}
+
+async function restoreSkillsFromBackup(): Promise<ImportResult<SkillItem>> {
+  const selection = await dialog.showOpenDialog({
+    title: 'Restore Skills from backup',
+    properties: ['openFile', 'openDirectory', 'multiSelections'],
+    filters: [{ name: 'Skill backup', extensions: ['zip', 'md', 'json'] }]
+  })
+  if (selection.canceled) return emptyImport('Restore cancelled')
+
+  return importSkillTargets(selection.filePaths)
+}
+
+async function installSkillZip(): Promise<ImportResult<SkillItem>> {
+  const selection = await dialog.showOpenDialog({
+    title: 'Install Skill from ZIP',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'ZIP archive', extensions: ['zip'] }]
+  })
+  if (selection.canceled) return emptyImport('Install cancelled')
+
+  const installed: SkillItem[] = []
+  const installedPaths: string[] = []
+  for (const zipPath of selection.filePaths) {
+    const result = await extractSkillZip(zipPath)
+    installed.push(...result.items)
+    installedPaths.push(...(result.installedPaths || []))
+  }
+
+  return {
+    ok: installed.length > 0,
+    message: installed.length > 0 ? `Installed ${installed.length} Skill(s)` : 'No SKILL.md found in selected ZIP',
+    items: installed,
+    installedPaths,
+    managedDirectory: getManagedSkillDirectory()
+  }
+}
+
+async function importSkillTargets(targets: string[]): Promise<ImportResult<SkillItem>> {
+  const installed: SkillItem[] = []
+  const installedPaths: string[] = []
+
+  for (const target of targets) {
+    const stat = await fs.stat(target)
+    if (stat.isFile() && target.toLowerCase().endsWith('.json')) {
+      const restored = await restoreSkillsFromJsonBackup(target)
+      installed.push(...restored.items)
+      installedPaths.push(...(restored.installedPaths || []))
+      continue
+    }
+
+    if (stat.isFile() && target.toLowerCase().endsWith('.zip')) {
+      const result = await extractSkillZip(target)
+      installed.push(...result.items)
+      installedPaths.push(...(result.installedPaths || []))
+      continue
+    }
+
+    const skillFiles = stat.isDirectory()
+      ? await findSkillFiles(target, 0)
+      : path.basename(target).toLowerCase() === 'skill.md'
+        ? [target]
+        : []
+
+    for (const skillFile of skillFiles) {
+      const skill = await copySkillRoot(skillFile)
+      installed.push(skill)
+      installedPaths.push(path.dirname(skill.path))
+    }
+  }
+
+  return {
+    ok: installed.length > 0,
+    message: installed.length > 0 ? `Imported ${installed.length} Skill(s)` : 'No SKILL.md found',
+    items: installed,
+    installedPaths,
+    managedDirectory: getManagedSkillDirectory()
+  }
+}
+
+async function restoreSkillsFromJsonBackup(filePath: string): Promise<ImportResult<SkillItem>> {
+  const content = await fs.readFile(filePath, 'utf8')
+  const parsed = JSON.parse(content) as { skills?: Array<{ name?: string; title?: string; path?: string; content?: string }> }
+  const skillBackups = Array.isArray(parsed.skills) ? parsed.skills.filter((item) => typeof item.content === 'string') : []
+  const managedDirectory = getManagedSkillDirectory()
+  const items: SkillItem[] = []
+  const installedPaths: string[] = []
+
+  await fs.mkdir(managedDirectory, { recursive: true })
+  for (const backup of skillBackups) {
+    const name = safeSegment(backup.name || backup.title || path.basename(backup.path || '') || 'restored-skill')
+    const destination = await uniqueDirectory(path.join(managedDirectory, name))
+    const skillFile = path.join(destination, 'SKILL.md')
+    await fs.writeFile(skillFile, backup.content || '', 'utf8')
+    const stat = await fs.stat(skillFile)
+    items.push({ ...parseSkillMarkdown(backup.content || '', skillFile), updatedAt: stat.mtime.toISOString() })
+    installedPaths.push(destination)
+  }
+
+  return {
+    ok: items.length > 0,
+    message: items.length > 0 ? `Restored ${items.length} Skill(s)` : 'No Skill backups found in JSON',
+    items,
+    installedPaths,
+    managedDirectory
+  }
+}
+
+async function copySkillRoot(skillFile: string): Promise<SkillItem> {
+  const managedDirectory = getManagedSkillDirectory()
+  await fs.mkdir(managedDirectory, { recursive: true })
+
+  const root = path.dirname(skillFile)
+  if (isPathInside(root, managedDirectory)) {
+    const content = await fs.readFile(skillFile, 'utf8')
+    const stat = await fs.stat(skillFile)
+    return { ...parseSkillMarkdown(content, skillFile), updatedAt: stat.mtime.toISOString() }
+  }
+
+  const preview = parseSkillMarkdown(await fs.readFile(skillFile, 'utf8'), skillFile)
+  const destination = await uniqueDirectory(path.join(managedDirectory, safeSegment(preview.name || path.basename(root))))
+  await fs.cp(root, destination, { recursive: true, force: false, errorOnExist: false })
+  const copiedSkillFile = path.join(destination, path.relative(root, skillFile))
+  const content = await fs.readFile(copiedSkillFile, 'utf8')
+  const stat = await fs.stat(copiedSkillFile)
+  return { ...parseSkillMarkdown(content, copiedSkillFile), updatedAt: stat.mtime.toISOString() }
+}
+
+async function extractSkillZip(zipPath: string): Promise<ImportResult<SkillItem>> {
+  const managedDirectory = getManagedSkillDirectory()
+  await fs.mkdir(managedDirectory, { recursive: true })
+  const destination = await uniqueDirectory(path.join(managedDirectory, safeSegment(path.basename(zipPath, '.zip'))))
+  const zip = new AdmZip(zipPath)
+
+  for (const entry of zip.getEntries()) {
+    const targetPath = path.resolve(destination, entry.entryName)
+    if (!isPathInside(targetPath, destination)) {
+      throw new Error(`Unsafe ZIP entry blocked: ${entry.entryName}`)
+    }
+  }
+
+  zip.extractAllTo(destination, true)
+  const skillFiles = await findSkillFiles(destination, 0)
+  const items: SkillItem[] = []
+  for (const skillFile of skillFiles) {
+    const content = await fs.readFile(skillFile, 'utf8')
+    const stat = await fs.stat(skillFile)
+    items.push({ ...parseSkillMarkdown(content, skillFile), updatedAt: stat.mtime.toISOString() })
+  }
+
+  return {
+    ok: items.length > 0,
+    message: items.length > 0 ? `Installed ${items.length} Skill(s)` : 'No SKILL.md found in ZIP',
+    items,
+    installedPaths: [destination],
+    managedDirectory
+  }
+}
+
+async function importPromptFiles(): Promise<ImportResult<PromptItem>> {
+  return importPromptsWithDialog('Import existing prompts')
+}
+
+async function restorePromptsFromBackup(): Promise<ImportResult<PromptItem>> {
+  return importPromptsWithDialog('Restore prompts from backup')
+}
+
+async function importPromptsWithDialog(title: string): Promise<ImportResult<PromptItem>> {
+  const selection = await dialog.showOpenDialog({
+    title,
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Prompt files', extensions: ['json', 'md', 'txt'] },
+      { name: 'All files', extensions: ['*'] }
+    ]
+  })
+  if (selection.canceled) return emptyImport('Import cancelled')
+
+  const prompts: PromptItem[] = []
+  for (const filePath of selection.filePaths) {
+    const content = await fs.readFile(filePath, 'utf8')
+    prompts.push(...parsePromptImport(content, path.basename(filePath)))
+  }
+
+  return {
+    ok: prompts.length > 0,
+    message: prompts.length > 0 ? `Imported ${prompts.length} prompt(s)` : 'No prompts found',
+    items: prompts
+  }
+}
+
+async function importMcpConfig(): Promise<ImportResult<McpServer>> {
+  return importMcpConfigWithDialog('Import MCP config')
+}
+
+async function restoreMcpFromBackup(): Promise<ImportResult<McpServer>> {
+  return importMcpConfigWithDialog('Restore MCP from backup')
+}
+
+async function importMcpConfigWithDialog(title: string): Promise<ImportResult<McpServer>> {
+  const selection = await dialog.showOpenDialog({
+    title,
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'MCP config', extensions: ['json', 'toml'] },
+      { name: 'All files', extensions: ['*'] }
+    ]
+  })
+  if (selection.canceled) return emptyImport('Import cancelled')
+
+  const servers: McpServer[] = []
+  for (const filePath of selection.filePaths) {
+    const content = await fs.readFile(filePath, 'utf8')
+    servers.push(...parseMcpConfig(content, path.basename(filePath)))
+  }
+
+  return {
+    ok: servers.length > 0,
+    message: servers.length > 0 ? `Imported ${servers.length} MCP server(s)` : 'No MCP servers found',
+    items: servers
+  }
+}
+
+async function createBackup(store: AppStore): Promise<BackupResult> {
+  const normalized = normalizeStore(store)
+  const backupDirectory = normalized.settings.backupDirectory || getDefaultBackupDirectory()
+  await fs.mkdir(backupDirectory, { recursive: true })
+
+  const timestamp = new Date().toISOString()
+  const fileStamp = timestamp.replace(/[:.]/g, '-')
+  const backupPath = path.join(backupDirectory, `format-flow-backup-${fileStamp}.json`)
+  const payload = await buildBackupPayload(normalized, timestamp)
+  await fs.writeFile(backupPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+  return { ok: true, message: `Backup created: ${backupPath}`, path: backupPath }
+}
+
+async function createGitBackup(store: AppStore): Promise<BackupResult> {
+  const normalized = normalizeStore(store)
+  const backup = await createBackup(normalized)
+  if (!backup.ok || !backup.path) return backup
+
+  const backupDirectory = normalized.settings.backupDirectory || getDefaultBackupDirectory()
+  const branch = safeGitBranch(normalized.settings.gitBackupBranch || 'main')
+  const remote = normalized.settings.gitBackupRemote?.trim() || ''
+  const userEmail = normalized.settings.gitBackupUserEmail?.trim() || '2878705044@qq.com'
+
+  try {
+    await ensureGitRepository(backupDirectory, branch, userEmail, remote)
+    await runGit(backupDirectory, ['add', '--all'])
+    const status = (await runGit(backupDirectory, ['status', '--porcelain'])).stdout.trim()
+
+    if (!status) {
+      return {
+        ok: true,
+        message: `Git backup has no new changes: ${backup.path}`,
+        path: backup.path,
+        pushed: false,
+        remote
+      }
+    }
+
+    await runGit(backupDirectory, ['commit', '-m', `Format Flow backup ${new Date().toISOString()}`])
+    const commit = (await runGit(backupDirectory, ['rev-parse', '--short', 'HEAD'])).stdout.trim()
+
+    if (!remote) {
+      return {
+        ok: true,
+        message: `Git local backup committed (${commit}). Configure a remote URL to push.`,
+        path: backup.path,
+        commit,
+        pushed: false
+      }
+    }
+
+    try {
+      await runGit(backupDirectory, ['push', '-u', 'origin', branch])
+      return {
+        ok: true,
+        message: `Git backup committed and pushed (${commit}).`,
+        path: backup.path,
+        commit,
+        pushed: true,
+        remote
+      }
+    } catch (error) {
+      return {
+        ok: true,
+        message: `Git local backup committed (${commit}), but push failed: ${errorMessage(error)}`,
+        path: backup.path,
+        commit,
+        pushed: false,
+        remote
+      }
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      message: `Git backup failed after writing ${backup.path}: ${errorMessage(error)}`,
+      path: backup.path,
+      pushed: false,
+      remote
+    }
+  }
+}
+
+async function buildBackupPayload(normalized: AppStore, timestamp: string): Promise<Record<string, unknown>> {
+  const skills = await collectSkillBackups(normalized.settings.skillDirectories)
+  return {
+    format: 'format-flow-backup',
+    version: 1,
+    createdAt: timestamp,
+    prompts: normalized.prompts,
+    skills,
+    skillIndex: normalized.skillIndex,
+    groups: normalized.groups,
+    mcpServers: normalized.mcpServers,
+    workflows: normalized.workflows,
+    settings: {
+      shortcut: normalized.settings.shortcut,
+      skillDirectories: normalized.settings.skillDirectories,
+      dataDirectory: normalized.settings.dataDirectory,
+      backupDirectory: normalized.settings.backupDirectory,
+      gitBackupRemote: normalized.settings.gitBackupRemote,
+      gitBackupBranch: normalized.settings.gitBackupBranch,
+      gitBackupUserEmail: normalized.settings.gitBackupUserEmail
+    }
+  }
+}
+
+async function ensureGitRepository(directory: string, branch: string, userEmail: string, remote: string): Promise<void> {
+  await fs.mkdir(directory, { recursive: true })
+  if (!(await pathExists(path.join(directory, '.git')))) {
+    await runGit(directory, ['init'])
+  }
+  await runGit(directory, ['checkout', '-B', branch])
+  await runGit(directory, ['config', 'user.email', userEmail])
+  await runGit(directory, ['config', 'user.name', 'Format Flow Backup'])
+
+  if (!remote) return
+  const currentRemote = await runGit(directory, ['remote', 'get-url', 'origin']).catch(() => ({ stdout: '' }))
+  if (currentRemote.stdout.trim()) {
+    await runGit(directory, ['remote', 'set-url', 'origin', remote])
+  } else {
+    await runGit(directory, ['remote', 'add', 'origin', remote])
+  }
+}
+
+async function runGit(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  const result = await execFile('git', args, { cwd, windowsHide: true, maxBuffer: 1024 * 1024 * 10 })
+  return { stdout: result.stdout, stderr: result.stderr }
+}
+
+function safeGitBranch(value: string): string {
+  const cleaned = value.trim().replace(/[^A-Za-z0-9._/-]+/g, '-').replace(/^[-/]+|[-/]+$/g, '')
+  return cleaned || 'main'
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
+async function collectSkillBackups(directories: string[]): Promise<Array<{ name: string; title: string; path: string; content: string; updatedAt: string }>> {
+  const skillFiles = Array.from(new Set((await Promise.all(directories.filter(Boolean).map((directory) => findSkillFiles(directory, 0)))).flat()))
+  const backups: Array<{ name: string; title: string; path: string; content: string; updatedAt: string }> = []
+
+  for (const skillFile of skillFiles) {
+    try {
+      const content = await fs.readFile(skillFile, 'utf8')
+      const stat = await fs.stat(skillFile)
+      const parsed = parseSkillMarkdown(content, skillFile)
+      backups.push({
+        name: parsed.name,
+        title: parsed.title,
+        path: skillFile,
+        content,
+        updatedAt: stat.mtime.toISOString()
+      })
+    } catch {
+      // Skip unreadable skill files; backup should include everything readable instead of failing completely.
+    }
+  }
+
+  return backups
+}
+
+async function searchGithub(kind: 'skill' | 'prompt', query: string): Promise<GithubSearchResult[]> {
+  const trimmed = query.trim()
+  const repoQuery =
+    kind === 'skill'
+      ? `${trimmed || 'codex skill'} codex skill in:name,description,readme`
+      : `${trimmed || 'prompt template'} prompt template in:name,description,readme`
+  const response = await githubFetch(
+    `https://api.github.com/search/repositories?q=${encodeURIComponent(repoQuery)}&sort=updated&per_page=8`
+  )
+  if (!response.ok) throw new Error(`GitHub search failed: ${response.status} ${response.statusText}`)
+
+  const payload = (await response.json()) as {
+    items?: Array<{
+      id: number
+      full_name: string
+      description?: string
+      default_branch?: string
+      html_url: string
+    }>
+  }
+
+  const results: GithubSearchResult[] = []
+  for (const repo of payload.items || []) {
+    try {
+      const branch = repo.default_branch || 'main'
+      const treeResponse = await githubFetch(
+        `https://api.github.com/repos/${repo.full_name}/git/trees/${encodeURIComponent(branch)}?recursive=1`
+      )
+      if (!treeResponse.ok) continue
+      const treePayload = (await treeResponse.json()) as {
+        tree?: Array<{ path: string; type: string; sha: string }>
+      }
+      const files = (treePayload.tree || [])
+        .filter((entry) => entry.type === 'blob')
+        .filter((entry) => isGithubCandidate(kind, entry.path))
+        .slice(0, kind === 'skill' ? 4 : 3)
+
+      for (const file of files) {
+        results.push({
+          id: `${repo.id}:${file.sha}:${file.path}`,
+          name: path.basename(file.path),
+          repository: repo.full_name,
+          description: repo.description || file.path,
+          path: file.path,
+          htmlUrl: `${repo.html_url}/blob/${branch}/${file.path}`,
+          rawUrl: `https://raw.githubusercontent.com/${repo.full_name}/${branch}/${file.path}`
+        })
+      }
+    } catch {
+      // Skip repositories that do not expose a tree or hit transient rate limits.
+    }
+    if (results.length >= 20) break
+  }
+
+  return results.slice(0, 20)
+}
+
+function isGithubCandidate(kind: 'skill' | 'prompt', filePath: string): boolean {
+  const normalized = filePath.toLowerCase()
+  if (kind === 'skill') return normalized.endsWith('/skill.md') || normalized === 'skill.md'
+  return (
+    /\.(md|txt|json)$/.test(normalized) &&
+    (normalized.includes('prompt') ||
+      normalized.includes('prompts') ||
+      normalized.includes('template') ||
+      normalized.includes('instructions'))
+  )
+}
+
+function githubFetch(url: string): Promise<Response> {
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'format-flow'
+  }
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+  if (token) headers.Authorization = `Bearer ${token}`
+  return fetch(url, { headers })
+}
+
+async function installGithubSkill(result: GithubSearchResult): Promise<ImportResult<SkillItem>> {
+  const content = await fetchText(result.rawUrl)
+  const managedDirectory = getManagedSkillDirectory()
+  await fs.mkdir(managedDirectory, { recursive: true })
+  const destination = await uniqueDirectory(
+    path.join(managedDirectory, safeSegment(`${result.repository}-${path.dirname(result.path)}`))
+  )
+  const skillFile = path.join(destination, 'SKILL.md')
+  await fs.writeFile(skillFile, content, 'utf8')
+  const stat = await fs.stat(skillFile)
+  const skill = { ...parseSkillMarkdown(content, skillFile), updatedAt: stat.mtime.toISOString() }
+
+  return {
+    ok: true,
+    message: `Installed ${skill.name}`,
+    items: [skill],
+    installedPaths: [destination],
+    managedDirectory
+  }
+}
+
+async function importGithubPrompt(result: GithubSearchResult): Promise<ImportResult<PromptItem>> {
+  const content = await fetchText(result.rawUrl)
+  const prompt = createPromptFromText(content, `${result.repository}/${result.path}`)
+  return {
+    ok: true,
+    message: `Imported ${prompt.title}`,
+    items: [prompt]
+  }
+}
+
+async function fetchText(url: string): Promise<string> {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'format-flow'
+    }
+  })
+  if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`)
+  return response.text()
+}
+
+async function uniqueDirectory(basePath: string): Promise<string> {
+  let candidate = basePath
+  let index = 2
+  while (await pathExists(candidate)) {
+    candidate = `${basePath}-${index}`
+    index += 1
+  }
+  await fs.mkdir(candidate, { recursive: true })
+  return candidate
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function isPathInside(targetPath: string, parentPath: string): boolean {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(targetPath))
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function safeSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90) || 'imported'
+}
+
+function emptyImport<T>(message: string): ImportResult<T> {
+  return {
+    ok: false,
+    message,
+    items: []
+  }
+}
+
+function createWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1360,
+    height: 860,
+    minWidth: 1120,
+    minHeight: 720,
+    title: 'Format Flow',
+    backgroundColor: '#f7f5ef',
+    show: false,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  mainWindow.on('ready-to-show', () => {
+    mainWindow?.show()
+  })
+
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
+  } else {
+    void mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
+  }
+}
+
+function toggleMainWindow(): void {
+  if (!mainWindow) return
+  mainWindow.show()
+  mainWindow.focus()
+  mainWindow.webContents.send('launcher:open')
+}
+
+async function registerStoredShortcut(): Promise<ShortcutResult> {
+  const store = await loadStore()
+  return registerShortcut(store.settings.shortcut)
+}
+
+function registerShortcut(accelerator: string): ShortcutResult {
+  globalShortcut.unregisterAll()
+  const ok = globalShortcut.register(accelerator, toggleMainWindow)
+  return {
+    ok,
+    accelerator,
+    message: ok ? '快捷键已注册' : '快捷键注册失败，可能被其他程序占用'
+  }
+}
+
+function registerIpc(): void {
+  ipcMain.handle('store:load', () => loadStore())
+  ipcMain.handle('store:save', (_event, store: AppStore) => saveStore(store))
+  ipcMain.handle('paths:get', () => getPaths())
+  ipcMain.handle('paths:chooseDataDirectory', () => chooseDataDirectory())
+  ipcMain.handle('paths:chooseBackupDirectory', () => chooseBackupDirectory())
+  ipcMain.handle('backup:create', (_event, store: AppStore) => createBackup(store))
+  ipcMain.handle('backup:createGit', (_event, store: AppStore) => createGitBackup(store))
+  ipcMain.handle('skills:scan', (_event, directories: string[]) => scanSkills(directories))
+  ipcMain.handle('skills:importExisting', () => importExistingSkills())
+  ipcMain.handle('skills:restoreBackup', () => restoreSkillsFromBackup())
+  ipcMain.handle('skills:installZip', () => installSkillZip())
+  ipcMain.handle('github:searchSkills', (_event, query: string) => searchGithub('skill', query))
+  ipcMain.handle('github:installSkill', (_event, result: GithubSearchResult) => installGithubSkill(result))
+  ipcMain.handle('prompts:importExisting', () => importPromptFiles())
+  ipcMain.handle('prompts:restoreBackup', () => restorePromptsFromBackup())
+  ipcMain.handle('github:searchPrompts', (_event, query: string) => searchGithub('prompt', query))
+  ipcMain.handle('github:importPrompt', (_event, result: GithubSearchResult) => importGithubPrompt(result))
+  ipcMain.handle('mcps:importConfig', () => importMcpConfig())
+  ipcMain.handle('mcps:restoreBackup', () => restoreMcpFromBackup())
+  ipcMain.handle('shortcut:set', async (_event, accelerator: string) => {
+    const result = registerShortcut(accelerator)
+    if (result.ok) {
+      const store = await loadStore()
+      await saveStore({
+        ...store,
+        settings: {
+          ...store.settings,
+          shortcut: accelerator
+        }
+      })
+    }
+    return result
+  })
+  ipcMain.handle('shell:openPath', (_event, targetPath: string) => shell.openPath(targetPath))
+}
+
+app.whenReady().then(async () => {
+  registerIpc()
+  createWindow()
+  await registerStoredShortcut()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('before-quit', () => {
+  isQuitting = true
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+})

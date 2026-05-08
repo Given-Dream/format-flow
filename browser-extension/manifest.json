@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "Format Flow Browser Bridge",
+  "version": "0.1.0",
+  "description": "Inject Format Flow workflow tasks into supported AI web apps.",
+  "permissions": ["tabs", "activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*",
+    "https://chat.deepseek.com/*",
+    "https://kimi.moonshot.cn/*",
+    "https://chat.qwen.ai/*",
+    "https://www.perplexity.ai/*",
+    "https://poe.com/*",
+    "https://grok.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "js": ["app-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://chat.deepseek.com/*",
+        "https://kimi.moonshot.cn/*",
+        "https://chat.qwen.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://poe.com/*",
+        "https://grok.com/*"
+      ],
+      "js": ["targets.js", "ai-injector.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Format Flow Bridge",
+    "default_popup": "popup.html"
+  }
+}

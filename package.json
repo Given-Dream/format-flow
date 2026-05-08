@@ -46,6 +46,16 @@
       "package.json",
       "README.md"
     ],
+    "extraResources": [
+      {
+        "from": "browser-extension",
+        "to": "browser-extension",
+        "filter": [
+          "**/*",
+          "!tests/**"
+        ]
+      }
+    ],
     "win": {
       "signAndEditExecutable": false,
       "target": [

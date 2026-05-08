@@ -196,9 +196,22 @@ export function App(): JSX.Element {
 
     window.addEventListener('message', onPluginMessage)
     requestPluginStatus()
+    const missingBridgeTimer = window.setTimeout(() => {
+      setPluginStatus((current) =>
+        current.bridgeConnected
+          ? current
+          : {
+              bridgeConnected: false,
+              connected: false,
+              message:
+                '当前浏览器没有检测到 Format Flow 扩展。请用已加载扩展的 Chrome/Edge 打开 http://127.0.0.1:5174/；Codex 内置浏览器不能加载 Chrome 扩展。'
+            }
+      )
+    }, 1800)
     const timer = window.setInterval(requestPluginStatus, 5000)
     return () => {
       window.removeEventListener('message', onPluginMessage)
+      window.clearTimeout(missingBridgeTimer)
       window.clearInterval(timer)
     }
   }, [])
@@ -1167,12 +1180,12 @@ function RunnerPanel({
                   ? `已连接 ${pluginStatus.aiName || 'AI'}`
                   : pluginStatus.bridgeConnected
                     ? '插件已连接，未找到已打开的 AI 页面'
-                    : '浏览器插件未连接'}
+                    : '当前浏览器未连接扩展'}
               </strong>
               <small>
                 {pluginStatus.message ||
                   pluginStatus.tabTitle ||
-                  '请在 Chrome/Edge 加载 browser-extension，刷新 Format Flow 页面，并打开受支持的 AI 网页。'}
+                  '请在已加载 browser-extension 的 Chrome/Edge 中打开当前地址，并打开受支持的 AI 网页。'}
               </small>
             </div>
             <button type="button" onClick={requestPluginStatus}>

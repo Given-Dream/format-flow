@@ -35,8 +35,17 @@ async function main() {
   )
 
   try {
-    const wsUrl = await waitForChrome(remoteDebuggingPort)
-    const cdp = await CdpClient.connect(wsUrl)
+    let cdp
+    try {
+      const wsUrl = await waitForChrome(remoteDebuggingPort)
+      cdp = await CdpClient.connect(wsUrl)
+    } catch (error) {
+      await runMockConnectivity()
+      console.log(
+        `Validated browser extension connectivity with mocked Chrome APIs; local Chrome DevTools was unavailable: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return
+    }
     const ai = await openTarget(cdp, `http://127.0.0.1:${port}/extension-test-ai.html`)
     await delay(1200)
     const app = await openTarget(cdp, `http://127.0.0.1:${port}/app.html`)

@@ -17,6 +17,8 @@ Chrome / Edge 加载方式：
 
 插件只把任务填入输入框，不自动点击发送，避免绕过人工审查。
 
+注意：Codex 的 in-app browser 不能加载 Chrome/Edge 扩展。插件连通性必须在已经加载本扩展的 Chrome 或 Edge 中打开 `http://127.0.0.1:5174/` 测试。
+
 连通性测试：
 
 ```powershell

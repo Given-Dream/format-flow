@@ -1,6 +1,12 @@
 (function () {
   if (!['127.0.0.1', 'localhost'].includes(location.hostname)) return
 
+  postStatus({
+    bridgeConnected: true,
+    connected: false,
+    message: '扩展桥接已连接，正在查找已打开的 AI 页面...'
+  })
+
   chrome.runtime.sendMessage({ type: 'FORMAT_FLOW_REGISTER_APP' }, (response) => {
     postStatus(response?.status)
   })
@@ -29,6 +35,11 @@
     if (!data || data.source !== 'format-flow') return
 
     if (data.type === 'FORMAT_FLOW_QUERY_STATUS') {
+      postStatus({
+        bridgeConnected: true,
+        connected: false,
+        message: '扩展桥接已连接，正在刷新 AI 页面状态...'
+      })
       chrome.runtime.sendMessage({ type: 'FORMAT_FLOW_QUERY_STATUS' }, (response) => {
         postStatus(response?.status)
       })

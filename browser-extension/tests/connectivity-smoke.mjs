@@ -299,7 +299,10 @@ async function runMockConnectivity() {
   appMessages = []
   fakeWindow.postMessage({ source: 'format-flow', type: 'FORMAT_FLOW_QUERY_STATUS' })
   await delay(30)
-  const status = appMessages.find((message) => message.type === 'FORMAT_FLOW_STATUS')?.payload
+  const status = appMessages
+    .filter((message) => message.type === 'FORMAT_FLOW_STATUS')
+    .map((message) => message.payload)
+    .find((payload) => payload?.connected)
   assert.equal(status?.bridgeConnected, true, 'mock app bridge should report bridge connectivity')
   assert.equal(status?.connected, true, 'mock AI tab should be connected')
   assert.equal(status?.aiName, 'Format Flow Test AI')

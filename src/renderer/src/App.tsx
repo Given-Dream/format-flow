@@ -1025,6 +1025,17 @@ function RunnerPanel({
     setOutputDraft(pluginOutput.text)
   }, [pluginOutput])
 
+  useEffect(() => {
+    if (targetKind !== 'browser-plugin') return
+    requestPluginStatus()
+    const quickRefresh = window.setInterval(requestPluginStatus, 1200)
+    const stopQuickRefresh = window.setTimeout(() => window.clearInterval(quickRefresh), 6000)
+    return () => {
+      window.clearInterval(quickRefresh)
+      window.clearTimeout(stopQuickRefresh)
+    }
+  }, [targetKind, requestPluginStatus])
+
   async function startRun(): Promise<void> {
     if (!workflow) return
     const timestamp = nowIso()
@@ -1190,9 +1201,6 @@ function RunnerPanel({
             </div>
             <button type="button" onClick={requestPluginStatus}>
               刷新
-            </button>
-            <button type="button" onClick={() => window.open('/extension-test-ai.html', '_blank', 'noopener,noreferrer')}>
-              打开测试 AI 页
             </button>
           </div>
         )}

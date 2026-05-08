@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Format Flow Test AI</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 32px;
+        color: #111827;
+        background: #ffffff;
+        font-family: Georgia, "Times New Roman", serif;
+      }
+
+      main {
+        display: grid;
+        gap: 18px;
+        max-width: 820px;
+        margin: 0 auto;
+      }
+
+      textarea,
+      #test-ai-output {
+        width: 100%;
+        min-height: 160px;
+        box-sizing: border-box;
+        padding: 16px;
+        border: 1px solid #d8dee8;
+        border-radius: 16px;
+        font: inherit;
+      }
+
+      #test-ai-output {
+        white-space: pre-wrap;
+        background: #f6f8fb;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Format Flow Test AI</h1>
+      <p>这个页面只用于浏览器插件连通性测试，不连接真实 AI 服务。</p>
+      <label>
+        AI 输入框
+        <textarea id="test-ai-input" placeholder="插件会把 Format Flow 任务注入到这里"></textarea>
+      </label>
+      <section>
+        <h2>AI 输出</h2>
+        <div id="test-ai-output">等待插件同步的模拟输出。</div>
+      </section>
+      <button
+        type="button"
+        onclick="document.getElementById('test-ai-output').textContent = '模拟 AI 输出：插件连通性测试已经收到任务。'"
+      >
+        生成模拟输出
+      </button>
+    </main>
+  </body>
+</html>

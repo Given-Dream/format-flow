@@ -53,6 +53,7 @@ type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'settings'
 type LauncherMode = 'prompt' | 'skill' | 'workflow'
 type FormatFlowApi = Window['formatFlow']
 type AiPluginStatus = {
+  bridgeConnected?: boolean
   connected: boolean
   aiName?: string
   aiIcon?: string
@@ -1161,11 +1162,24 @@ function RunnerPanel({
           <div className={pluginStatus.connected ? 'plugin-status connected' : 'plugin-status'}>
             <span className="ai-icon">{pluginStatus.connected ? pluginStatus.aiIcon || 'AI' : 'AI'}</span>
             <div>
-              <strong>{pluginStatus.connected ? `已连接 ${pluginStatus.aiName || 'AI'}` : '未连接已打开的 AI 页面'}</strong>
-              <small>{pluginStatus.message || pluginStatus.tabTitle || '请先打开受支持的 AI 网页，并加载浏览器插件。'}</small>
+              <strong>
+                {pluginStatus.connected
+                  ? `已连接 ${pluginStatus.aiName || 'AI'}`
+                  : pluginStatus.bridgeConnected
+                    ? '插件已连接，未找到已打开的 AI 页面'
+                    : '浏览器插件未连接'}
+              </strong>
+              <small>
+                {pluginStatus.message ||
+                  pluginStatus.tabTitle ||
+                  '请在 Chrome/Edge 加载 browser-extension，刷新 Format Flow 页面，并打开受支持的 AI 网页。'}
+              </small>
             </div>
             <button type="button" onClick={requestPluginStatus}>
               刷新
+            </button>
+            <button type="button" onClick={() => window.open('/extension-test-ai.html', '_blank', 'noopener,noreferrer')}>
+              打开测试 AI 页
             </button>
           </div>
         )}
@@ -2318,6 +2332,7 @@ function requestPluginStatus(): void {
 function normalizePluginStatus(payload?: Record<string, unknown>): AiPluginStatus {
   if (!payload) return { connected: false, message: '浏览器插件未连接' }
   return {
+    bridgeConnected: Boolean(payload.bridgeConnected),
     connected: Boolean(payload.connected),
     aiName: typeof payload.aiName === 'string' ? payload.aiName : undefined,
     aiIcon: typeof payload.aiIcon === 'string' ? payload.aiIcon : undefined,

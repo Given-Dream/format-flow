@@ -1,6 +1,14 @@
 (function () {
   const targets = [
     {
+      name: 'Format Flow Test AI',
+      icon: 'T',
+      domains: ['127.0.0.1', 'localhost'],
+      pathPrefixes: ['/extension-test-ai'],
+      selectors: ['#test-ai-input', 'textarea', '[contenteditable="true"]'],
+      outputSelectors: ['#test-ai-output']
+    },
+    {
       name: 'ChatGPT',
       icon: '◎',
       domains: ['chatgpt.com', 'chat.openai.com'],

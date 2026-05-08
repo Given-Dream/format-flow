@@ -11,8 +11,8 @@
     "web:build": "vite build --config vite.web.config.ts",
     "build": "tsc --noEmit && electron-vite build",
     "dist": "npm.cmd run build && set CSC_IDENTITY_AUTO_DISCOVERY=false&& electron-builder --win nsis --x64",
-    "test": "vitest run && node browser-extension/tests/selector-smoke.mjs",
-    "extension:test": "node browser-extension/tests/selector-smoke.mjs",
+    "test": "vitest run && node browser-extension/tests/selector-smoke.mjs && node browser-extension/tests/connectivity-smoke.mjs",
+    "extension:test": "node browser-extension/tests/selector-smoke.mjs && node browser-extension/tests/connectivity-smoke.mjs",
     "preview": "electron-vite preview",
     "start": "electron-vite preview"
   },

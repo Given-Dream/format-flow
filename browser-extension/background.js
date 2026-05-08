@@ -1,4 +1,5 @@
 const AI_TARGETS = [
+  { name: 'Format Flow Test AI', icon: 'T', domains: ['127.0.0.1', 'localhost'], pathPrefixes: ['/extension-test-ai'] },
   { name: 'ChatGPT', icon: '◎', domains: ['chatgpt.com', 'chat.openai.com'] },
   { name: 'Claude', icon: '✦', domains: ['claude.ai'] },
   { name: 'Gemini', icon: '✧', domains: ['gemini.google.com'] },
@@ -179,6 +180,7 @@ function tabToStatus(tab) {
 
 function disconnectedStatus(message = '未连接已打开的 AI 页面') {
   return {
+    bridgeConnected: true,
     connected: false,
     aiName: '',
     aiIcon: '',
@@ -194,9 +196,11 @@ function isAiUrl(url) {
 
 function targetFromUrl(url) {
   try {
-    const hostname = new URL(url).hostname
+    const parsed = new URL(url)
+    const hostname = parsed.hostname
     return AI_TARGETS.find((target) =>
-      target.domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`))
+      target.domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`)) &&
+      (!target.pathPrefixes || target.pathPrefixes.some((prefix) => parsed.pathname.startsWith(prefix)))
     )
   } catch {
     return undefined

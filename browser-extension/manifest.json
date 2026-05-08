@@ -5,6 +5,7 @@
   "description": "Inject Format Flow workflow tasks into supported AI web apps.",
   "permissions": ["tabs", "activeTab", "scripting", "storage"],
   "host_permissions": [
+    "http://*/*",
     "http://127.0.0.1/*",
     "http://localhost/*",
     "https://chatgpt.com/*",
@@ -23,12 +24,15 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://127.0.0.1/*", "http://localhost/*"],
+      "matches": ["http://*/*", "http://127.0.0.1/*", "http://localhost/*"],
       "js": ["app-bridge.js"],
       "run_at": "document_start"
     },
     {
       "matches": [
+        "http://*/*",
+        "http://127.0.0.1/extension-test-ai*",
+        "http://localhost/extension-test-ai*",
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
         "https://claude.ai/*",

@@ -16,3 +16,11 @@ Chrome / Edge 加载方式：
 5. AI 输出会同步回 Format Flow 的“节点输出”；如果结果不满意，在“人工审查意见”框继续发送修改意见。
 
 插件只把任务填入输入框，不自动点击发送，避免绕过人工审查。
+
+连通性测试：
+
+```powershell
+npm.cmd run extension:test
+```
+
+测试会自动启动一个临时 Chrome 实例，加载 `browser-extension`，打开本地 Format Flow 测试页和模拟 AI 页，验证状态查询、任务注入、输出同步三条链路。

@@ -1,4 +1,6 @@
 (function () {
+  if (!['127.0.0.1', 'localhost'].includes(location.hostname)) return
+
   chrome.runtime.sendMessage({ type: 'FORMAT_FLOW_REGISTER_APP' }, (response) => {
     postStatus(response?.status)
   })
@@ -55,11 +57,15 @@
   })
 
   function postStatus(status) {
+    const payload = status || { connected: false, message: chrome.runtime.lastError?.message || '浏览器插件未连接' }
     window.postMessage(
       {
         source: 'format-flow-extension',
         type: 'FORMAT_FLOW_STATUS',
-        payload: status || { connected: false, message: chrome.runtime.lastError?.message || '浏览器插件未连接' }
+        payload: {
+          ...payload,
+          bridgeConnected: true
+        }
       },
       window.location.origin
     )

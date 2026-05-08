@@ -19,12 +19,15 @@
     return false
   })
 
-  sendStatus()
-  startOutputObserver()
+  if (detectTarget()) {
+    sendStatus()
+    startOutputObserver()
+  }
 
   function injectTask(text) {
     if (!text.trim()) return { ok: false, message: '任务内容为空' }
     const target = detectTarget()
+    if (!target) return { ok: false, message: '当前页面不是 Format Flow 支持的 AI 页面。' }
     const input = findInput(target)
     if (!input) {
       return {
@@ -42,8 +45,10 @@
 
   function detectTarget() {
     const hostname = location.hostname
+    const pathname = location.pathname
     return (globalThis.FORMAT_FLOW_AI_TARGETS || []).find((target) =>
-      target.domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`))
+      target.domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`)) &&
+      (!target.pathPrefixes || target.pathPrefixes.some((prefix) => pathname.startsWith(prefix)))
     )
   }
 

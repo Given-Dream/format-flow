@@ -59,7 +59,8 @@ export function defaultGroups(prompts: PromptItem[] = []): ResourceGroups {
   return {
     prompts: groupsFromTags(allTags(prompts)),
     skills: [],
-    mcps: []
+    mcps: [],
+    quickCalls: groupsFromTags(allTags(prompts))
   }
 }
 
@@ -457,7 +458,8 @@ function normalizeGroups(value: unknown, prompts: PromptItem[]): ResourceGroups 
   return {
     prompts: normalizeGroupList(value.prompts, allTags(prompts)),
     skills: normalizeGroupList(value.skills, []),
-    mcps: normalizeGroupList(value.mcps, [])
+    mcps: normalizeGroupList(value.mcps, []),
+    quickCalls: normalizeGroupList(value.quickCalls, allTags(prompts))
   }
 }
 

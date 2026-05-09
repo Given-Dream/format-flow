@@ -49,8 +49,9 @@ import type {
   WorkflowNode
 } from '@shared/types'
 
-type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'learning' | 'settings'
+type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'quickCalls' | 'mcps' | 'learning' | 'settings'
 type LauncherMode = 'prompt' | 'skill' | 'workflow'
+type QuickCallType = 'prompt' | 'skill' | 'workflow'
 type FormatFlowApi = Window['formatFlow']
 type AiPluginStatus = {
   bridgeConnected?: boolean
@@ -87,6 +88,13 @@ type LearningDraft = {
   title: string
   description: string
   content: string
+}
+type QuickCallItem = {
+  id: string
+  type: QuickCallType
+  title: string
+  summary: string
+  tags: string[]
 }
 
 const formatFlow = getFormatFlowApi()
@@ -132,6 +140,7 @@ const tabs: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'skills', label: 'Skills', description: '扫描、导入、安装和索引 Skill' },
   { id: 'workflows', label: '工作流', description: '提示词节点选择调用哪个 Skill' },
   { id: 'runner', label: '顺序运行', description: '审查后自动发送下一步任务' },
+  { id: 'quickCalls', label: '快捷调用', description: '分组管理快捷调用入口' },
   { id: 'mcps', label: 'MCP', description: '导入和添加 MCP 服务配置' },
   { id: 'learning', label: '学习', description: '从满意对话生成 Skill' },
   { id: 'settings', label: '设置', description: '快捷键、Skill 路径和数据位置' }
@@ -390,6 +399,7 @@ export function App(): JSX.Element {
             requestPluginStatus={requestPluginStatus}
           />
         )}
+        {activeTab === 'quickCalls' && <QuickCallPanel store={store} skills={skills} commit={commit} setActiveTab={setActiveTab} />}
         {activeTab === 'mcps' && <McpPanel store={store} commit={commit} setNotice={setNotice} />}
         {activeTab === 'learning' && (
           <LearningPanel store={store} commit={commit} scanSkills={scanSkills} setNotice={setNotice} />
@@ -1378,6 +1388,108 @@ function RunnerPanel({
   )
 }
 
+function QuickCallPanel({
+  store,
+  skills,
+  commit,
+  setActiveTab
+}: {
+  store: AppStore
+  skills: SkillItem[]
+  commit: (store: AppStore) => Promise<void>
+  setActiveTab: (tab: TabId) => void
+}): JSX.Element {
+  const [query, setQuery] = useState('')
+  const [selectedGroup, setSelectedGroup] = useState('all')
+  const quickItems = buildQuickCallItems(store, skills)
+  const quickGroups = mergeGroupsWithTags(store.groups.quickCalls || [], allTags(quickItems))
+  const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
+  const visibleItems = quickItems.filter((item) => matchesTextAndTags(item, query, effectiveTags))
+
+  async function updateGroups(groups: GroupItem[]): Promise<void> {
+    await commit({ ...store, groups: { ...store.groups, quickCalls: groups } })
+  }
+
+  async function deleteGroup(group: GroupItem): Promise<void> {
+    const tags = collectGroupTags(group)
+    await commit({
+      ...store,
+      prompts: store.prompts.map((prompt) => ({
+        ...prompt,
+        tags: prompt.tags.filter((tag) => !tags.includes(tag)),
+        updatedAt: nowIso()
+      })),
+      workflows: store.workflows.map((workflow) => ({
+        ...workflow,
+        tags: workflow.tags.filter((tag) => !tags.includes(tag)),
+        updatedAt: nowIso()
+      })),
+      skillIndex: removeTagsFromSkillIndex(store.skillIndex, skills, tags),
+      groups: {
+        ...store.groups,
+        quickCalls: removeGroupById(store.groups.quickCalls || [], group.id)
+      }
+    })
+    if (tags.includes(selectedGroup)) setSelectedGroup('all')
+  }
+
+  async function toggleCurrentGroup(item: QuickCallItem): Promise<void> {
+    if (selectedGroup === 'all') return
+    const hasTag = item.tags.includes(selectedGroup)
+    await commit(applyQuickCallTag(store, skills, item, selectedGroup, !hasTag))
+  }
+
+  return (
+    <section className="panel library-layout">
+      <ResourceGroupManager
+        title="快捷调用分组"
+        detail="提示词、Skill 和工作流共用一个快捷调用分组"
+        allLabel="全部快捷调用"
+        allCount={quickItems.length}
+        groups={quickGroups}
+        selectedTag={selectedGroup}
+        countForTag={(tag) => quickItems.filter((item) => item.tags.includes(tag)).length}
+        onSelect={setSelectedGroup}
+        onChange={updateGroups}
+        onDelete={deleteGroup}
+        footer={<SearchBox query={query} setQuery={setQuery} placeholder="搜索快捷调用名称、摘要或标签" />}
+      />
+      <div className="library-main">
+        <PanelHeader title="快捷调用管理" detail={`${visibleItems.length} / ${quickItems.length} 个快捷调用项`} />
+        <div className="group-selection-note">
+          {selectedGroup === 'all'
+            ? '选择左侧分组后，可把提示词、Skill 或工作流加入/移出该分组。'
+            : `当前分组：${selectedGroup}`}
+        </div>
+        <div className="tile-grid">
+          {visibleItems.map((item) => {
+            const inGroup = selectedGroup !== 'all' && item.tags.includes(selectedGroup)
+            return (
+              <article key={`${item.type}:${item.id}`} className="tile-card">
+                <div>
+                  <strong>{item.title}</strong>
+                  <p>{item.summary}</p>
+                </div>
+                <TagRow tags={[quickCallTypeLabel(item.type), ...item.tags]} />
+                <div className="inline-actions">
+                  {selectedGroup !== 'all' && (
+                    <button type="button" onClick={() => void toggleCurrentGroup(item)}>
+                      {inGroup ? '移出当前分组' : '加入当前分组'}
+                    </button>
+                  )}
+                  <button type="button" onClick={() => setActiveTab(quickCallTargetTab(item.type))}>
+                    打开原管理页
+                  </button>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 function McpPanel({
   store,
   commit,
@@ -2161,10 +2273,14 @@ function LauncherModal({
 }): JSX.Element {
   const [mode, setMode] = useState<LauncherMode>('prompt')
   const [query, setQuery] = useState('')
-  const promptItems = store.prompts.filter((prompt) => matchesTextAndTags(prompt, query, []))
-  const skillItems = skills.filter((skill) => matchesTextAndTags(skill, query, []))
+  const [selectedGroup, setSelectedGroup] = useState('all')
+  const quickGroups = mergeGroupsWithTags(store.groups.quickCalls || [], allTags(buildQuickCallItems(store, skills)))
+  const groupOptions = flattenGroups(quickGroups)
+  const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
+  const promptItems = store.prompts.filter((prompt) => matchesTextAndTags(prompt, query, effectiveTags))
+  const skillItems = skills.filter((skill) => matchesTextAndTags(skill, query, effectiveTags))
   const workflowItems = store.workflows.filter((workflow) =>
-    matchesTextAndTags({ title: workflow.title, summary: workflow.description, tags: workflow.tags }, query, [])
+    matchesTextAndTags({ title: workflow.title, summary: workflow.description, tags: workflow.tags }, query, effectiveTags)
   )
 
   return (
@@ -2181,6 +2297,17 @@ function LauncherModal({
         </button>
       </div>
       <SearchBox query={query} setQuery={setQuery} placeholder="搜索要调用的内容" />
+      <label>
+        快捷分组
+        <select value={selectedGroup} onChange={(event) => setSelectedGroup(event.target.value)}>
+          <option value="all">全部快捷调用</option>
+          {groupOptions.map((group) => (
+            <option key={group.id} value={group.tag}>
+              {group.name}
+            </option>
+          ))}
+        </select>
+      </label>
       <div className="launcher-list">
         {mode === 'prompt' &&
           promptItems.map((prompt) => (
@@ -2530,6 +2657,100 @@ function GroupTreeItem({
       ))}
     </div>
   )
+}
+
+function buildQuickCallItems(store: AppStore, skills: SkillItem[]): QuickCallItem[] {
+  return [
+    ...store.prompts.map((prompt) => ({
+      id: prompt.id,
+      type: 'prompt' as const,
+      title: prompt.title,
+      summary: prompt.summary,
+      tags: prompt.tags
+    })),
+    ...skills.map((skill) => ({
+      id: skill.id,
+      type: 'skill' as const,
+      title: skill.title || skill.name,
+      summary: skill.summary,
+      tags: skill.tags
+    })),
+    ...store.workflows.map((workflow) => ({
+      id: workflow.id,
+      type: 'workflow' as const,
+      title: workflow.title,
+      summary: workflow.description,
+      tags: workflow.tags
+    }))
+  ]
+}
+
+function applyQuickCallTag(store: AppStore, skills: SkillItem[], item: QuickCallItem, tag: string, enabled: boolean): AppStore {
+  const normalizedTag = normalizeTag(tag)
+  if (!normalizedTag) return store
+  if (item.type === 'prompt') {
+    return {
+      ...store,
+      prompts: store.prompts.map((prompt) =>
+        prompt.id === item.id ? { ...prompt, tags: toggleTag(prompt.tags, normalizedTag, enabled), updatedAt: nowIso() } : prompt
+      )
+    }
+  }
+
+  if (item.type === 'workflow') {
+    return {
+      ...store,
+      workflows: store.workflows.map((workflow) =>
+        workflow.id === item.id ? { ...workflow, tags: toggleTag(workflow.tags, normalizedTag, enabled), updatedAt: nowIso() } : workflow
+      )
+    }
+  }
+
+  const skill = skills.find((candidate) => candidate.id === item.id)
+  const metadata = store.skillIndex[item.id] || { tags: skill?.tags || item.tags }
+  return {
+    ...store,
+    skillIndex: {
+      ...store.skillIndex,
+      [item.id]: {
+        ...metadata,
+        tags: toggleTag(metadata.tags || skill?.tags || item.tags, normalizedTag, enabled)
+      }
+    }
+  }
+}
+
+function removeTagsFromSkillIndex(skillIndex: Record<string, SkillMetadata>, skills: SkillItem[], tags: string[]): Record<string, SkillMetadata> {
+  const tagSet = new Set(tags.map(normalizeTag))
+  const next = { ...skillIndex }
+  for (const skill of skills) {
+    const metadata = next[skill.id] || { tags: skill.tags }
+    next[skill.id] = {
+      ...metadata,
+      tags: (metadata.tags || skill.tags).filter((tag) => !tagSet.has(normalizeTag(tag)))
+    }
+  }
+  return next
+}
+
+function toggleTag(tags: string[], tag: string, enabled: boolean): string[] {
+  const normalizedTags = Array.from(new Set(tags.map(normalizeTag).filter(Boolean)))
+  const exists = normalizedTags.includes(tag)
+  if (enabled && !exists) return [...normalizedTags, tag]
+  if (!enabled && exists) return normalizedTags.filter((item) => item !== tag)
+  return normalizedTags
+}
+
+function quickCallTypeLabel(type: QuickCallType): string {
+  if (type === 'prompt') return '提示词'
+  if (type === 'skill') return 'Skill'
+  return '工作流'
+}
+
+function quickCallTargetTab(type: QuickCallType): TabId {
+  if (type === 'prompt') return 'prompts'
+  if (type === 'skill') return 'skills'
+  return 'workflows'
 }
 
 function mergeGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {

@@ -1542,6 +1542,7 @@ function LearningPanel({
   const learningGroups = mergeGroupsWithTags(store.groups.learning || [], allTags(sources))
   const visibleSources = selectedGroup === 'all' ? sources : sources.filter((source) => source.tags.includes(selectedGroup))
   const satisfiedSources = visibleSources.filter((source) => source.satisfied)
+  const errorSources = visibleSources.filter((source) => !source.satisfied)
   const redactionCount = visibleSources.reduce((total, source) => total + source.redactions.length, 0)
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
@@ -1601,13 +1602,13 @@ function LearningPanel({
   }
 
   function generateDraft(): void {
-    if (satisfiedSources.length === 0) {
-      setNotice('请先至少标记 1 条满意样本。')
+    if (satisfiedSources.length === 0 && errorSources.length === 0) {
+      setNotice('请先导入对话样本，并标记满意或保留误差样本。')
       return
     }
-    const nextDraft = buildLearningSkillDraft(satisfiedSources, method)
+    const nextDraft = buildLearningSkillDraft(satisfiedSources, method, errorSources)
     setDraft(nextDraft)
-    setNotice(`Hermes 已基于 ${satisfiedSources.length} 条满意样本生成 Skill 草稿，请审查后保存。`)
+    setNotice(`Hermes 已基于 ${satisfiedSources.length} 条满意样本和 ${errorSources.length} 条误差样本生成 Skill 草稿，请审查后保存。`)
   }
 
   async function installDraft(): Promise<void> {
@@ -1673,6 +1674,7 @@ function LearningPanel({
           <div className="learning-stats">
             <span>当前分组样本：{visibleSources.length}</span>
             <span>满意：{satisfiedSources.length}</span>
+            <span>误差：{errorSources.length}</span>
             <span>隐私替换：{redactionCount}</span>
           </div>
         </div>
@@ -1712,12 +1714,12 @@ function LearningPanel({
           <strong>{learningMethodLabel(method)}</strong>
           <span>
             {method === 'conversation-review'
-              ? '只学习标记为满意的对话，提炼偏好、流程和质量门槛。'
+              ? '满意对话形成正向策略；不满意对话作为误差样本，形成不要做什么和纠偏规则。'
               : '先内置工程控制论核心思想，再把每次对话压缩为目标、状态、反馈、控制、约束和场景核心逻辑。'}
           </span>
           <span>邮箱、API key/token、密码/密钥字段、本地路径、账号/手机号会被替换为占位符。</span>
         </div>
-        <button className="primary-action" type="button" disabled={satisfiedSources.length === 0} onClick={generateDraft}>
+        <button className="primary-action" type="button" disabled={visibleSources.length === 0} onClick={generateDraft}>
           生成 Skill 草稿
         </button>
         {draft ? (
@@ -3038,16 +3040,19 @@ function inferConstraintSignals(text: string): string[] {
   return Array.from(constraints)
 }
 
-function buildLearningSkillDraft(sources: LearningSource[], method: LearningMethod): LearningDraft {
+function buildLearningSkillDraft(sources: LearningSource[], method: LearningMethod, errorSources: LearningSource[] = []): LearningDraft {
   const combined = sources.map((source) => `# ${source.title}\n${source.sanitizedText}`).join('\n\n---\n\n')
+  const errorCombined = errorSources.map((source) => `# ${source.title}\n${source.sanitizedText}`).join('\n\n---\n\n')
   const title = method === 'engineering-cybernetics' ? 'Hermes Engineering Cybernetics Skill' : inferLearningSkillTitle(sources)
   const skillName = slugifySkillName(title)
   const description =
     method === 'engineering-cybernetics'
-      ? `Use when a task should be controlled as a closed-loop engineering system, based on ${sources.length} satisfied conversation sample(s).`
-      : `Use when a task should follow the user's learned working habits from ${sources.length} satisfied conversation sample(s).`
+      ? `Use when a task should be controlled as a closed-loop engineering system, based on ${sources.length} satisfied sample(s) and ${errorSources.length} error sample(s).`
+      : `Use when a task should follow the user's learned working habits from ${sources.length} satisfied sample(s) and avoid patterns from ${errorSources.length} error sample(s).`
   const preferences = inferLearningPreferences(combined)
+  const corrections = inferCorrectionRules(errorCombined)
   const examples = sources.slice(0, 3).map((source) => `### ${source.title}\n${compactSnippet(source.sanitizedText, 900)}`)
+  const errorExamples = errorSources.slice(0, 3).map((source) => `### ${source.title}\n${compactSnippet(source.sanitizedText, 700)}`)
   const cyberneticsSections =
     method === 'engineering-cybernetics'
       ? [
@@ -3083,6 +3088,9 @@ function buildLearningSkillDraft(sources: LearningSource[], method: LearningMeth
     '',
     '## Hermes Learning Mode',
     `- ${learningMethodLabel(method)}`,
+    method === 'conversation-review'
+      ? '- 对话审查不是只做可观测性：满意样本提供目标轨迹，不满意样本提供误差信号，用于形成纠偏控制规则。'
+      : '- 工程控制论模式把满意样本作为稳定轨迹，把误差样本作为偏差信号，持续更新控制动作和约束边界。',
     ...cyberneticsSections,
     '',
     '## When to Use',
@@ -3092,12 +3100,22 @@ function buildLearningSkillDraft(sources: LearningSource[], method: LearningMeth
     '## User Preferences',
     ...preferences.map((item) => `- ${item}`),
     '',
+    '## Error Signals and Corrections',
+    ...(corrections.length > 0
+      ? corrections.map((item) => `- ${item}`)
+      : ['- No explicit error samples were provided; treat future dissatisfaction as feedback and update this section.']),
+    '',
+    '## Do Not Do',
+    ...buildDoNotRules(corrections).map((item) => `- ${item}`),
+    '',
     '## Workflow',
     '1. Read the current request and existing project context before changing files.',
-    '2. Apply the learned preferences below, but do not copy sensitive details from prior conversations.',
-    '3. If the task changes code or configuration, implement the change and run the most relevant test/build command available.',
-    '4. If output is going to another AI web app, keep the handoff prompt concise and directly executable.',
-    '5. Final response should be concise: state what changed, what was verified, and any remaining action the user must take.',
+    '2. Use satisfied samples as positive control targets and error samples as negative feedback signals.',
+    '3. Before acting, check the Do Not Do section and remove any action that matches a known error pattern.',
+    '4. Apply the learned preferences below, but do not copy sensitive details from prior conversations.',
+    '5. If the task changes code or configuration, implement the change and run the most relevant test/build command available.',
+    '6. If output is going to another AI web app, keep the handoff prompt concise and directly executable.',
+    '7. Final response should be concise: state what changed, what was verified, and any remaining action the user must take.',
     '',
     '## Privacy Rules',
     '- Never include raw API keys, tokens, passwords, local filesystem paths, email addresses, phone numbers, or account identifiers from learned conversations.',
@@ -3105,12 +3123,16 @@ function buildLearningSkillDraft(sources: LearningSource[], method: LearningMeth
     '',
     '## Quality Gates',
     '- Confirm the result is based only on samples the user marked as satisfied.',
+    '- Confirm the plan avoids patterns extracted from error samples.',
     '- Check that generated content does not contain private identifiers.',
     '- Prefer deterministic local actions and explicit verification over vague suggestions.',
     '- Do not silently overwrite unrelated user changes.',
     '',
     '## Learned Examples',
-    examples.join('\n\n') || '- No examples available.'
+    examples.join('\n\n') || '- No positive examples available.',
+    '',
+    '## Error Examples',
+    errorExamples.join('\n\n') || '- No error examples available.'
   ].join('\n')
 
   return { skillName, title, description, content }
@@ -3144,6 +3166,57 @@ function inferLearningPreferences(text: string): string[] {
   }
 
   return Array.from(preferences).slice(0, 12)
+}
+
+function inferCorrectionRules(text: string): string[] {
+  if (!text.trim()) return []
+  const rules = new Set<string>()
+  if (/没有反应|无响应|没反应|点击.*不|失败|报错|error/i.test(text)) {
+    rules.add('如果用户指出“没有反应/失败/报错”，不要只解释原因；必须定位触发链路、补反馈提示，并给出可验证修复。')
+  }
+  if (/不必|不要|不应该|不需要|去掉|不是|误差/.test(text)) {
+    rules.add('把用户的否定表达记录为控制边界；后续方案先排除这些做法，再生成替代路径。')
+  }
+  if (/主界面|不必显示|隐藏|入口/.test(text)) {
+    rules.add('不要把临时调用入口暴露到主界面；区分管理界面、弹窗入口和自动化执行入口。')
+  }
+  if (/粘贴|剪贴板|对话框|快捷键/.test(text)) {
+    rules.add('不要停留在“复制到剪贴板”；若用户在对话框中触发快捷调用，应尽量自动粘贴回原输入框，并保留失败兜底。')
+  }
+  if (/浏览器|插件|连接|图标/.test(text)) {
+    rules.add('不要假设浏览器插件已连接；必须显示桥接状态、目标 AI 页面和失败原因。')
+  }
+  if (/满意|不满意|纠偏|可控/.test(text)) {
+    rules.add('不要只学习满意样本；不满意样本必须作为误差信号生成纠偏规则。')
+  }
+  if (/安装包|打包|测试|验证/.test(text)) {
+    rules.add('不要只改源码不打包；面向安装版的问题必须重新构建安装包并说明验证命令。')
+  }
+
+  for (const line of extractCorrectionLines(text)) {
+    rules.add(`避免：${line}`)
+    if (rules.size >= 14) break
+  }
+
+  return Array.from(rules).slice(0, 14)
+}
+
+function extractCorrectionLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*#\s>]+/, '').trim())
+    .filter((line) => line.length >= 8 && line.length <= 140)
+    .filter((line) => /(不满意|没有反应|失败|错误|不必|不要|不应该|不需要|去掉|不能|不对|问题|误差)/.test(line))
+    .slice(0, 18)
+}
+
+function buildDoNotRules(corrections: string[]): string[] {
+  const defaults = [
+    '不要把未审查的历史对话直接写入长期 Skill。',
+    '不要保留隐私、路径、账号、密钥或一次性细节。',
+    '不要只总结现象而不形成可执行纠偏动作。'
+  ]
+  return corrections.length > 0 ? [...corrections.slice(0, 8), ...defaults].slice(0, 10) : defaults
 }
 
 function extractPreferenceLines(text: string): string[] {

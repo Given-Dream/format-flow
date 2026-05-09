@@ -395,6 +395,25 @@ async function installSkillZip(): Promise<ImportResult<SkillItem>> {
   }
 }
 
+async function installGeneratedSkill(name: string, content: string): Promise<ImportResult<SkillItem>> {
+  const cleanName = safeSegment(name || 'learned-skill')
+  const managedDirectory = getManagedSkillDirectory()
+  await fs.mkdir(managedDirectory, { recursive: true })
+  const destination = await uniqueDirectory(path.join(managedDirectory, cleanName))
+  const skillFile = path.join(destination, 'SKILL.md')
+  await fs.writeFile(skillFile, content.trimEnd() + '\n', 'utf8')
+  const stat = await fs.stat(skillFile)
+  const skill = { ...parseSkillMarkdown(content, skillFile), updatedAt: stat.mtime.toISOString() }
+
+  return {
+    ok: true,
+    message: `Generated Skill saved: ${skill.title}`,
+    items: [skill],
+    installedPaths: [destination],
+    managedDirectory
+  }
+}
+
 async function importSkillTargets(targets: string[]): Promise<ImportResult<SkillItem>> {
   const installed: SkillItem[] = []
   const installedPaths: string[] = []
@@ -975,6 +994,7 @@ function registerIpc(): void {
   ipcMain.handle('skills:importExisting', () => importExistingSkills())
   ipcMain.handle('skills:restoreBackup', () => restoreSkillsFromBackup())
   ipcMain.handle('skills:installZip', () => installSkillZip())
+  ipcMain.handle('skills:installGenerated', (_event, name: string, content: string) => installGeneratedSkill(name, content))
   ipcMain.handle('github:searchSkills', (_event, query: string) => searchGithub('skill', query))
   ipcMain.handle('github:installSkill', (_event, result: GithubSearchResult) => installGithubSkill(result))
   ipcMain.handle('prompts:importExisting', () => importPromptFiles())

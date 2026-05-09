@@ -25,6 +25,8 @@ const api = {
   importExistingSkills: (): Promise<ImportResult<SkillItem>> => ipcRenderer.invoke('skills:importExisting'),
   restoreSkillsFromBackup: (): Promise<ImportResult<SkillItem>> => ipcRenderer.invoke('skills:restoreBackup'),
   installSkillZip: (): Promise<ImportResult<SkillItem>> => ipcRenderer.invoke('skills:installZip'),
+  installGeneratedSkill: (name: string, content: string): Promise<ImportResult<SkillItem>> =>
+    ipcRenderer.invoke('skills:installGenerated', name, content),
   searchGithubSkills: (query: string): Promise<GithubSearchResult[]> => ipcRenderer.invoke('github:searchSkills', query),
   installGithubSkill: (result: GithubSearchResult): Promise<ImportResult<SkillItem>> =>
     ipcRenderer.invoke('github:installSkill', result),

@@ -49,7 +49,7 @@ import type {
   WorkflowNode
 } from '@shared/types'
 
-type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'settings'
+type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'learning' | 'settings'
 type LauncherMode = 'prompt' | 'skill' | 'workflow'
 type FormatFlowApi = Window['formatFlow']
 type AiPluginStatus = {
@@ -72,6 +72,21 @@ type ReviewMessage = {
   role: 'human' | 'system'
   text: string
   createdAt: string
+}
+type LearningSource = {
+  id: string
+  title: string
+  sourceName: string
+  rawText: string
+  sanitizedText: string
+  satisfied: boolean
+  redactions: string[]
+}
+type LearningDraft = {
+  skillName: string
+  title: string
+  description: string
+  content: string
 }
 
 const formatFlow = getFormatFlowApi()
@@ -112,6 +127,7 @@ const tabs: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'workflows', label: '工作流', description: '提示词节点选择调用哪个 Skill' },
   { id: 'runner', label: '顺序运行', description: '审查后自动发送下一步任务' },
   { id: 'mcps', label: 'MCP', description: '导入和添加 MCP 服务配置' },
+  { id: 'learning', label: '学习', description: '从满意对话生成 Skill' },
   { id: 'settings', label: '设置', description: '快捷键、Skill 路径和数据位置' }
 ]
 
@@ -369,6 +385,9 @@ export function App(): JSX.Element {
           />
         )}
         {activeTab === 'mcps' && <McpPanel store={store} commit={commit} setNotice={setNotice} />}
+        {activeTab === 'learning' && (
+          <LearningPanel store={store} commit={commit} scanSkills={scanSkills} setNotice={setNotice} />
+        )}
         {activeTab === 'settings' && (
           <SettingsPanel
             store={store}
@@ -1485,6 +1504,181 @@ function McpPanel({
   )
 }
 
+function LearningPanel({
+  store,
+  commit,
+  scanSkills,
+  setNotice
+}: {
+  store: AppStore
+  commit: (store: AppStore) => Promise<void>
+  scanSkills: (directories?: string[]) => Promise<void>
+  setNotice: (notice: string) => void
+}): JSX.Element {
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [sources, setSources] = useState<LearningSource[]>([])
+  const [draft, setDraft] = useState<LearningDraft | null>(null)
+  const satisfiedSources = sources.filter((source) => source.satisfied)
+  const redactionCount = sources.reduce((total, source) => total + source.redactions.length, 0)
+
+  async function importLearningFiles(files: FileList | null): Promise<void> {
+    if (!files?.length) return
+    const imported: LearningSource[] = []
+    for (const file of Array.from(files)) {
+      const content = await file.text()
+      imported.push(...extractLearningSources(content, file.name))
+    }
+    setSources((current) => [...imported, ...current])
+    setNotice(`已导入 ${imported.length} 条学习样本；默认只学习勾选“满意”的样本。`)
+  }
+
+  function importCompletedRuns(): void {
+    const runSources = store.runs
+      .filter((run) => run.status === 'completed' || run.steps.some((step) => step.output.trim()))
+      .map((run) => createLearningSource(run.workflowTitle, '顺序运行记录', runToLearningText(run), run.status === 'completed'))
+    setSources((current) => [...runSources, ...current])
+    setNotice(`已导入 ${runSources.length} 条顺序运行记录；已完成记录默认标记为满意。`)
+  }
+
+  function toggleSatisfied(id: string): void {
+    setSources((current) => current.map((source) => (source.id === id ? { ...source, satisfied: !source.satisfied } : source)))
+  }
+
+  function removeSource(id: string): void {
+    setSources((current) => current.filter((source) => source.id !== id))
+  }
+
+  function generateDraft(): void {
+    if (satisfiedSources.length === 0) {
+      setNotice('请先至少标记 1 条满意样本。')
+      return
+    }
+    const nextDraft = buildLearningSkillDraft(satisfiedSources)
+    setDraft(nextDraft)
+    setNotice(`已基于 ${satisfiedSources.length} 条满意样本生成 Skill 草稿，请审查后保存。`)
+  }
+
+  async function installDraft(): Promise<void> {
+    if (!draft) return
+    try {
+      const result = await formatFlow.installGeneratedSkill(draft.skillName, draft.content)
+      setNotice(result.message)
+      if (!result.ok) return
+      const directories = Array.from(
+        new Set([...store.settings.skillDirectories, result.managedDirectory || '', ...(result.installedPaths || [])].filter(Boolean))
+      )
+      await commit({ ...store, settings: { ...store.settings, skillDirectories: directories } })
+      await scanSkills(directories)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '保存学习 Skill 失败')
+    }
+  }
+
+  return (
+    <section className="panel learning-layout">
+      <div className="learning-left">
+        <PanelHeader
+          title="对话学习"
+          detail="从满意对话中提炼你的使用习惯，先隐私清理，再生成可审查的 Skill。"
+        />
+        <div className="import-tools">
+          <input
+            ref={fileInputRef}
+            className="hidden-file-input"
+            type="file"
+            accept=".json,.md,.txt"
+            multiple
+            onChange={(event) => {
+              void importLearningFiles(event.currentTarget.files)
+              event.currentTarget.value = ''
+            }}
+          />
+          <button className="primary-action" type="button" onClick={() => fileInputRef.current?.click()}>
+            导入 JSON / MD 对话
+          </button>
+          <button type="button" onClick={importCompletedRuns}>
+            导入顺序运行记录
+          </button>
+          <div className="learning-stats">
+            <span>样本：{sources.length}</span>
+            <span>满意：{satisfiedSources.length}</span>
+            <span>隐私替换：{redactionCount}</span>
+          </div>
+        </div>
+
+        <div className="card-list">
+          {sources.length === 0 && <EmptyState title="暂无学习样本" detail="导入 JSON / MD 对话，或从顺序运行记录导入。" />}
+          {sources.map((source) => (
+            <article key={source.id} className={source.satisfied ? 'learning-card satisfied' : 'learning-card'}>
+              <div>
+                <strong>{source.title}</strong>
+                <span>{source.sourceName}</span>
+              </div>
+              <p>{source.sanitizedText.slice(0, 260) || '空样本'}</p>
+              <TagRow tags={[source.satisfied ? '满意' : '未学习', ...source.redactions.slice(0, 3)]} />
+              <div className="inline-actions">
+                <button type="button" onClick={() => toggleSatisfied(source.id)}>
+                  {source.satisfied ? '取消满意' : '标记满意'}
+                </button>
+                <button className="danger" type="button" onClick={() => removeSource(source.id)}>
+                  移除
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+
+      <div className="learning-right">
+        <PanelHeader title="Skill 草稿" detail="只使用满意样本；保存前可手动修改 Skill 内容。" />
+        <div className="learning-rules">
+          <strong>默认隐私清理</strong>
+          <span>邮箱、API key/token、密码/密钥字段、本地路径、账号/手机号会被替换为占位符。</span>
+        </div>
+        <button className="primary-action" type="button" disabled={satisfiedSources.length === 0} onClick={generateDraft}>
+          生成 Skill 草稿
+        </button>
+        {draft ? (
+          <>
+            <div className="two-field-grid">
+              <label>
+                Skill 目录名
+                <input value={draft.skillName} onChange={(event) => setDraft({ ...draft, skillName: event.target.value })} />
+              </label>
+              <label>
+                标题
+                <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+              </label>
+            </div>
+            <label>
+              描述
+              <input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
+            </label>
+            <label className="grow">
+              SKILL.md 草稿
+              <textarea
+                className="content-editor"
+                value={draft.content}
+                onChange={(event) => setDraft({ ...draft, content: event.target.value })}
+              />
+            </label>
+            <div className="inline-actions">
+              <button className="primary-action" type="button" onClick={() => void installDraft()}>
+                保存为 Skill
+              </button>
+              <button type="button" onClick={() => setDraft(null)}>
+                丢弃草稿
+              </button>
+            </div>
+          </>
+        ) : (
+          <EmptyState title="尚未生成草稿" detail="标记满意样本后点击“生成 Skill 草稿”。" />
+        )}
+      </div>
+    </section>
+  )
+}
+
 function SettingsPanel({
   store,
   paths,
@@ -2478,6 +2672,276 @@ function normalizePluginOutput(payload?: Record<string, unknown>): AiPluginOutpu
   }
 }
 
+function extractLearningSources(content: string, sourceName: string): LearningSource[] {
+  const trimmed = content.trim()
+  if (!trimmed) return []
+
+  if (sourceName.toLowerCase().endsWith('.json')) {
+    try {
+      return learningRecordsFromJson(JSON.parse(trimmed) as unknown, sourceName)
+    } catch {
+      return [createLearningSource(sourceName.replace(/\.[^.]+$/, ''), sourceName, trimmed, false)]
+    }
+  }
+
+  return [createLearningSource(markdownTitle(trimmed) || sourceName.replace(/\.[^.]+$/, ''), sourceName, trimmed, false)]
+}
+
+function learningRecordsFromJson(value: unknown, sourceName: string): LearningSource[] {
+  const records = selectLearningRecords(value)
+  if (records.length === 0) {
+    return [createLearningSource(sourceName.replace(/\.[^.]+$/, ''), sourceName, valueToLearningText(value), false)]
+  }
+
+  return records.map((record, index) => {
+    const title = learningRecordTitle(record, `${sourceName.replace(/\.[^.]+$/, '')} ${index + 1}`)
+    const satisfied = isSatisfiedLearningRecord(record)
+    return createLearningSource(title, sourceName, valueToLearningText(record), satisfied)
+  })
+}
+
+function selectLearningRecords(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  if (!isPlainRecord(value)) return []
+
+  for (const key of ['conversations', 'conversation', 'runs', 'sessions', 'items', 'records', 'messages']) {
+    const candidate = value[key]
+    if (Array.isArray(candidate)) {
+      if (key === 'messages') return [value]
+      return candidate
+    }
+  }
+
+  return []
+}
+
+function learningRecordTitle(value: unknown, fallback: string): string {
+  if (!isPlainRecord(value)) return fallback
+  for (const key of ['title', 'name', 'workflowTitle', 'summary', 'topic']) {
+    if (typeof value[key] === 'string' && value[key].trim()) return value[key].trim().slice(0, 80)
+  }
+  return fallback
+}
+
+function isSatisfiedLearningRecord(value: unknown): boolean {
+  if (!isPlainRecord(value)) return false
+  const status = typeof value.status === 'string' ? value.status.toLowerCase() : ''
+  const rating = typeof value.rating === 'string' ? value.rating.toLowerCase() : ''
+  return Boolean(value.satisfied || value.favorite || value.approved || status === 'completed' || rating === 'satisfied')
+}
+
+function createLearningSource(title: string, sourceName: string, rawText: string, satisfied: boolean): LearningSource {
+  const cleaned = sanitizeLearningText(rawText)
+  return {
+    id: newId('learn'),
+    title: title.trim() || sourceName,
+    sourceName,
+    rawText,
+    sanitizedText: cleaned.text,
+    satisfied,
+    redactions: cleaned.redactions
+  }
+}
+
+function runToLearningText(run: AppStore['runs'][number]): string {
+  return [
+    `工作流：${run.workflowTitle}`,
+    `状态：${run.status}`,
+    '',
+    ...run.steps.flatMap((step, index) => [
+      `## 步骤 ${index + 1}：${step.title}`,
+      `摘要：${step.summary}`,
+      `输入：\n${step.inputSnapshot || '(无)'}`,
+      `输出：\n${step.output || '(无)'}`,
+      ''
+    ])
+  ].join('\n')
+}
+
+function valueToLearningText(value: unknown, depth = 0): string {
+  if (depth > 5) return ''
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return value.map((item) => valueToLearningText(item, depth + 1)).filter(Boolean).join('\n\n')
+  if (!isPlainRecord(value)) return ''
+
+  if (Array.isArray(value.messages)) {
+    return value.messages
+      .map((message) => {
+        if (!isPlainRecord(message)) return valueToLearningText(message, depth + 1)
+        const role = typeof message.role === 'string' ? message.role : typeof message.author === 'string' ? message.author : 'message'
+        const text = message.content || message.text || message.message || message.value
+        return `${role}:\n${valueToLearningText(text, depth + 1)}`
+      })
+      .join('\n\n')
+  }
+
+  if (Array.isArray(value.steps)) {
+    return value.steps.map((step) => valueToLearningText(step, depth + 1)).join('\n\n')
+  }
+
+  return Object.entries(value)
+    .filter(([, entryValue]) => entryValue !== undefined && entryValue !== null)
+    .map(([key, entryValue]) => `${key}:\n${valueToLearningText(entryValue, depth + 1)}`)
+    .join('\n\n')
+}
+
+function sanitizeLearningText(value: string): { text: string; redactions: string[] } {
+  const redactions = new Set<string>()
+  let text = value
+
+  function redact(pattern: RegExp, replacement: string, label: string): void {
+    const next = text.replace(pattern, replacement)
+    if (next !== text) redactions.add(label)
+    text = next
+  }
+
+  redact(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email]', '邮箱')
+  redact(
+    /\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b/g,
+    '[api-key]',
+    'API key'
+  )
+  redact(
+    /\b(api[_-]?key|token|secret|password|passwd|authorization|bearer)\s*[:=]\s*["']?[^"'\s,;，。]+/gi,
+    '$1=[secret]',
+    '密钥字段'
+  )
+  redact(/[A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*/g, '[local-path]', '本地路径')
+  redact(/(^|[\s(（])\/(?:Users|home|mnt|var|tmp|etc|opt|root|Volumes)\/[^\s'"，。；;)）]+/g, '$1[local-path]', '本地路径')
+  redact(/https?:\/\/[^\s'"<>，。；]+(?:token|key|secret|auth)[^\s'"<>，。；]*/gi, '[sensitive-url]', '敏感链接')
+  redact(/\b1[3-9]\d{9}\b/g, '[phone]', '手机号')
+  redact(/\b((?:QQ|qq|微信|WeChat|账号|账户|account)\s*[：:：]?\s*)[A-Za-z0-9_.@-]{5,}\b/g, '$1[account]', '账号')
+
+  return {
+    text: text.replace(/\n{4,}/g, '\n\n\n').trim(),
+    redactions: Array.from(redactions)
+  }
+}
+
+function buildLearningSkillDraft(sources: LearningSource[]): LearningDraft {
+  const combined = sources.map((source) => `# ${source.title}\n${source.sanitizedText}`).join('\n\n---\n\n')
+  const title = inferLearningSkillTitle(sources)
+  const skillName = slugifySkillName(title)
+  const description = `Use when a task should follow the user's learned working habits from ${sources.length} satisfied conversation sample(s).`
+  const preferences = inferLearningPreferences(combined)
+  const examples = sources.slice(0, 3).map((source) => `### ${source.title}\n${compactSnippet(source.sanitizedText, 900)}`)
+
+  const content = [
+    '---',
+    `name: ${skillName}`,
+    `description: ${description}`,
+    '---',
+    '',
+    `# ${title}`,
+    '',
+    '## When to Use',
+    '- Use this Skill when the current task resembles the learned satisfied conversations or when the user asks to follow their established working style.',
+    '- Prefer this Skill for Format Flow / Codex workflow design, implementation, verification, installation packaging, and browser-extension coordination tasks.',
+    '',
+    '## User Preferences',
+    ...preferences.map((item) => `- ${item}`),
+    '',
+    '## Workflow',
+    '1. Read the current request and existing project context before changing files.',
+    '2. Apply the learned preferences below, but do not copy sensitive details from prior conversations.',
+    '3. If the task changes code or configuration, implement the change and run the most relevant test/build command available.',
+    '4. If output is going to another AI web app, keep the handoff prompt concise and directly executable.',
+    '5. Final response should be concise: state what changed, what was verified, and any remaining action the user must take.',
+    '',
+    '## Privacy Rules',
+    '- Never include raw API keys, tokens, passwords, local filesystem paths, email addresses, phone numbers, or account identifiers from learned conversations.',
+    '- Preserve reusable preferences and workflow rules; replace private details with placeholders such as `[api-key]`, `[local-path]`, `[email]`, and `[account]`.',
+    '',
+    '## Quality Gates',
+    '- Confirm the result is based only on samples the user marked as satisfied.',
+    '- Check that generated content does not contain private identifiers.',
+    '- Prefer deterministic local actions and explicit verification over vague suggestions.',
+    '- Do not silently overwrite unrelated user changes.',
+    '',
+    '## Learned Examples',
+    examples.join('\n\n') || '- No examples available.'
+  ].join('\n')
+
+  return { skillName, title, description, content }
+}
+
+function inferLearningSkillTitle(sources: LearningSource[]): string {
+  const common = mostCommonWord(sources.map((source) => source.title).join(' '))
+  return common ? `Learned ${capitalizeWord(common)} Workflow` : 'Learned User Workflow'
+}
+
+function inferLearningPreferences(text: string): string[] {
+  const preferences = new Set<string>()
+  const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length
+  const asciiWords = (text.match(/[A-Za-z]{3,}/g) || []).length
+  if (chineseChars > asciiWords) preferences.add('默认使用中文沟通，除非代码、命令、文件名或 API 字段需要英文。')
+  if (/测试|验证|build|test|dist|安装包|打包/i.test(text)) preferences.add('完成实现后运行可用测试、构建或打包命令，并汇报验证结果。')
+  if (/不必汇报中间|最终版本|直到测试|不要.*中间/i.test(text)) preferences.add('减少低价值中间汇报；在关键验证完成后再汇报结果。')
+  if (/人工审查|满意|审查意见|顺序运行/i.test(text)) preferences.add('把人工审查作为流程节点；结果不满意时支持追加审查意见继续联动。')
+  if (/剪贴板|浏览器插件|浏览器.*AI|自动发送/i.test(text)) preferences.add('浏览器 AI 联动优先走插件连接；失败时保留剪贴板兜底。')
+  if (/白底黑字|界面|弹窗|右键|控件|按钮/i.test(text)) preferences.add('界面改动要明确控件位置、交互反馈和可见状态，避免隐藏式操作。')
+  if (/GitHub|git|提交|推送|备份/i.test(text)) preferences.add('涉及版本或备份时保持 Git 可追踪，提交信息要对应实际功能。')
+
+  for (const line of extractPreferenceLines(text)) {
+    preferences.add(line)
+    if (preferences.size >= 12) break
+  }
+
+  if (preferences.size === 0) {
+    preferences.add('先提炼用户目标，再给出可执行步骤；避免泛泛建议。')
+    preferences.add('生成内容前清理隐私信息，保存前让用户审查。')
+  }
+
+  return Array.from(preferences).slice(0, 12)
+}
+
+function extractPreferenceLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*#\s>]+/, '').trim())
+    .filter((line) => line.length >= 8 && line.length <= 120)
+    .filter((line) => /(不要|不必|必须|需要|默认|优先|改为|支持|保留|避免|直接|自动)/.test(line))
+    .slice(0, 16)
+}
+
+function compactSnippet(text: string, maxLength: number): string {
+  const normalized = text.replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength).trim()}\n...` : normalized
+}
+
+function markdownTitle(text: string): string {
+  return text.match(/^#\s+(.+)$/m)?.[1]?.trim() || ''
+}
+
+function slugifySkillName(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'learned-user-workflow'
+  )
+}
+
+function mostCommonWord(value: string): string {
+  const stop = new Set(['learned', 'workflow', 'user', 'conversation', '对话', '工作流', '学习'])
+  const counts = new Map<string, number>()
+  for (const word of value.toLowerCase().split(/[^a-z0-9\u4e00-\u9fa5]+/)) {
+    if (word.length < 3 || stop.has(word)) continue
+    counts.set(word, (counts.get(word) || 0) + 1)
+  }
+  return Array.from(counts.entries()).sort((left, right) => right[1] - left[1])[0]?.[0] || ''
+}
+
+function capitalizeWord(value: string): string {
+  return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
 function backupSettingsStore(
   store: AppStore,
   backupDirectory: string,
@@ -2542,6 +3006,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     importExistingSkills: async () => desktopOnly('浏览器审查模式不能导入本地 Skill'),
     restoreSkillsFromBackup: async () => desktopOnly('浏览器审查模式不能恢复本地 Skill 备份'),
     installSkillZip: async () => desktopOnly('浏览器审查模式不能安装本地 ZIP'),
+    installGeneratedSkill: async () => desktopOnly('浏览器审查模式不能保存生成的 Skill，请在桌面版中保存'),
     searchGithubSkills: (query: string) => searchGithubFallback('skill', query),
     installGithubSkill: async (result: GithubSearchResult) => {
       const content = await fetchText(result.rawUrl)

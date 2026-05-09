@@ -616,6 +616,96 @@ label {
   min-height: 0;
 }
 
+.learning-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 470px) 1fr;
+}
+
+.learning-left,
+.learning-right {
+  min-height: 0;
+  padding: 22px;
+}
+
+.learning-left {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 14px;
+  border-right: 1px solid var(--line);
+}
+
+.learning-right {
+  display: grid;
+  grid-template-rows: auto auto auto auto auto 1fr auto;
+  gap: 14px;
+}
+
+.learning-stats,
+.learning-rules {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.learning-stats span,
+.learning-rules {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.learning-rules {
+  display: grid;
+  gap: 5px;
+}
+
+.learning-rules strong {
+  color: var(--text);
+}
+
+.learning-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #ffffff;
+}
+
+.learning-card.satisfied {
+  border-color: rgba(11, 143, 111, 0.38);
+  background: #f0fbf7;
+}
+
+.learning-card div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.learning-card strong {
+  font-size: 15px;
+}
+
+.learning-card span,
+.learning-card p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.learning-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.two-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .flow-canvas {
   min-height: 0;
   background:
@@ -976,6 +1066,7 @@ label {
 
   .workflow-toolbar,
   .workflow-main,
+  .learning-layout,
   .settings-layout,
   .library-layout,
   .runner-layout,

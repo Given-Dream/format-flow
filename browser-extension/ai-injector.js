@@ -8,15 +8,16 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || message.type !== 'FORMAT_FLOW_INJECT_TASK') return false
 
-    try {
-      const result = injectTask(message.payload?.text || '')
-      sendStatus()
-      sendResponse(result)
-    } catch (error) {
-      sendResponse({ ok: false, message: error.message || String(error) })
-    }
+    injectTask(message.payload?.text || '')
+      .then((result) => {
+        sendStatus()
+        sendResponse(result)
+      })
+      .catch((error) => {
+        sendResponse({ ok: false, message: error.message || String(error) })
+      })
 
-    return false
+    return true
   })
 
   if (detectTarget()) {
@@ -25,7 +26,7 @@
     startOutputObserver()
   }
 
-  function injectTask(text) {
+  async function injectTask(text) {
     if (!text.trim()) return { ok: false, message: '任务内容为空' }
     const target = detectTarget()
     if (!target) return { ok: false, message: '当前页面不是 Format Flow 支持的 AI 页面。' }
@@ -38,9 +39,17 @@
     }
 
     setInputValue(input, text)
+    const submitResult = await submitInput(target, input)
+    if (!submitResult.ok) {
+      return {
+        ok: false,
+        message: `已填入 ${target?.name || 'AI 页面'} 输入框，但自动发送失败：${submitResult.message}`
+      }
+    }
+
     return {
       ok: true,
-      message: `已填入 ${target?.name || 'AI 页面'} 输入框。插件不会自动点击发送，请人工审查后手动发送。`
+      message: `已自动发送到 ${target?.name || 'AI 页面'}。`
     }
   }
 
@@ -85,6 +94,177 @@
     selection?.addRange(range)
     document.execCommand('insertText', false, text)
     element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
+  }
+
+  async function submitInput(target, input) {
+    const button = await waitForSendButton(target, input)
+    if (button) {
+      clickElement(button)
+      return { ok: true, method: 'button' }
+    }
+
+    if (pressEnter(input)) return { ok: true, method: 'enter' }
+    return { ok: false, message: '未找到可用发送按钮，也无法触发 Enter 发送。' }
+  }
+
+  async function waitForSendButton(target, input) {
+    for (let index = 0; index < 12; index += 1) {
+      const button = findSendButton(target, input)
+      if (button) return button
+      await sleep(150)
+    }
+    return null
+  }
+
+  function findSendButton(target, input) {
+    const selectors = target?.sendSelectors || defaultSendSelectors()
+    const candidates = []
+    for (const root of candidateRoots(input)) {
+      for (const selector of selectors) {
+        for (const element of safeQueryAll(root, selector)) {
+          const button = normalizeButton(element)
+          if (button && isUsableSendButton(button)) candidates.push(button)
+        }
+      }
+    }
+
+    if (candidates.length > 0) return rankSendButtons(uniqueElements(candidates), input)[0]
+
+    const genericButtons = Array.from(document.querySelectorAll('button,[role="button"]'))
+      .map(normalizeButton)
+      .filter(Boolean)
+      .filter((button) => isUsableSendButton(button) && looksLikeSendButton(button))
+    if (genericButtons.length > 0) return rankSendButtons(uniqueElements(genericButtons), input)[0]
+
+    const nearbyIconButtons = Array.from(document.querySelectorAll('button,[role="button"]'))
+      .map(normalizeButton)
+      .filter(Boolean)
+      .filter((button) => isUsableSendButton(button) && isNearInput(button, input))
+    return rankSendButtons(uniqueElements(nearbyIconButtons), input)[0] || null
+  }
+
+  function defaultSendSelectors() {
+    return [
+      'button[type="submit"]',
+      'button[aria-label*="Send"]',
+      'button[aria-label*="发送"]',
+      '[role="button"][aria-label*="Send"]',
+      '[role="button"][aria-label*="发送"]',
+      '[data-testid*="send"]'
+    ]
+  }
+
+  function candidateRoots(input) {
+    const roots = []
+    const selectors = ['form', '[data-testid*="composer"]', '[class*="composer"]', '[class*="input"]', '[class*="chat"]', 'main']
+    for (const selector of selectors) {
+      const root = input.closest?.(selector)
+      if (root) roots.push(root)
+    }
+    roots.push(document)
+    return uniqueElements(roots)
+  }
+
+  function safeQueryAll(root, selector) {
+    try {
+      return Array.from(root.querySelectorAll(selector))
+    } catch {
+      return []
+    }
+  }
+
+  function normalizeButton(element) {
+    if (!(element instanceof HTMLElement)) return null
+    return element.closest('button,[role="button"]') || element
+  }
+
+  function isUsableSendButton(element) {
+    const rect = element.getBoundingClientRect()
+    const style = window.getComputedStyle(element)
+    const disabled =
+      element.disabled ||
+      element.getAttribute('aria-disabled') === 'true' ||
+      element.getAttribute('disabled') !== null ||
+      element.closest('[aria-disabled="true"],[disabled]')
+    if (disabled || rect.width < 8 || rect.height < 8 || style.visibility === 'hidden' || style.display === 'none') return false
+
+    const label = buttonLabel(element).toLowerCase()
+    if (/(stop|停止|cancel|取消|abort|中止|pause|暂停|voice|语音|attach|附件|upload|上传|new chat|新建)/i.test(label)) return false
+    return true
+  }
+
+  function looksLikeSendButton(element) {
+    const label = buttonLabel(element)
+    return /(send|submit|发送|提交|发送消息|send message)/i.test(label)
+  }
+
+  function buttonLabel(element) {
+    return [
+      element.getAttribute('aria-label'),
+      element.getAttribute('title'),
+      element.getAttribute('data-testid'),
+      element.textContent,
+      element.className && typeof element.className === 'string' ? element.className : ''
+    ]
+      .filter(Boolean)
+      .join(' ')
+  }
+
+  function rankSendButtons(buttons, input) {
+    const inputRect = input.getBoundingClientRect()
+    const inputCenterY = inputRect.top + inputRect.height / 2
+    const inputRight = inputRect.right
+    return buttons
+      .filter((button) => isNearInput(button, input))
+      .sort((left, right) => scoreSendButton(left, inputCenterY, inputRight, inputRect) - scoreSendButton(right, inputCenterY, inputRight, inputRect))
+  }
+
+  function scoreSendButton(button, inputCenterY, inputRight, inputRect) {
+    const rect = button.getBoundingClientRect()
+    const centerX = rect.left + rect.width / 2
+    const centerY = rect.top + rect.height / 2
+    let score = Math.abs(centerY - inputCenterY) + Math.abs(centerX - inputRight)
+    if (rect.left < inputRect.left) score += 300
+    if (rect.top < inputRect.top - 80 || rect.top > inputRect.bottom + 120) score += 500
+    if (looksLikeSendButton(button)) score -= 200
+    return score
+  }
+
+  function isNearInput(button, input) {
+    const buttonRect = button.getBoundingClientRect()
+    const inputRect = input.getBoundingClientRect()
+    return buttonRect.bottom >= inputRect.top - 80 && buttonRect.top <= inputRect.bottom + 140 && buttonRect.right >= inputRect.left
+  }
+
+  function clickElement(element) {
+    element.focus?.()
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+    }
+    element.click?.()
+  }
+
+  function pressEnter(input) {
+    input.focus?.()
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      input.dispatchEvent(
+        new KeyboardEvent(type, {
+          key: 'Enter',
+          code: 'Enter',
+          bubbles: true,
+          cancelable: true
+        })
+      )
+    }
+    return true
+  }
+
+  function uniqueElements(elements) {
+    return Array.from(new Set(elements))
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms))
   }
 
   function startOutputObserver() {

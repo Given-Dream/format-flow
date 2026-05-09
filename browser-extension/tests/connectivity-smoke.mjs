@@ -115,6 +115,8 @@ async function main() {
 
     const injectedText = await evalIn(cdp, ai, `document.querySelector('#test-ai-input')?.value || ''`)
     assert.equal(injectedText, 'Format Flow connectivity smoke task')
+    const autoSentOutput = await evalIn(cdp, ai, `document.querySelector('#test-ai-output')?.textContent || ''`)
+    assert.ok(autoSentOutput.includes('插件连通性测试已经收到任务'), `task should auto-send; output=${autoSentOutput}`)
 
     const outputPromise = evalIn(
       cdp,
@@ -135,10 +137,10 @@ async function main() {
     await evalIn(
       cdp,
       ai,
-      `document.querySelector('#test-ai-output').textContent = '模拟 AI 输出：插件连通性测试已经收到任务。'`
+      `document.querySelector('#test-ai-output').textContent = '模拟 AI 输出：插件连通性测试已经同步输出。'`
     )
     const output = await outputPromise
-    assert.ok(output?.text?.includes('插件连通性测试已经收到任务'), `output sync should arrive; output=${JSON.stringify(output)}`)
+    assert.ok(output?.text?.includes('插件连通性测试已经同步输出'), `output sync should arrive; output=${JSON.stringify(output)}`)
 
     await cdp.close()
     console.log('Validated browser extension connectivity with real Chrome.')

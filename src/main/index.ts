@@ -139,7 +139,7 @@ function queueBrowserBridgeTask(payload: Record<string, unknown>): { ok: boolean
 
   return {
     ok: true,
-    message: '任务已加入浏览器扩展队列；扩展检测到后会填入已打开的 AI 页面。',
+    message: '任务已加入浏览器扩展队列；扩展检测到后会自动发送到已打开的 AI 页面。',
     status: getBrowserBridgeStatus()
   }
 }

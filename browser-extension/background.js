@@ -100,7 +100,7 @@ async function deliverTask(payload) {
     status,
     message:
       response?.message ||
-      `已填入 ${status.aiName} 输入框。插件不会自动点击发送，请在 AI 页面人工审查后手动发送。`
+      `已自动发送到 ${status.aiName}。`
   }
 }
 

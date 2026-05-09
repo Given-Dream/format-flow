@@ -18,12 +18,14 @@ for (const name of required) {
   assert.ok(target, `${name} target is missing`)
   assert.ok(target.domains.length > 0, `${name} must define domains`)
   assert.ok(target.selectors.length > 0, `${name} must define selectors`)
+  assert.ok(target.sendSelectors.length > 0, `${name} must define send selectors`)
   assert.ok(target.outputSelectors.length > 0, `${name} must define output selectors`)
 }
 
 for (const target of targets) {
   assert.equal(new Set(target.domains).size, target.domains.length, `${target.name} has duplicate domains`)
   assert.equal(new Set(target.selectors).size, target.selectors.length, `${target.name} has duplicate selectors`)
+  assert.equal(new Set(target.sendSelectors).size, target.sendSelectors.length, `${target.name} has duplicate send selectors`)
   assert.equal(new Set(target.outputSelectors).size, target.outputSelectors.length, `${target.name} has duplicate output selectors`)
 }
 

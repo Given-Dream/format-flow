@@ -148,6 +148,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function getPasteScriptPath(): Promise<string> {
+  const scriptPath = path.join(app.getPath('userData'), 'format-flow-paste.vbs')
+  const script = [
+    'Set shell = CreateObject("WScript.Shell")',
+    'WScript.Sleep 40',
+    'shell.SendKeys "^v"'
+  ].join('\r\n')
+  await fs.mkdir(path.dirname(scriptPath), { recursive: true })
+  await fs.writeFile(scriptPath, script, 'utf8')
+  return scriptPath
+}
+
 async function writeClipboardTextAndPaste(text: string): Promise<{ ok: boolean; message: string }> {
   const cleanText = text.trim()
   if (!cleanText) return { ok: false, message: '没有可粘贴的内容' }
@@ -158,21 +170,10 @@ async function writeClipboardTextAndPaste(text: string): Promise<{ ok: boolean; 
   }
 
   try {
+    const scriptPath = await getPasteScriptPath()
     mainWindow?.hide()
-    await sleep(180)
-    await execFile(
-      'powershell.exe',
-      [
-        '-NoProfile',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-WindowStyle',
-        'Hidden',
-        '-Command',
-        '$shell = New-Object -ComObject WScript.Shell; Start-Sleep -Milliseconds 120; $shell.SendKeys("^v")'
-      ],
-      { windowsHide: true, timeout: 5000 }
-    )
+    await sleep(70)
+    await execFile('wscript.exe', [scriptPath], { windowsHide: true, timeout: 2500 })
     return { ok: true, message: '已自动粘贴到当前对话框' }
   } catch (error) {
     mainWindow?.show()

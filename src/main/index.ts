@@ -144,6 +144,46 @@ function queueBrowserBridgeTask(payload: Record<string, unknown>): { ok: boolean
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function writeClipboardTextAndPaste(text: string): Promise<{ ok: boolean; message: string }> {
+  const cleanText = text.trim()
+  if (!cleanText) return { ok: false, message: '没有可粘贴的内容' }
+  clipboard.writeText(text)
+
+  if (process.platform !== 'win32') {
+    return { ok: false, message: '已复制到剪贴板；自动粘贴当前仅支持 Windows。' }
+  }
+
+  try {
+    mainWindow?.hide()
+    await sleep(180)
+    await execFile(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-WindowStyle',
+        'Hidden',
+        '-Command',
+        '$shell = New-Object -ComObject WScript.Shell; Start-Sleep -Milliseconds 120; $shell.SendKeys("^v")'
+      ],
+      { windowsHide: true, timeout: 5000 }
+    )
+    return { ok: true, message: '已自动粘贴到当前对话框' }
+  } catch (error) {
+    mainWindow?.show()
+    mainWindow?.focus()
+    return {
+      ok: false,
+      message: `自动粘贴失败，内容已复制到剪贴板：${error instanceof Error ? error.message : '未知错误'}`
+    }
+  }
+}
+
 function startBrowserBridgeServer(): void {
   if (browserBridgeServer) return
 
@@ -1014,6 +1054,7 @@ function registerIpc(): void {
       }
     }
   })
+  ipcMain.handle('clipboard:writeTextAndPaste', (_event, text: string) => writeClipboardTextAndPaste(text))
   ipcMain.handle('browserBridge:getStatus', () => getBrowserBridgeStatus())
   ipcMain.handle('browserBridge:getOutput', () => browserBridgeOutput)
   ipcMain.handle('browserBridge:queueTask', (_event, payload: Record<string, unknown>) => queueBrowserBridgeTask(payload))

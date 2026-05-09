@@ -39,6 +39,8 @@ const api = {
   restoreMcpFromBackup: (): Promise<ImportResult<McpServer>> => ipcRenderer.invoke('mcps:restoreBackup'),
   writeClipboardText: (text: string): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke('clipboard:writeText', text),
+  writeClipboardTextAndPaste: (text: string): Promise<{ ok: boolean; message: string }> =>
+    ipcRenderer.invoke('clipboard:writeTextAndPaste', text),
   getBrowserBridgeStatus: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('browserBridge:getStatus'),
   getBrowserBridgeOutput: (): Promise<Record<string, unknown> | null> => ipcRenderer.invoke('browserBridge:getOutput'),
   queueBrowserBridgeTask: (payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; status?: Record<string, unknown> }> =>

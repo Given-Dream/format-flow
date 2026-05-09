@@ -105,6 +105,12 @@ async function writeClipboardText(text: string): Promise<{ ok: boolean; message:
   }
 }
 
+async function writeClipboardTextAndPaste(text: string): Promise<{ ok: boolean; message: string }> {
+  if (!text.trim()) return { ok: false, message: '没有可粘贴的内容' }
+  if (formatFlow.writeClipboardTextAndPaste) return formatFlow.writeClipboardTextAndPaste(text)
+  return writeClipboardText(text)
+}
+
 async function queueBrowserPluginTask(payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; status?: Record<string, unknown> }> {
   if (!isBrowserReviewMode() && formatFlow.queueBrowserBridgeTask) {
     return formatFlow.queueBrowserBridgeTask(payload)
@@ -308,8 +314,8 @@ export function App(): JSX.Element {
     setNotice(`扫描完成：${scanned.length} 个 Skill`)
   }
 
-  async function copyToClipboard(text: string, success: string): Promise<void> {
-    const result = await writeClipboardText(text)
+  async function pasteQuickCall(text: string, success: string): Promise<void> {
+    const result = await writeClipboardTextAndPaste(text)
     if (!result.ok) {
       setNotice(result.message)
       throw new Error(result.message)
@@ -405,7 +411,7 @@ export function App(): JSX.Element {
           skills={skills}
           close={() => setLauncherOpen(false)}
           setActiveTab={setActiveTab}
-          copyToClipboard={copyToClipboard}
+          pasteQuickCall={pasteQuickCall}
         />
       )}
     </div>
@@ -2145,13 +2151,13 @@ function LauncherModal({
   skills,
   close,
   setActiveTab,
-  copyToClipboard
+  pasteQuickCall
 }: {
   store: AppStore
   skills: SkillItem[]
   close: () => void
   setActiveTab: (tab: TabId) => void
-  copyToClipboard: (text: string, success: string) => Promise<void>
+  pasteQuickCall: (text: string, success: string) => Promise<void>
 }): JSX.Element {
   const [mode, setMode] = useState<LauncherMode>('prompt')
   const [query, setQuery] = useState('')
@@ -2181,7 +2187,7 @@ function LauncherModal({
             <button
               key={prompt.id}
               type="button"
-              onClick={() => void copyToClipboard(prompt.content, `已复制提示词：${prompt.title}`).then(close).catch(() => undefined)}
+              onClick={() => void pasteQuickCall(prompt.content, `已粘贴提示词：${prompt.title}`).then(close).catch(() => undefined)}
             >
               <strong>{prompt.title}</strong>
               <span>{prompt.summary}</span>
@@ -2193,7 +2199,7 @@ function LauncherModal({
               key={skill.id}
               type="button"
               onClick={() =>
-                void copyToClipboard(`使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`, `已复制 Skill 调用信息：${skill.title}`)
+                void pasteQuickCall(`使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`, `已粘贴 Skill 调用信息：${skill.title}`)
                   .then(close)
                   .catch(() => undefined)
               }
@@ -2212,7 +2218,7 @@ function LauncherModal({
                 const task = firstNode
                   ? buildExecutionPrompt(firstNode, store.prompts, skills, '', store.mcpServers)
                   : `调用工作流：${workflow.title}\n${workflow.description}`
-                void copyToClipboard(task, `已复制工作流首个顺序运行任务：${workflow.title}`)
+                void pasteQuickCall(task, `已粘贴工作流首个顺序运行任务：${workflow.title}`)
                   .then(() => {
                     setActiveTab('runner')
                     close()
@@ -3036,6 +3042,17 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
       try {
         await navigator.clipboard.writeText(text)
         return { ok: true, message: '已复制到剪贴板' }
+      } catch (error) {
+        return {
+          ok: false,
+          message: error instanceof Error ? error.message : '写入剪贴板失败'
+        }
+      }
+    },
+    writeClipboardTextAndPaste: async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text)
+        return { ok: true, message: '浏览器审查模式已复制到剪贴板；桌面版会自动粘贴到当前对话框。' }
       } catch (error) {
         return {
           ok: false,

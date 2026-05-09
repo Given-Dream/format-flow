@@ -1,6 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, shell } from 'electron'
 import { promises as fs } from 'node:fs'
 import fsSync from 'node:fs'
+import http from 'node:http'
 import path from 'node:path'
 import os from 'node:os'
 import { execFile as execFileCallback } from 'node:child_process'
@@ -22,6 +23,12 @@ import type {
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
 const execFile = promisify(execFileCallback)
+const browserBridgePort = 48174
+let browserBridgeServer: http.Server | null = null
+let browserBridgeLastSeen = 0
+let browserBridgeStatus: Record<string, unknown> = disconnectedBrowserBridgeStatus()
+let browserBridgeOutput: Record<string, unknown> | null = null
+const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 
 function getDataDirectoryPreferencePath(): string {
   return path.join(app.getPath('userData'), 'data-location.json')
@@ -67,6 +74,171 @@ function defaultSkillDirectories(): string[] {
   ].filter(Boolean)
 
   return Array.from(new Set(candidates))
+}
+
+function disconnectedBrowserBridgeStatus(message = '未检测到浏览器扩展本地桥接。请确认 Chrome/Edge 已加载 Format Flow Browser Bridge 扩展，并打开一个受支持的 AI 页面。'): Record<string, unknown> {
+  return {
+    bridgeConnected: false,
+    connected: false,
+    aiName: '',
+    aiIcon: '',
+    tabTitle: '',
+    url: '',
+    bridgePort: browserBridgePort,
+    message
+  }
+}
+
+function normalizeBrowserBridgeStatus(payload: Record<string, unknown> = {}): Record<string, unknown> {
+  const connected = Boolean(payload.connected)
+  const aiName = typeof payload.aiName === 'string' ? payload.aiName : ''
+  return {
+    bridgeConnected: true,
+    connected,
+    aiName,
+    aiIcon: typeof payload.aiIcon === 'string' ? payload.aiIcon : '',
+    tabTitle: typeof payload.tabTitle === 'string' ? payload.tabTitle : '',
+    url: typeof payload.url === 'string' ? payload.url : '',
+    bridgePort: browserBridgePort,
+    message:
+      typeof payload.message === 'string'
+        ? payload.message
+        : connected
+          ? `已连接 ${aiName || 'AI'}`
+          : '扩展已连接，未找到已打开的受支持 AI 页面'
+  }
+}
+
+function getBrowserBridgeStatus(): Record<string, unknown> {
+  if (!browserBridgeServer) {
+    return disconnectedBrowserBridgeStatus(`本地桥接服务未启动，端口 ${browserBridgePort} 可能被占用。`)
+  }
+
+  if (!browserBridgeLastSeen || Date.now() - browserBridgeLastSeen > 10000) {
+    return disconnectedBrowserBridgeStatus()
+  }
+
+  return {
+    ...browserBridgeStatus,
+    bridgeConnected: true,
+    bridgePort: browserBridgePort
+  }
+}
+
+function queueBrowserBridgeTask(payload: Record<string, unknown>): { ok: boolean; message: string; status: Record<string, unknown> } {
+  const text = typeof payload.text === 'string' ? payload.text.trim() : ''
+  if (!text) {
+    return { ok: false, message: '任务内容为空', status: getBrowserBridgeStatus() }
+  }
+
+  browserBridgeTasks.push({
+    id: `bridge_task_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    payload,
+    createdAt: Date.now()
+  })
+
+  return {
+    ok: true,
+    message: '任务已加入浏览器扩展队列；扩展检测到后会填入已打开的 AI 页面。',
+    status: getBrowserBridgeStatus()
+  }
+}
+
+function startBrowserBridgeServer(): void {
+  if (browserBridgeServer) return
+
+  browserBridgeServer = http.createServer((request, response) => {
+    void handleBrowserBridgeRequest(request, response)
+  })
+
+  browserBridgeServer.on('error', (error) => {
+    browserBridgeStatus = disconnectedBrowserBridgeStatus(error instanceof Error ? error.message : '本地桥接服务启动失败')
+    browserBridgeServer = null
+  })
+
+  browserBridgeServer.listen(browserBridgePort, '127.0.0.1')
+}
+
+async function handleBrowserBridgeRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  response.setHeader('Access-Control-Allow-Origin', '*')
+  response.setHeader('Access-Control-Allow-Headers', 'content-type')
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+
+  if (request.method === 'OPTIONS') {
+    response.writeHead(204)
+    response.end()
+    return
+  }
+
+  const url = new URL(request.url || '/', `http://127.0.0.1:${browserBridgePort}`)
+
+  try {
+    if (request.method === 'GET' && url.pathname === '/format-flow-bridge/status') {
+      sendJson(response, 200, { ok: true, status: getBrowserBridgeStatus() })
+      return
+    }
+
+    if (request.method === 'POST' && url.pathname === '/format-flow-bridge/extension/status') {
+      const payload = await readJsonRequest(request)
+      browserBridgeLastSeen = Date.now()
+      browserBridgeStatus = normalizeBrowserBridgeStatus(payload)
+      sendJson(response, 200, { ok: true })
+      return
+    }
+
+    if (request.method === 'POST' && url.pathname === '/format-flow-bridge/extension/output') {
+      const payload = await readJsonRequest(request)
+      browserBridgeLastSeen = Date.now()
+      browserBridgeOutput = {
+        ...payload,
+        updatedAt: typeof payload.updatedAt === 'number' ? payload.updatedAt : Date.now()
+      }
+      browserBridgeStatus = normalizeBrowserBridgeStatus({
+        ...payload,
+        connected: true,
+        message: `${typeof payload.aiName === 'string' ? payload.aiName : 'AI'} 输出已同步`
+      })
+      sendJson(response, 200, { ok: true })
+      return
+    }
+
+    if (request.method === 'GET' && url.pathname === '/format-flow-bridge/tasks/next') {
+      browserBridgeLastSeen = Date.now()
+      sendJson(response, 200, { ok: true, task: browserBridgeTasks.shift() || null })
+      return
+    }
+
+    if (request.method === 'POST' && url.pathname === '/format-flow-bridge/tasks/result') {
+      const payload = await readJsonRequest(request)
+      browserBridgeLastSeen = Date.now()
+      const result = typeof payload.result === 'object' && payload.result && !Array.isArray(payload.result) ? (payload.result as Record<string, unknown>) : {}
+      const status = typeof result.status === 'object' && result.status && !Array.isArray(result.status) ? (result.status as Record<string, unknown>) : undefined
+      browserBridgeStatus = normalizeBrowserBridgeStatus({
+        ...(status || browserBridgeStatus),
+        message: typeof result.message === 'string' ? result.message : browserBridgeStatus.message
+      })
+      sendJson(response, 200, { ok: true })
+      return
+    }
+
+    sendJson(response, 404, { ok: false, message: 'Not found' })
+  } catch (error) {
+    sendJson(response, 500, { ok: false, message: error instanceof Error ? error.message : '本地桥接请求失败' })
+  }
+}
+
+async function readJsonRequest(request: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = []
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  }
+  if (chunks.length === 0) return {}
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+}
+
+function sendJson(response: http.ServerResponse, statusCode: number, payload: unknown): void {
+  response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' })
+  response.end(JSON.stringify(payload))
 }
 
 async function loadStore(): Promise<AppStore> {
@@ -822,6 +994,9 @@ function registerIpc(): void {
       }
     }
   })
+  ipcMain.handle('browserBridge:getStatus', () => getBrowserBridgeStatus())
+  ipcMain.handle('browserBridge:getOutput', () => browserBridgeOutput)
+  ipcMain.handle('browserBridge:queueTask', (_event, payload: Record<string, unknown>) => queueBrowserBridgeTask(payload))
   ipcMain.handle('shortcut:set', async (_event, accelerator: string) => {
     const result = registerShortcut(accelerator)
     if (result.ok) {
@@ -841,6 +1016,7 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   registerIpc()
+  startBrowserBridgeServer()
   createWindow()
   await registerStoredShortcut()
 
@@ -855,4 +1031,5 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  browserBridgeServer?.close()
 })

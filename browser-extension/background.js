@@ -13,6 +13,10 @@ const AI_TARGETS = [
 
 const appTabs = new Map()
 const aiStatuses = new Map()
+const LOCAL_BRIDGE_BASE = 'http://127.0.0.1:48174/format-flow-bridge'
+let localBridgePolling = false
+
+startLocalBridgePolling()
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message?.type) return false
@@ -42,6 +46,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'FORMAT_FLOW_AI_OUTPUT') {
     const status = updateAiStatus(sender.tab, message.payload)
+    void postLocalBridgeOutput({
+      ...status,
+      text: message.payload?.text || '',
+      updatedAt: Date.now()
+    })
     void forwardToAppTabs('FORMAT_FLOW_OUTPUT_SYNC', {
       ...status,
       text: message.payload?.text || '',
@@ -127,6 +136,7 @@ async function resolveConnectedStatus() {
 
 async function notifyAppTabsStatus(status) {
   const nextStatus = status || (await resolveStatusWithoutNotify())
+  await postLocalBridgeStatus(nextStatus)
   await forwardToAppTabs('FORMAT_FLOW_STATUS', nextStatus)
 }
 
@@ -209,4 +219,54 @@ function targetFromUrl(url) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function startLocalBridgePolling() {
+  if (localBridgePolling || typeof globalThis.setInterval !== 'function') return
+  localBridgePolling = true
+  globalThis.setInterval(() => {
+    void pollLocalBridgeTask()
+  }, 1500)
+  void pollLocalBridgeTask()
+}
+
+async function pollLocalBridgeTask() {
+  if (typeof fetch !== 'function') return
+  try {
+    await postLocalBridgeStatus(await resolveStatusWithoutNotify())
+    const response = await fetch(`${LOCAL_BRIDGE_BASE}/tasks/next`, { cache: 'no-store' })
+    if (!response.ok) return
+    const data = await response.json()
+    const task = data?.task
+    if (!task?.id || !task.payload) return
+    const result = await deliverTask(task.payload)
+    await postLocalBridgeTaskResult(task.id, result)
+  } catch {
+    // The desktop app may be closed; keep polling silently.
+  }
+}
+
+async function postLocalBridgeStatus(status) {
+  await postLocalBridge('/extension/status', status)
+}
+
+async function postLocalBridgeOutput(output) {
+  await postLocalBridge('/extension/output', output)
+}
+
+async function postLocalBridgeTaskResult(taskId, result) {
+  await postLocalBridge('/tasks/result', { taskId, result })
+}
+
+async function postLocalBridge(path, payload) {
+  if (typeof fetch !== 'function') return
+  try {
+    await fetch(`${LOCAL_BRIDGE_BASE}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload || {})
+    })
+  } catch {
+    // No desktop app is listening.
+  }
 }

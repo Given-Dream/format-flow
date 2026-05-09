@@ -90,6 +90,22 @@ async function writeClipboardText(text: string): Promise<{ ok: boolean; message:
   }
 }
 
+async function queueBrowserPluginTask(payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; status?: Record<string, unknown> }> {
+  if (!isBrowserReviewMode() && formatFlow.queueBrowserBridgeTask) {
+    return formatFlow.queueBrowserBridgeTask(payload)
+  }
+
+  window.postMessage(
+    {
+      source: 'format-flow',
+      type: 'FORMAT_FLOW_SEND_TASK',
+      payload
+    },
+    window.location.origin
+  )
+  return { ok: true, message: '任务已发送给浏览器插件。' }
+}
+
 const tabs: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'prompts', label: '提示词', description: '按分类标签管理、搜索和调用' },
   { id: 'skills', label: 'Skills', description: '扫描、导入、安装和索引 Skill' },
@@ -174,6 +190,39 @@ export function App(): JSX.Element {
   }, [store])
 
   useEffect(() => {
+    function applyPluginOutput(payload?: Record<string, unknown> | null): void {
+      if (!payload) return
+      const output = normalizePluginOutput(payload)
+      if (!output) return
+      setPluginOutput(output)
+      setPluginStatus((current) => ({
+        ...current,
+        connected: true,
+        aiName: output.aiName || current.aiName,
+        aiIcon: output.aiIcon || current.aiIcon,
+        message: `${output.aiName || current.aiName || 'AI'} 输出已同步`
+      }))
+    }
+
+    async function refreshPluginStatus(): Promise<void> {
+      requestPluginStatus()
+      if (isBrowserReviewMode() || !formatFlow.getBrowserBridgeStatus) return
+      try {
+        const [status, output] = await Promise.all([
+          formatFlow.getBrowserBridgeStatus(),
+          formatFlow.getBrowserBridgeOutput ? formatFlow.getBrowserBridgeOutput() : Promise.resolve(null)
+        ])
+        setPluginStatus(normalizePluginStatus(status))
+        applyPluginOutput(output)
+      } catch {
+        setPluginStatus({
+          bridgeConnected: false,
+          connected: false,
+          message: '本地浏览器桥接状态读取失败'
+        })
+      }
+    }
+
     function onPluginMessage(event: MessageEvent): void {
       if (event.source !== window) return
       const data = event.data as { source?: string; type?: string; payload?: Record<string, unknown> }
@@ -185,17 +234,7 @@ export function App(): JSX.Element {
       }
 
       if (data.type === 'FORMAT_FLOW_OUTPUT_SYNC') {
-        const output = normalizePluginOutput(data.payload)
-        if (output) {
-          setPluginOutput(output)
-          setPluginStatus((current) => ({
-            ...current,
-            connected: true,
-            aiName: output.aiName || current.aiName,
-            aiIcon: output.aiIcon || current.aiIcon,
-            message: `${output.aiName || current.aiName || 'AI'} 输出已同步`
-          }))
-        }
+        applyPluginOutput(data.payload)
         return
       }
 
@@ -209,8 +248,12 @@ export function App(): JSX.Element {
     }
 
     window.addEventListener('message', onPluginMessage)
-    requestPluginStatus()
+    void refreshPluginStatus()
     const missingBridgeTimer = window.setTimeout(() => {
+      if (!isBrowserReviewMode()) {
+        void refreshPluginStatus()
+        return
+      }
       setPluginStatus((current) =>
         current.bridgeConnected
           ? current
@@ -219,10 +262,10 @@ export function App(): JSX.Element {
               connected: false,
               message:
                 '当前浏览器没有检测到 Format Flow 扩展。请用已加载扩展的 Chrome/Edge 打开 http://127.0.0.1:5174/；Codex 内置浏览器不能加载 Chrome 扩展。'
-            }
+          }
       )
     }, 1800)
-    const timer = window.setInterval(requestPluginStatus, 5000)
+    const timer = window.setInterval(() => void refreshPluginStatus(), 3000)
     return () => {
       window.removeEventListener('message', onPluginMessage)
       window.clearTimeout(missingBridgeTimer)
@@ -1091,20 +1134,14 @@ function RunnerPanel({
       return
     }
     if (targetKind === 'browser-plugin') {
-      window.postMessage(
-        {
-          source: 'format-flow',
-          type: 'FORMAT_FLOW_SEND_TASK',
-          payload: {
-            text: executionPrompt,
-            workflowId: workflow?.id,
-            workflowTitle: workflow?.title,
-            stepTitle: currentStep?.title
-          }
-        },
-        window.location.origin
-      )
-      setNotice('任务已发送给浏览器插件，同时已复制到剪贴板。若未安装插件，请先加载 browser-extension。')
+      const result = await queueBrowserPluginTask({
+        text: executionPrompt,
+        workflowId: workflow?.id,
+        workflowTitle: workflow?.title,
+        stepTitle: currentStep?.title
+      })
+      setNotice(result.ok ? `${result.message} 同时已复制到剪贴板。` : result.message)
+      if (!result.ok) return
     } else {
       setNotice('当前任务已复制到剪贴板')
     }
@@ -1150,21 +1187,14 @@ function RunnerPanel({
       return
     }
     if (targetKind === 'browser-plugin') {
-      window.postMessage(
-        {
-          source: 'format-flow',
-          type: 'FORMAT_FLOW_SEND_TASK',
-          payload: {
-            text: linkedPrompt,
-            mode: 'review',
-            workflowId: workflow?.id,
-            workflowTitle: workflow?.title,
-            stepTitle: currentStep?.title
-          }
-        },
-        window.location.origin
-      )
-      setNotice('人工审查意见已发送给浏览器插件，同时已复制到剪贴板。')
+      const result = await queueBrowserPluginTask({
+        text: linkedPrompt,
+        mode: 'review',
+        workflowId: workflow?.id,
+        workflowTitle: workflow?.title,
+        stepTitle: currentStep?.title
+      })
+      setNotice(result.ok ? `${result.message} 同时已复制到剪贴板。` : result.message)
       return
     }
     setNotice('人工审查意见已复制到剪贴板')
@@ -2547,6 +2577,16 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
           message: error instanceof Error ? error.message : '写入剪贴板失败'
         }
       }
+    },
+    getBrowserBridgeStatus: async () => ({
+      bridgeConnected: false,
+      connected: false,
+      message: '网页审查模式会直接通过浏览器扩展 content script 连接。'
+    }),
+    getBrowserBridgeOutput: async () => null,
+    queueBrowserBridgeTask: async (payload: Record<string, unknown>) => {
+      window.postMessage({ source: 'format-flow', type: 'FORMAT_FLOW_SEND_TASK', payload }, window.location.origin)
+      return { ok: true, message: '任务已发送给浏览器插件。' }
     },
     setShortcut: async (accelerator: string) => ({ ok: !accelerator.startsWith('MouseButton'), accelerator, message: '浏览器审查模式已保存快捷键预览' }),
     openPath: async () => '',

@@ -21,6 +21,7 @@
 
   if (detectTarget()) {
     sendStatus()
+    window.setInterval(sendStatus, 3000)
     startOutputObserver()
   }
 

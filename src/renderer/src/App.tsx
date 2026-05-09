@@ -52,6 +52,7 @@ import type {
 type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'learning' | 'settings'
 type LauncherMode = 'prompt' | 'skill' | 'workflow'
 type QuickCallType = 'prompt' | 'skill' | 'workflow'
+type LearningMethod = 'conversation-review' | 'engineering-cybernetics'
 type FormatFlowApi = Window['formatFlow']
 type AiPluginStatus = {
   bridgeConnected?: boolean
@@ -78,8 +79,12 @@ type LearningSource = {
   id: string
   title: string
   sourceName: string
+  method: LearningMethod
+  tags: string[]
   rawText: string
   sanitizedText: string
+  abstractLogic: string
+  scenarioLogic: string
   satisfied: boolean
   redactions: string[]
 }
@@ -1532,15 +1537,39 @@ function LearningPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [sources, setSources] = useState<LearningSource[]>([])
   const [draft, setDraft] = useState<LearningDraft | null>(null)
-  const satisfiedSources = sources.filter((source) => source.satisfied)
-  const redactionCount = sources.reduce((total, source) => total + source.redactions.length, 0)
+  const [method, setMethod] = useState<LearningMethod>('conversation-review')
+  const [selectedGroup, setSelectedGroup] = useState('all')
+  const learningGroups = mergeGroupsWithTags(store.groups.learning || [], allTags(sources))
+  const visibleSources = selectedGroup === 'all' ? sources : sources.filter((source) => source.tags.includes(selectedGroup))
+  const satisfiedSources = visibleSources.filter((source) => source.satisfied)
+  const redactionCount = visibleSources.reduce((total, source) => total + source.redactions.length, 0)
+
+  async function updateGroups(groups: GroupItem[]): Promise<void> {
+    await commit({ ...store, groups: { ...store.groups, learning: groups } })
+  }
+
+  async function deleteGroup(group: GroupItem): Promise<void> {
+    const tags = collectGroupTags(group)
+    setSources((current) =>
+      current.map((source) => ({
+        ...source,
+        tags: source.tags.filter((tag) => !tags.includes(tag))
+      }))
+    )
+    await commit({ ...store, groups: { ...store.groups, learning: removeGroupById(store.groups.learning || [], group.id) } })
+    if (tags.includes(selectedGroup)) setSelectedGroup('all')
+  }
+
+  function sourceTags(): string[] {
+    return Array.from(new Set(['hermes', learningMethodTag(method), selectedGroup !== 'all' ? selectedGroup : ''].filter(Boolean)))
+  }
 
   async function importLearningFiles(files: FileList | null): Promise<void> {
     if (!files?.length) return
     const imported: LearningSource[] = []
     for (const file of Array.from(files)) {
       const content = await file.text()
-      imported.push(...extractLearningSources(content, file.name))
+      imported.push(...extractLearningSources(content, file.name, method, sourceTags()))
     }
     setSources((current) => [...imported, ...current])
     setNotice(`已导入 ${imported.length} 条学习样本；默认只学习勾选“满意”的样本。`)
@@ -1549,7 +1578,7 @@ function LearningPanel({
   function importCompletedRuns(): void {
     const runSources = store.runs
       .filter((run) => run.status === 'completed' || run.steps.some((step) => step.output.trim()))
-      .map((run) => createLearningSource(run.workflowTitle, '顺序运行记录', runToLearningText(run), run.status === 'completed'))
+      .map((run) => createLearningSource(run.workflowTitle, '顺序运行记录', runToLearningText(run), run.status === 'completed', method, sourceTags()))
     setSources((current) => [...runSources, ...current])
     setNotice(`已导入 ${runSources.length} 条顺序运行记录；已完成记录默认标记为满意。`)
   }
@@ -1562,14 +1591,23 @@ function LearningPanel({
     setSources((current) => current.filter((source) => source.id !== id))
   }
 
+  function toggleCurrentGroup(id: string): void {
+    if (selectedGroup === 'all') return
+    setSources((current) =>
+      current.map((source) =>
+        source.id === id ? { ...source, tags: toggleLearningTag(source.tags, selectedGroup, !source.tags.includes(selectedGroup)) } : source
+      )
+    )
+  }
+
   function generateDraft(): void {
     if (satisfiedSources.length === 0) {
       setNotice('请先至少标记 1 条满意样本。')
       return
     }
-    const nextDraft = buildLearningSkillDraft(satisfiedSources)
+    const nextDraft = buildLearningSkillDraft(satisfiedSources, method)
     setDraft(nextDraft)
-    setNotice(`已基于 ${satisfiedSources.length} 条满意样本生成 Skill 草稿，请审查后保存。`)
+    setNotice(`Hermes 已基于 ${satisfiedSources.length} 条满意样本生成 Skill 草稿，请审查后保存。`)
   }
 
   async function installDraft(): Promise<void> {
@@ -1590,12 +1628,31 @@ function LearningPanel({
 
   return (
     <section className="panel learning-layout">
+      <ResourceGroupManager
+        title="学习分组"
+        detail="Hermes 学习样本可按分组和小类管理"
+        allLabel="全部学习样本"
+        allCount={sources.length}
+        groups={learningGroups}
+        selectedTag={selectedGroup}
+        countForTag={(tag) => sources.filter((source) => source.tags.includes(tag)).length}
+        onSelect={setSelectedGroup}
+        onChange={updateGroups}
+        onDelete={deleteGroup}
+      />
       <div className="learning-left">
         <PanelHeader
-          title="对话学习"
+          title="Hermes 学习"
           detail="从满意对话中提炼你的使用习惯，先隐私清理，再生成可审查的 Skill。"
         />
         <div className="import-tools">
+          <label>
+            学习方式
+            <select value={method} onChange={(event) => setMethod(event.target.value as LearningMethod)}>
+              <option value="conversation-review">对话审查：学习标记为“满意”的对话</option>
+              <option value="engineering-cybernetics">钱学森工程控制论：抽象底层逻辑和场景逻辑</option>
+            </select>
+          </label>
           <input
             ref={fileInputRef}
             className="hidden-file-input"
@@ -1614,26 +1671,32 @@ function LearningPanel({
             导入顺序运行记录
           </button>
           <div className="learning-stats">
-            <span>样本：{sources.length}</span>
+            <span>当前分组样本：{visibleSources.length}</span>
             <span>满意：{satisfiedSources.length}</span>
             <span>隐私替换：{redactionCount}</span>
           </div>
         </div>
 
         <div className="card-list">
-          {sources.length === 0 && <EmptyState title="暂无学习样本" detail="导入 JSON / MD 对话，或从顺序运行记录导入。" />}
-          {sources.map((source) => (
+          {visibleSources.length === 0 && <EmptyState title="暂无学习样本" detail="导入 JSON / MD 对话，或从顺序运行记录导入。" />}
+          {visibleSources.map((source) => (
             <article key={source.id} className={source.satisfied ? 'learning-card satisfied' : 'learning-card'}>
               <div>
                 <strong>{source.title}</strong>
-                <span>{source.sourceName}</span>
+                <span>{source.sourceName} · {learningMethodLabel(source.method)}</span>
               </div>
               <p>{source.sanitizedText.slice(0, 260) || '空样本'}</p>
-              <TagRow tags={[source.satisfied ? '满意' : '未学习', ...source.redactions.slice(0, 3)]} />
+              {source.method === 'engineering-cybernetics' && <p>{source.scenarioLogic}</p>}
+              <TagRow tags={[source.satisfied ? '满意' : '未学习', ...source.tags.slice(0, 3), ...source.redactions.slice(0, 2)]} />
               <div className="inline-actions">
                 <button type="button" onClick={() => toggleSatisfied(source.id)}>
                   {source.satisfied ? '取消满意' : '标记满意'}
                 </button>
+                {selectedGroup !== 'all' && (
+                  <button type="button" onClick={() => toggleCurrentGroup(source.id)}>
+                    {source.tags.includes(selectedGroup) ? '移出当前分组' : '加入当前分组'}
+                  </button>
+                )}
                 <button className="danger" type="button" onClick={() => removeSource(source.id)}>
                   移除
                 </button>
@@ -1644,9 +1707,14 @@ function LearningPanel({
       </div>
 
       <div className="learning-right">
-        <PanelHeader title="Skill 草稿" detail="只使用满意样本；保存前可手动修改 Skill 内容。" />
+        <PanelHeader title="Skill 草稿" detail="只使用当前分组中的满意样本；保存前可手动修改 Skill 内容。" />
         <div className="learning-rules">
-          <strong>默认隐私清理</strong>
+          <strong>{learningMethodLabel(method)}</strong>
+          <span>
+            {method === 'conversation-review'
+              ? '只学习标记为满意的对话，提炼偏好、流程和质量门槛。'
+              : '先内置工程控制论核心思想，再把每次对话压缩为目标、状态、反馈、控制、约束和场景核心逻辑。'}
+          </span>
           <span>邮箱、API key/token、密码/密钥字段、本地路径、账号/手机号会被替换为占位符。</span>
         </div>
         <button className="primary-action" type="button" disabled={satisfiedSources.length === 0} onClick={generateDraft}>
@@ -2727,31 +2795,31 @@ function normalizePluginOutput(payload?: Record<string, unknown>): AiPluginOutpu
   }
 }
 
-function extractLearningSources(content: string, sourceName: string): LearningSource[] {
+function extractLearningSources(content: string, sourceName: string, method: LearningMethod, tags: string[]): LearningSource[] {
   const trimmed = content.trim()
   if (!trimmed) return []
 
   if (sourceName.toLowerCase().endsWith('.json')) {
     try {
-      return learningRecordsFromJson(JSON.parse(trimmed) as unknown, sourceName)
+      return learningRecordsFromJson(JSON.parse(trimmed) as unknown, sourceName, method, tags)
     } catch {
-      return [createLearningSource(sourceName.replace(/\.[^.]+$/, ''), sourceName, trimmed, false)]
+      return [createLearningSource(sourceName.replace(/\.[^.]+$/, ''), sourceName, trimmed, false, method, tags)]
     }
   }
 
-  return [createLearningSource(markdownTitle(trimmed) || sourceName.replace(/\.[^.]+$/, ''), sourceName, trimmed, false)]
+  return [createLearningSource(markdownTitle(trimmed) || sourceName.replace(/\.[^.]+$/, ''), sourceName, trimmed, false, method, tags)]
 }
 
-function learningRecordsFromJson(value: unknown, sourceName: string): LearningSource[] {
+function learningRecordsFromJson(value: unknown, sourceName: string, method: LearningMethod, tags: string[]): LearningSource[] {
   const records = selectLearningRecords(value)
   if (records.length === 0) {
-    return [createLearningSource(sourceName.replace(/\.[^.]+$/, ''), sourceName, valueToLearningText(value), false)]
+    return [createLearningSource(sourceName.replace(/\.[^.]+$/, ''), sourceName, valueToLearningText(value), false, method, tags)]
   }
 
   return records.map((record, index) => {
     const title = learningRecordTitle(record, `${sourceName.replace(/\.[^.]+$/, '')} ${index + 1}`)
     const satisfied = isSatisfiedLearningRecord(record)
-    return createLearningSource(title, sourceName, valueToLearningText(record), satisfied)
+    return createLearningSource(title, sourceName, valueToLearningText(record), satisfied, method, tags)
   })
 }
 
@@ -2785,14 +2853,26 @@ function isSatisfiedLearningRecord(value: unknown): boolean {
   return Boolean(value.satisfied || value.favorite || value.approved || status === 'completed' || rating === 'satisfied')
 }
 
-function createLearningSource(title: string, sourceName: string, rawText: string, satisfied: boolean): LearningSource {
+function createLearningSource(
+  title: string,
+  sourceName: string,
+  rawText: string,
+  satisfied: boolean,
+  method: LearningMethod,
+  tags: string[]
+): LearningSource {
   const cleaned = sanitizeLearningText(rawText)
+  const sanitizedText = cleaned.text
   return {
     id: newId('learn'),
     title: title.trim() || sourceName,
     sourceName,
+    method,
+    tags: Array.from(new Set(tags.map(normalizeTag).filter(Boolean))),
     rawText,
-    sanitizedText: cleaned.text,
+    sanitizedText,
+    abstractLogic: abstractConversationLogic(sanitizedText),
+    scenarioLogic: inferScenarioLogic(sanitizedText),
     satisfied,
     redactions: cleaned.redactions
   }
@@ -2874,13 +2954,124 @@ function sanitizeLearningText(value: string): { text: string; redactions: string
   }
 }
 
-function buildLearningSkillDraft(sources: LearningSource[]): LearningDraft {
+function learningMethodLabel(method: LearningMethod): string {
+  return method === 'engineering-cybernetics' ? '钱学森工程控制论' : '对话审查'
+}
+
+function learningMethodTag(method: LearningMethod): string {
+  return method === 'engineering-cybernetics' ? '钱学森工程控制论' : '对话审查'
+}
+
+function toggleLearningTag(tags: string[], tag: string, enabled: boolean): string[] {
+  const normalizedTag = normalizeTag(tag)
+  const normalizedTags = Array.from(new Set(tags.map(normalizeTag).filter(Boolean)))
+  const exists = normalizedTags.includes(normalizedTag)
+  if (enabled && !exists) return [...normalizedTags, normalizedTag]
+  if (!enabled && exists) return normalizedTags.filter((item) => item !== normalizedTag)
+  return normalizedTags
+}
+
+function abstractConversationLogic(text: string): string {
+  const scenario = inferScenarioName(text)
+  const constraints = inferConstraintSignals(text)
+  const feedback = inferFeedbackSignals(text)
+  const control = inferControlActions(text)
+  return [
+    '- 目标：把用户意图转成可验证的工程结果。',
+    `- 场景：${scenario}。`,
+    `- 状态：已有上下文、当前输出质量、工具连接状态和用户满意度。`,
+    `- 控制动作：${control.join('；')}。`,
+    `- 反馈信号：${feedback.join('；')}。`,
+    `- 约束：${constraints.join('；')}。`,
+    '- 稳定条件：结果可复现、可审查、隐私已清理，并且用户明确满意或进入下一轮修正。'
+  ].join('\n')
+}
+
+function inferScenarioLogic(text: string): string {
+  const scenario = inferScenarioName(text)
+  if (/插件|浏览器|粘贴|快捷键|自动发送|对话框/.test(text)) {
+    return `场景核心逻辑：${scenario} 要把“触发入口、目标窗口、内容载荷、反馈状态、失败兜底”拆开，优先保证用户一次点击后可恢复到原对话流。`
+  }
+  if (/安装包|打包|dist|build|测试|验证/.test(text)) {
+    return `场景核心逻辑：${scenario} 要把实现、验证、打包、版本记录做成闭环，任何发布物都必须能追溯到源码提交。`
+  }
+  if (/分组|标签|管理|小类|右键/.test(text)) {
+    return `场景核心逻辑：${scenario} 要把“数据结构、分组视图、右键操作、排序和删除影响范围”分离，避免把管理入口和调用入口混在一起。`
+  }
+  if (/学习|满意|隐私|skill|Skill/.test(text)) {
+    return `场景核心逻辑：${scenario} 要只学习满意样本，把原始内容抽象为偏好、约束、质量门槛和可复用流程，保存前必须隐私清理和人工审查。`
+  }
+  return `场景核心逻辑：${scenario} 要先明确目标和反馈，再选择最小可验证控制动作，避免把一次性细节写入长期规则。`
+}
+
+function inferScenarioName(text: string): string {
+  if (/插件|浏览器|粘贴|快捷键|自动发送|对话框/.test(text)) return '浏览器/桌面联动'
+  if (/安装包|打包|dist|build|测试|验证/.test(text)) return '构建发布'
+  if (/分组|标签|管理|小类|右键/.test(text)) return '信息管理与分组'
+  if (/学习|满意|隐私|skill|Skill/.test(text)) return '对话学习与 Skill 生成'
+  if (/MCP|mcp/.test(text)) return '工具接口配置'
+  return '通用任务控制'
+}
+
+function inferControlActions(text: string): string[] {
+  const actions = new Set<string>(['先检查上下文', '执行最小必要修改', '运行验证'])
+  if (/安装包|打包|dist/.test(text)) actions.add('重新生成安装包')
+  if (/插件|浏览器/.test(text)) actions.add('同步插件和桌面桥接状态')
+  if (/学习|满意|隐私/.test(text)) actions.add('只保留满意样本并做隐私清理')
+  if (/分组|标签/.test(text)) actions.add('维护分组和标签映射')
+  return Array.from(actions)
+}
+
+function inferFeedbackSignals(text: string): string[] {
+  const signals = new Set<string>(['用户审查意见', '测试/构建结果'])
+  if (/连接|插件|浏览器/.test(text)) signals.add('连接状态和 AI 页面响应')
+  if (/粘贴|剪贴板/.test(text)) signals.add('剪贴板/粘贴是否成功')
+  if (/满意|学习/.test(text)) signals.add('满意标记')
+  return Array.from(signals)
+}
+
+function inferConstraintSignals(text: string): string[] {
+  const constraints = new Set<string>(['不写入隐私信息', '不覆盖无关修改'])
+  if (/不必汇报中间|最终版本/.test(text)) constraints.add('减少中间噪声')
+  if (/安装包|打包/.test(text)) constraints.add('安装包必须对应已验证源码')
+  if (/浏览器|插件/.test(text)) constraints.add('插件只能操作已打开且受支持的 AI 页面')
+  return Array.from(constraints)
+}
+
+function buildLearningSkillDraft(sources: LearningSource[], method: LearningMethod): LearningDraft {
   const combined = sources.map((source) => `# ${source.title}\n${source.sanitizedText}`).join('\n\n---\n\n')
-  const title = inferLearningSkillTitle(sources)
+  const title = method === 'engineering-cybernetics' ? 'Hermes Engineering Cybernetics Skill' : inferLearningSkillTitle(sources)
   const skillName = slugifySkillName(title)
-  const description = `Use when a task should follow the user's learned working habits from ${sources.length} satisfied conversation sample(s).`
+  const description =
+    method === 'engineering-cybernetics'
+      ? `Use when a task should be controlled as a closed-loop engineering system, based on ${sources.length} satisfied conversation sample(s).`
+      : `Use when a task should follow the user's learned working habits from ${sources.length} satisfied conversation sample(s).`
   const preferences = inferLearningPreferences(combined)
   const examples = sources.slice(0, 3).map((source) => `### ${source.title}\n${compactSnippet(source.sanitizedText, 900)}`)
+  const cyberneticsSections =
+    method === 'engineering-cybernetics'
+      ? [
+          '',
+          '## 钱学森工程控制论核心思想',
+          '- 把任务看成受目标、状态、反馈、控制动作、约束和扰动共同作用的工程系统。',
+          '- 先建立可观察状态，再通过反馈闭环持续修正控制动作，而不是一次性给出静态答案。',
+          '- 优先识别系统边界、输入输出、稳定性条件、误差来源和停止条件。',
+          '- 对复杂任务做分层控制：战略目标、阶段目标、当前动作和验证信号分别管理。',
+          '',
+          '## Hermes 抽象规则',
+          '- 每次对话只保留底层逻辑，不保留具体隐私、一次性路径、账号或临时措辞。',
+          '- 把原始对话压缩成：目标、初始状态、输入信号、控制动作、反馈信号、约束、扰动、稳定条件。',
+          '- 对应场景只保存可复用的核心逻辑，用于以后快速判断该走哪条控制路径。',
+          '',
+          '## 场景核心逻辑',
+          ...sources.map((source, index) => [
+            `### 场景 ${index + 1}：${source.title}`,
+            source.abstractLogic,
+            '',
+            source.scenarioLogic
+          ].join('\n'))
+        ]
+      : []
 
   const content = [
     '---',
@@ -2889,6 +3080,10 @@ function buildLearningSkillDraft(sources: LearningSource[]): LearningDraft {
     '---',
     '',
     `# ${title}`,
+    '',
+    '## Hermes Learning Mode',
+    `- ${learningMethodLabel(method)}`,
+    ...cyberneticsSections,
     '',
     '## When to Use',
     '- Use this Skill when the current task resembles the learned satisfied conversations or when the user asks to follow their established working style.',

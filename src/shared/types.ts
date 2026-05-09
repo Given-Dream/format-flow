@@ -41,7 +41,7 @@ export type SkillMetadata = {
   favorite?: boolean
 }
 
-export type ResourceKind = 'prompts' | 'skills' | 'mcps' | 'quickCalls'
+export type ResourceKind = 'prompts' | 'skills' | 'mcps' | 'quickCalls' | 'learning'
 
 export type GroupItem = {
   id: string

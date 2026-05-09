@@ -60,7 +60,8 @@ export function defaultGroups(prompts: PromptItem[] = []): ResourceGroups {
     prompts: groupsFromTags(allTags(prompts)),
     skills: [],
     mcps: [],
-    quickCalls: groupsFromTags(allTags(prompts))
+    quickCalls: groupsFromTags(allTags(prompts)),
+    learning: groupsFromTags(['hermes', '对话审查', '钱学森工程控制论'])
   }
 }
 
@@ -459,7 +460,8 @@ function normalizeGroups(value: unknown, prompts: PromptItem[]): ResourceGroups 
     prompts: normalizeGroupList(value.prompts, allTags(prompts)),
     skills: normalizeGroupList(value.skills, []),
     mcps: normalizeGroupList(value.mcps, []),
-    quickCalls: normalizeGroupList(value.quickCalls, allTags(prompts))
+    quickCalls: normalizeGroupList(value.quickCalls, allTags(prompts)),
+    learning: normalizeGroupList(value.learning, ['hermes', '对话审查', '钱学森工程控制论'])
   }
 }
 

@@ -1026,6 +1026,53 @@ label {
   min-height: 220px;
 }
 
+.directory-editor.compact {
+  min-height: 74px;
+}
+
+.directory-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel-strong);
+}
+
+.directory-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.directory-row code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-row button {
+  padding: 7px 9px;
+  border-radius: 10px;
+}
+
+.directory-empty {
+  padding: 14px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .path-list {
   display: grid;
   gap: 8px;

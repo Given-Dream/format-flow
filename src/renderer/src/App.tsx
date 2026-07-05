@@ -1776,7 +1776,8 @@ function SettingsPanel({
   scanSkills: (directories: string[]) => Promise<void>
   setNotice: (notice: string) => void
 }): JSX.Element {
-  const [directoriesText, setDirectoriesText] = useState(store.settings.skillDirectories.join('\n'))
+  const [skillDirectories, setSkillDirectories] = useState(() => normalizeSkillDirectories(store.settings.skillDirectories))
+  const [manualSkillDirectory, setManualSkillDirectory] = useState('')
   const [shortcut, setShortcut] = useState(store.settings.shortcut)
   const [dataDirectory, setDataDirectory] = useState(store.settings.dataDirectory || '')
   const [backupDirectory, setBackupDirectory] = useState(store.settings.backupDirectory || '')
@@ -1813,13 +1814,34 @@ function SettingsPanel({
     }
   }, [capturing, setNotice])
 
+  function addManualSkillDirectory(): void {
+    const additions = normalizeSkillDirectories(manualSkillDirectory.split(/\r?\n/))
+    if (additions.length === 0) {
+      setNotice('请输入要添加的 Skill 目录')
+      return
+    }
+    const nextDirectories = normalizeSkillDirectories([...skillDirectories, ...additions])
+    const addedCount = nextDirectories.length - skillDirectories.length
+    setSkillDirectories(nextDirectories)
+    setManualSkillDirectory('')
+    setNotice(addedCount > 0 ? `已添加 ${addedCount} 个 Skill 目录` : '没有新增目录，输入的目录已存在')
+  }
+
+  function removeSkillDirectory(directory: string): void {
+    setSkillDirectories(skillDirectories.filter((item) => item !== directory))
+  }
+
+  function resetSkillDirectories(): void {
+    const defaults = normalizeSkillDirectories(paths?.defaultSkillDirectories || [])
+    setSkillDirectories(defaults)
+    setNotice('已恢复默认 Skill 目录，保存后生效')
+  }
+
   async function saveDirectories(): Promise<void> {
-    const directories = directoriesText
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
+    const directories = normalizeSkillDirectories(skillDirectories)
     await commit({ ...store, settings: { ...store.settings, skillDirectories: directories } })
     await scanSkills(directories)
+    setSkillDirectories(directories)
   }
 
   async function saveShortcut(): Promise<void> {
@@ -1898,7 +1920,37 @@ function SettingsPanel({
 
       <div className="settings-card">
         <PanelHeader title="Skill 目录" detail="每行一个目录，扫描其中的 SKILL.md" />
-        <textarea className="directory-editor" value={directoriesText} onChange={(event) => setDirectoriesText(event.target.value)} />
+        <div className="directory-list" aria-label="Skill 目录列表">
+          {skillDirectories.length > 0 ? (
+            skillDirectories.map((directory) => (
+              <div className="directory-row" key={directory}>
+                <code title={directory}>{directory}</code>
+                <button type="button" onClick={() => removeSkillDirectory(directory)} aria-label={`移除 ${directory}`}>
+                  移除
+                </button>
+              </div>
+            ))
+          ) : (
+            <div className="directory-empty">尚未添加 Skill 目录</div>
+          )}
+        </div>
+        <label>
+          手动添加目录
+          <textarea
+            className="directory-editor compact"
+            value={manualSkillDirectory}
+            onChange={(event) => setManualSkillDirectory(event.target.value)}
+            placeholder="可粘贴一个或多个目录，每行一个"
+          />
+        </label>
+        <div className="inline-actions wrap">
+          <button type="button" onClick={addManualSkillDirectory}>
+            添加目录
+          </button>
+          <button type="button" onClick={resetSkillDirectories}>
+            恢复默认
+          </button>
+        </div>
         <button className="primary-action" type="button" onClick={() => void saveDirectories()}>
           保存并重新扫描
         </button>
@@ -2715,6 +2767,20 @@ function parseLines(value: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
+}
+
+function normalizeSkillDirectories(directories: string[]): string[] {
+  const seen = new Set<string>()
+  const normalized: string[] = []
+
+  for (const directory of directories) {
+    const value = directory.trim().replace(/^["']|["']$/g, '')
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    normalized.push(value)
+  }
+
+  return normalized
 }
 
 function envToText(env: Record<string, string>): string {

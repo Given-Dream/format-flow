@@ -14,6 +14,7 @@ const AI_TARGETS = [
 const appTabs = new Map()
 const aiStatuses = new Map()
 const LOCAL_BRIDGE_BASE = 'http://127.0.0.1:48174/format-flow-bridge'
+const FORMAT_FLOW_CAPABILITIES = { quickCallFillOnly: true }
 let localBridgePolling = false
 
 startLocalBridgePolling()
@@ -169,7 +170,8 @@ function updateAiStatus(tab, payload = {}) {
     aiIcon: payload.aiIcon || fromUrl?.icon || 'AI',
     tabTitle: payload.tabTitle || tab.title || '',
     url: tab.url || '',
-    capabilities: payload.capabilities && typeof payload.capabilities === 'object' ? payload.capabilities : {},
+    quickCallFillOnly: true,
+    capabilities: payload.capabilities && typeof payload.capabilities === 'object' ? payload.capabilities : FORMAT_FLOW_CAPABILITIES,
     message: `已连接 ${payload.aiName || fromUrl?.name || 'AI'}`
   }
   aiStatuses.set(tab.id, status)
@@ -185,7 +187,8 @@ function tabToStatus(tab) {
     aiIcon: cached?.aiIcon || target?.icon || 'AI',
     tabTitle: cached?.tabTitle || tab.title || '',
     url: cached?.url || tab.url || '',
-    capabilities: cached?.capabilities || {},
+    quickCallFillOnly: true,
+    capabilities: cached?.capabilities || FORMAT_FLOW_CAPABILITIES,
     message: `已连接 ${cached?.aiName || target?.name || 'AI'}`
   }
 }
@@ -198,6 +201,7 @@ function disconnectedStatus(message = '未连接已打开的 AI 页面') {
     aiIcon: '',
     tabTitle: '',
     url: '',
+    quickCallFillOnly: false,
     message
   }
 }

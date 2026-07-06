@@ -93,6 +93,7 @@ function disconnectedBrowserBridgeStatus(message = '未检测到浏览器扩展�
 function normalizeBrowserBridgeStatus(payload: Record<string, unknown> = {}): Record<string, unknown> {
   const connected = Boolean(payload.connected)
   const aiName = typeof payload.aiName === 'string' ? payload.aiName : ''
+  const capabilities = typeof payload.capabilities === 'object' && payload.capabilities ? (payload.capabilities as Record<string, unknown>) : {}
   return {
     bridgeConnected: true,
     connected,
@@ -100,6 +101,7 @@ function normalizeBrowserBridgeStatus(payload: Record<string, unknown> = {}): Re
     aiIcon: typeof payload.aiIcon === 'string' ? payload.aiIcon : '',
     tabTitle: typeof payload.tabTitle === 'string' ? payload.tabTitle : '',
     url: typeof payload.url === 'string' ? payload.url : '',
+    quickCallFillOnly: Boolean(capabilities.quickCallFillOnly || payload.quickCallFillOnly),
     bridgePort: browserBridgePort,
     message:
       typeof payload.message === 'string'

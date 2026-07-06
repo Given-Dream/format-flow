@@ -8,7 +8,7 @@
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || message.type !== 'FORMAT_FLOW_INJECT_TASK') return false
 
-    injectTask(message.payload?.text || '')
+    injectTask(message.payload || '')
       .then((result) => {
         sendStatus()
         sendResponse(result)
@@ -26,7 +26,9 @@
     startOutputObserver()
   }
 
-  async function injectTask(text) {
+  async function injectTask(payload) {
+    const text = typeof payload === 'string' ? payload : payload?.text || ''
+    const shouldSubmit = typeof payload === 'object' ? payload.submit !== false : true
     if (!text.trim()) return { ok: false, message: '任务内容为空' }
     const target = detectTarget()
     if (!target) return { ok: false, message: '当前页面不是 Format Flow 支持的 AI 页面。' }
@@ -39,6 +41,13 @@
     }
 
     setInputValue(input, text)
+    if (!shouldSubmit) {
+      return {
+        ok: true,
+        message: `已填入 ${target?.name || 'AI 页面'} 输入框。`
+      }
+    }
+
     const submitResult = await submitInput(target, input)
     if (!submitResult.ok) {
       return {
@@ -343,7 +352,10 @@
       aiName: target?.name || 'AI',
       aiIcon: target?.icon || 'AI',
       tabTitle: document.title,
-      url: location.href
+      url: location.href,
+      capabilities: {
+        quickCallFillOnly: true
+      }
     }
   }
 })()

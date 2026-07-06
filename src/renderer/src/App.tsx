@@ -61,6 +61,7 @@ type AiPluginStatus = {
   aiIcon?: string
   tabTitle?: string
   url?: string
+  quickCallFillOnly?: boolean
   message?: string
 }
 type AiPluginOutput = {
@@ -328,6 +329,23 @@ export function App(): JSX.Element {
   }
 
   async function pasteQuickCall(text: string, success: string): Promise<void> {
+    if (pluginStatus.connected && pluginStatus.quickCallFillOnly) {
+      const clipboardResult = await writeClipboardText(text)
+      if (!clipboardResult.ok) {
+        setNotice(clipboardResult.message)
+      }
+
+      const pluginResult = await queueBrowserPluginTask({
+        text,
+        mode: 'quick-call',
+        submit: false
+      })
+      if (pluginResult.ok) {
+        setNotice(success)
+        return
+      }
+    }
+
     const result = await writeClipboardTextAndPaste(text)
     if (!result.ok) {
       setNotice(result.message)
@@ -2849,6 +2867,7 @@ function normalizePluginStatus(payload?: Record<string, unknown>): AiPluginStatu
     aiIcon: typeof payload.aiIcon === 'string' ? payload.aiIcon : undefined,
     tabTitle: typeof payload.tabTitle === 'string' ? payload.tabTitle : undefined,
     url: typeof payload.url === 'string' ? payload.url : undefined,
+    quickCallFillOnly: Boolean(payload.quickCallFillOnly),
     message: typeof payload.message === 'string' ? payload.message : undefined
   }
 }

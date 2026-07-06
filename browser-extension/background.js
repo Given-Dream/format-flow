@@ -169,6 +169,7 @@ function updateAiStatus(tab, payload = {}) {
     aiIcon: payload.aiIcon || fromUrl?.icon || 'AI',
     tabTitle: payload.tabTitle || tab.title || '',
     url: tab.url || '',
+    capabilities: payload.capabilities && typeof payload.capabilities === 'object' ? payload.capabilities : {},
     message: `已连接 ${payload.aiName || fromUrl?.name || 'AI'}`
   }
   aiStatuses.set(tab.id, status)
@@ -184,6 +185,7 @@ function tabToStatus(tab) {
     aiIcon: cached?.aiIcon || target?.icon || 'AI',
     tabTitle: cached?.tabTitle || tab.title || '',
     url: cached?.url || tab.url || '',
+    capabilities: cached?.capabilities || {},
     message: `已连接 ${cached?.aiName || target?.name || 'AI'}`
   }
 }

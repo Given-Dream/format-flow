@@ -28,6 +28,7 @@ let browserBridgeServer: http.Server | null = null
 let browserBridgeLastSeen = 0
 let browserBridgeStatus: Record<string, unknown> = disconnectedBrowserBridgeStatus()
 let browserBridgeOutput: Record<string, unknown> | null = null
+let lastExternalForegroundWindow = ''
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 
 function getDataDirectoryPreferencePath(): string {
@@ -148,11 +149,75 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function nativeWindowHandleToString(handle: Buffer | null | undefined): string {
+  if (!handle?.length) return ''
+  if (handle.length >= 8) return handle.readBigUInt64LE(0).toString()
+  return handle.readUInt32LE(0).toString()
+}
+
+function mainWindowHandleString(): string {
+  return nativeWindowHandleToString(mainWindow?.getNativeWindowHandle())
+}
+
+async function getForegroundWindowHandle(): Promise<string> {
+  if (process.platform !== 'win32') return ''
+
+  const command = `
+Add-Type -Namespace FormatFlow -Name Win32Focus -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern System.IntPtr GetForegroundWindow();
+"@
+[FormatFlow.Win32Focus]::GetForegroundWindow().ToInt64()
+`.trim()
+
+  try {
+    const { stdout } = await execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      windowsHide: true,
+      timeout: 2500
+    })
+    return stdout.trim()
+  } catch {
+    return ''
+  }
+}
+
+async function rememberExternalForegroundWindow(): Promise<void> {
+  const foregroundWindow = await getForegroundWindowHandle()
+  if (!foregroundWindow || foregroundWindow === '0' || foregroundWindow === mainWindowHandleString()) return
+  lastExternalForegroundWindow = foregroundWindow
+}
+
+async function restoreExternalForegroundWindow(): Promise<void> {
+  if (process.platform !== 'win32' || !lastExternalForegroundWindow) return
+
+  const command = `
+Add-Type -Namespace FormatFlow -Name Win32Focus -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+public static extern bool ShowWindowAsync(System.IntPtr hWnd, int nCmdShow);
+[System.Runtime.InteropServices.DllImport("user32.dll")]
+[return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+"@
+$hwnd = [System.IntPtr]::new([Int64]"${lastExternalForegroundWindow}")
+[FormatFlow.Win32Focus]::ShowWindowAsync($hwnd, 9) | Out-Null
+[FormatFlow.Win32Focus]::SetForegroundWindow($hwnd) | Out-Null
+`.trim()
+
+  try {
+    await execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+      windowsHide: true,
+      timeout: 2500
+    })
+  } catch {
+    // The clipboard still contains the text, so manual paste remains available if Windows blocks focus restore.
+  }
+}
+
 async function getPasteScriptPath(): Promise<string> {
   const scriptPath = path.join(app.getPath('userData'), 'format-flow-paste.vbs')
   const script = [
     'Set shell = CreateObject("WScript.Shell")',
-    'WScript.Sleep 40',
+    'WScript.Sleep 80',
     'shell.SendKeys "^v"'
   ].join('\r\n')
   await fs.mkdir(path.dirname(scriptPath), { recursive: true })
@@ -172,7 +237,9 @@ async function writeClipboardTextAndPaste(text: string): Promise<{ ok: boolean; 
   try {
     const scriptPath = await getPasteScriptPath()
     mainWindow?.hide()
-    await sleep(70)
+    await sleep(120)
+    await restoreExternalForegroundWindow()
+    await sleep(120)
     await execFile('wscript.exe', [scriptPath], { windowsHide: true, timeout: 2500 })
     return { ok: true, message: '已自动粘贴到当前对话框' }
   } catch (error) {
@@ -1001,8 +1068,9 @@ function createWindow(): void {
   }
 }
 
-function toggleMainWindow(): void {
+async function toggleMainWindow(): Promise<void> {
   if (!mainWindow) return
+  await rememberExternalForegroundWindow()
   mainWindow.show()
   mainWindow.focus()
   mainWindow.webContents.send('launcher:open')
@@ -1015,7 +1083,9 @@ async function registerStoredShortcut(): Promise<ShortcutResult> {
 
 function registerShortcut(accelerator: string): ShortcutResult {
   globalShortcut.unregisterAll()
-  const ok = globalShortcut.register(accelerator, toggleMainWindow)
+  const ok = globalShortcut.register(accelerator, () => {
+    void toggleMainWindow()
+  })
   return {
     ok,
     accelerator,

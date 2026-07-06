@@ -214,11 +214,49 @@ $hwnd = [System.IntPtr]::new([Int64]"${lastExternalForegroundWindow}")
 }
 
 async function getPasteScriptPath(): Promise<string> {
-  const scriptPath = path.join(app.getPath('userData'), 'format-flow-paste.vbs')
+  const scriptPath = path.join(app.getPath('userData'), 'format-flow-paste.ps1')
   const script = [
-    'Set shell = CreateObject("WScript.Shell")',
-    'WScript.Sleep 80',
-    'shell.SendKeys "^v"'
+    'param([Int64]$TargetWindow = 0)',
+    'Add-Type -Namespace FormatFlow -Name Win32Paste -MemberDefinition @"',
+    '[System.Runtime.InteropServices.DllImport("user32.dll")]',
+    'public static extern System.IntPtr GetForegroundWindow();',
+    '[System.Runtime.InteropServices.DllImport("user32.dll")]',
+    'public static extern uint GetWindowThreadProcessId(System.IntPtr hWnd, System.IntPtr lpdwProcessId);',
+    '[System.Runtime.InteropServices.DllImport("kernel32.dll")]',
+    'public static extern uint GetCurrentThreadId();',
+    '[System.Runtime.InteropServices.DllImport("user32.dll")]',
+    'public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);',
+    '[System.Runtime.InteropServices.DllImport("user32.dll")]',
+    'public static extern bool ShowWindowAsync(System.IntPtr hWnd, int nCmdShow);',
+    '[System.Runtime.InteropServices.DllImport("user32.dll")]',
+    '[return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]',
+    'public static extern bool SetForegroundWindow(System.IntPtr hWnd);',
+    '[System.Runtime.InteropServices.DllImport("user32.dll")]',
+    'public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo);',
+    '"@',
+    '$KEYEVENTF_KEYUP = 0x0002',
+    '$SW_RESTORE = 9',
+    '$VK_CONTROL = 0x11',
+    '$VK_V = 0x56',
+    'if ($TargetWindow -ne 0) {',
+    '  $hwnd = [System.IntPtr]::new($TargetWindow)',
+    '  [FormatFlow.Win32Paste]::ShowWindowAsync($hwnd, $SW_RESTORE) | Out-Null',
+    '  Start-Sleep -Milliseconds 120',
+    '  $currentThread = [FormatFlow.Win32Paste]::GetCurrentThreadId()',
+    '  $targetThread = [FormatFlow.Win32Paste]::GetWindowThreadProcessId($hwnd, [System.IntPtr]::Zero)',
+    '  $foregroundThread = [FormatFlow.Win32Paste]::GetWindowThreadProcessId([FormatFlow.Win32Paste]::GetForegroundWindow(), [System.IntPtr]::Zero)',
+    '  if ($targetThread -ne 0) { [FormatFlow.Win32Paste]::AttachThreadInput($currentThread, $targetThread, $true) | Out-Null }',
+    '  if ($foregroundThread -ne 0 -and $foregroundThread -ne $targetThread) { [FormatFlow.Win32Paste]::AttachThreadInput($currentThread, $foregroundThread, $true) | Out-Null }',
+    '  [FormatFlow.Win32Paste]::SetForegroundWindow($hwnd) | Out-Null',
+    '  if ($foregroundThread -ne 0 -and $foregroundThread -ne $targetThread) { [FormatFlow.Win32Paste]::AttachThreadInput($currentThread, $foregroundThread, $false) | Out-Null }',
+    '  if ($targetThread -ne 0) { [FormatFlow.Win32Paste]::AttachThreadInput($currentThread, $targetThread, $false) | Out-Null }',
+    '  Start-Sleep -Milliseconds 180',
+    '}',
+    '[FormatFlow.Win32Paste]::keybd_event($VK_CONTROL, 0, 0, [System.UIntPtr]::Zero)',
+    '[FormatFlow.Win32Paste]::keybd_event($VK_V, 0, 0, [System.UIntPtr]::Zero)',
+    'Start-Sleep -Milliseconds 50',
+    '[FormatFlow.Win32Paste]::keybd_event($VK_V, 0, $KEYEVENTF_KEYUP, [System.UIntPtr]::Zero)',
+    '[FormatFlow.Win32Paste]::keybd_event($VK_CONTROL, 0, $KEYEVENTF_KEYUP, [System.UIntPtr]::Zero)'
   ].join('\r\n')
   await fs.mkdir(path.dirname(scriptPath), { recursive: true })
   await fs.writeFile(scriptPath, script, 'utf8')
@@ -237,10 +275,12 @@ async function writeClipboardTextAndPaste(text: string): Promise<{ ok: boolean; 
   try {
     const scriptPath = await getPasteScriptPath()
     mainWindow?.hide()
-    await sleep(120)
-    await restoreExternalForegroundWindow()
-    await sleep(120)
-    await execFile('wscript.exe', [scriptPath], { windowsHide: true, timeout: 2500 })
+    await sleep(180)
+    await execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, lastExternalForegroundWindow || '0'],
+      { windowsHide: true, timeout: 3500 }
+    )
     return { ok: true, message: '已自动粘贴到当前对话框' }
   } catch (error) {
     mainWindow?.show()

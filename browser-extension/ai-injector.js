@@ -40,7 +40,14 @@
       }
     }
 
-    setInputValue(input, text)
+    const fillResult = await setInputValue(input, text)
+    if (!fillResult.ok) {
+      return {
+        ok: false,
+        message: fillResult.message || `未能填入 ${target?.name || 'AI 页面'} 输入框。`
+      }
+    }
+
     if (!shouldSubmit) {
       return {
         ok: true,
@@ -87,13 +94,19 @@
     return rect.width > 20 && rect.height > 12 && style.visibility !== 'hidden' && style.display !== 'none'
   }
 
-  function setInputValue(element, text) {
+  async function setInputValue(element, text) {
     element.focus()
     if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
-      element.value = text
-      element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
+      setNativeInputValue(element, text)
+      element.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }))
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }))
       element.dispatchEvent(new Event('change', { bubbles: true }))
-      return
+      await sleep(50)
+
+      if (element.value !== text) {
+        return { ok: false, message: '输入框拒绝了写入内容，页面可能拦截了自动填入。' }
+      }
+      return { ok: true }
     }
 
     const selection = window.getSelection()
@@ -102,7 +115,24 @@
     selection?.removeAllRanges()
     selection?.addRange(range)
     document.execCommand('insertText', false, text)
-    element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }))
+    element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }))
+    await sleep(50)
+    const currentText = element.innerText || element.textContent || ''
+    if (!currentText.includes(text)) {
+      element.textContent = text
+      element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text }))
+    }
+    return { ok: true }
+  }
+
+  function setNativeInputValue(element, text) {
+    const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+    const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set
+    if (valueSetter) {
+      valueSetter.call(element, text)
+    } else {
+      element.value = text
+    }
   }
 
   async function submitInput(target, input) {

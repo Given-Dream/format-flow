@@ -338,6 +338,7 @@ export function App(): JSX.Element {
   }
 
   async function pasteQuickCall(text: string, success: string): Promise<void> {
+    setNotice('正在粘贴到上一个窗口...')
     const result = await writeClipboardTextAndPaste(text)
     if (!result.ok) {
       setNotice(result.message)

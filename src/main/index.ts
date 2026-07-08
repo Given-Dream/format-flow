@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Notification, shell } from 'electron'
 import { promises as fs } from 'node:fs'
 import fsSync from 'node:fs'
 import http from 'node:http'
@@ -212,6 +212,48 @@ $hwnd = [System.IntPtr]::new([Int64]"${lastExternalForegroundWindow}")
     })
   } catch {
     // The clipboard still contains the text, so manual paste remains available if Windows blocks focus restore.
+  }
+}
+
+function showPasteNotification(title: string, body: string): void {
+  if (!Notification.isSupported()) return
+
+  try {
+    new Notification({ title, body, silent: true }).show()
+  } catch {
+    // The renderer still receives the paste result if Windows notification delivery is unavailable.
+  }
+}
+
+async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ ok: boolean; message: string }> {
+  const cleanText = text.trim()
+  if (!cleanText) return { ok: false, message: '没有可粘贴的内容' }
+  clipboard.writeText(text)
+
+  if (process.platform !== 'win32') {
+    const message = '已复制到剪贴板；自动粘贴当前仅支持 Windows。'
+    showPasteNotification('Format Flow', message)
+    return { ok: false, message }
+  }
+
+  try {
+    const scriptPath = await getPasteScriptPath()
+    mainWindow?.hide()
+    await sleep(180)
+    await execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, lastExternalForegroundWindow || '0'],
+      { windowsHide: true, timeout: 3500 }
+    )
+    const message = '已粘贴到上一个窗口'
+    showPasteNotification('Format Flow', message)
+    return { ok: true, message }
+  } catch (error) {
+    mainWindow?.show()
+    mainWindow?.focus()
+    const message = `自动粘贴失败，内容已复制到剪贴板：${error instanceof Error ? error.message : '未知错误'}`
+    showPasteNotification('Format Flow', message)
+    return { ok: false, message }
   }
 }
 
@@ -1201,7 +1243,7 @@ function registerIpc(): void {
       }
     }
   })
-  ipcMain.handle('clipboard:writeTextAndPaste', (_event, text: string) => writeClipboardTextAndPaste(text))
+  ipcMain.handle('clipboard:writeTextAndPaste', (_event, text: string) => writeClipboardTextAndPasteWithFeedback(text))
   ipcMain.handle('browserBridge:getStatus', () => getBrowserBridgeStatus())
   ipcMain.handle('browserBridge:getOutput', () => browserBridgeOutput)
   ipcMain.handle('browserBridge:queueTask', (_event, payload: Record<string, unknown>) => queueBrowserBridgeTask(payload))
@@ -1223,6 +1265,7 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
+  if (process.platform === 'win32') app.setAppUserModelId('com.songyu.formatflow')
   registerIpc()
   startBrowserBridgeServer()
   createWindow()

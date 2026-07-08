@@ -338,26 +338,6 @@ export function App(): JSX.Element {
   }
 
   async function pasteQuickCall(text: string, success: string): Promise<void> {
-    const livePluginStatus = (await getLiveBrowserPluginStatus()) || pluginStatus
-    setPluginStatus(livePluginStatus)
-
-    if (livePluginStatus.connected && livePluginStatus.quickCallFillOnly) {
-      const clipboardResult = await writeClipboardText(text)
-      if (!clipboardResult.ok) {
-        setNotice(clipboardResult.message)
-      }
-
-      const pluginResult = await queueBrowserPluginTask({
-        text,
-        mode: 'quick-call',
-        submit: false
-      })
-      if (pluginResult.ok) {
-        setNotice(success)
-        return
-      }
-    }
-
     const result = await writeClipboardTextAndPaste(text)
     if (!result.ok) {
       setNotice(result.message)

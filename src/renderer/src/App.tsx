@@ -141,6 +141,15 @@ async function queueBrowserPluginTask(payload: Record<string, unknown>): Promise
   return { ok: true, message: '任务已发送给浏览器插件。' }
 }
 
+async function getLiveBrowserPluginStatus(): Promise<AiPluginStatus | null> {
+  if (isBrowserReviewMode() || !formatFlow.getBrowserBridgeStatus) return null
+  try {
+    return normalizePluginStatus(await formatFlow.getBrowserBridgeStatus())
+  } catch {
+    return null
+  }
+}
+
 const tabs: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'prompts', label: '提示词', description: '按分类标签管理、搜索和调用' },
   { id: 'skills', label: 'Skills', description: '扫描、导入、安装和索引 Skill' },
@@ -329,7 +338,10 @@ export function App(): JSX.Element {
   }
 
   async function pasteQuickCall(text: string, success: string): Promise<void> {
-    if (pluginStatus.connected && pluginStatus.quickCallFillOnly) {
+    const livePluginStatus = (await getLiveBrowserPluginStatus()) || pluginStatus
+    setPluginStatus(livePluginStatus)
+
+    if (livePluginStatus.connected && livePluginStatus.quickCallFillOnly) {
       const clipboardResult = await writeClipboardText(text)
       if (!clipboardResult.ok) {
         setNotice(clipboardResult.message)

@@ -265,6 +265,10 @@ async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ o
   }
 
   try {
+    await rememberExternalForegroundWindow()
+    if (!lastExternalForegroundWindow || lastExternalForegroundWindow === '0') {
+      throw new Error('未记录到可粘贴的目标窗口，请先切换到目标应用再调用快捷调用。')
+    }
     const scriptPath = await getPasteScriptPath()
     mainWindow?.hide()
     await sleep(180)
@@ -273,7 +277,12 @@ async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ o
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, lastExternalForegroundWindow || '0'],
       { windowsHide: true, timeout: 3500 }
     )
-    const message = '已粘贴到上一个窗口'
+    await sleep(120)
+    const foregroundAfter = await getForegroundWindowHandle()
+    if (foregroundAfter && foregroundAfter !== lastExternalForegroundWindow) {
+      throw new Error('已执行粘贴快捷键，但目标窗口未成功重新获得焦点。')
+    }
+    const message = '已尝试粘贴到上一个窗口'
     showPasteNotification('Format Flow', message)
     return { ok: true, message }
   } catch (error) {

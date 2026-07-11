@@ -2,8 +2,10 @@
   if (globalThis.__FORMAT_FLOW_AI_INJECTOR_READY__) return
   globalThis.__FORMAT_FLOW_AI_INJECTOR_READY__ = true
 
+  const LOCAL_BRIDGE_BASE = 'http://127.0.0.1:48174/format-flow-bridge'
   let lastOutput = ''
   let outputTimer = 0
+  let localBridgePolling = false
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || message.type !== 'FORMAT_FLOW_INJECT_TASK') return false
@@ -24,6 +26,7 @@
     sendStatus()
     window.setInterval(sendStatus, 3000)
     startOutputObserver()
+    startLocalBridgePolling()
   }
 
   async function injectTask(payload) {
@@ -334,6 +337,11 @@
         text
       }
     })
+    void postLocalBridgeOutput({
+      ...statusPayload(target),
+      text,
+      updatedAt: Date.now()
+    })
   }
 
   function extractLatestOutput() {
@@ -370,6 +378,7 @@
 
   function sendStatus() {
     const target = detectTarget()
+    void postLocalBridgeStatus(statusPayload(target))
     chrome.runtime.sendMessage({
       type: 'FORMAT_FLOW_AI_STATUS',
       payload: statusPayload(target)
@@ -386,6 +395,68 @@
       capabilities: {
         quickCallFillOnly: true
       }
+    }
+  }
+
+  function startLocalBridgePolling() {
+    if (localBridgePolling || typeof fetch !== 'function') return
+    localBridgePolling = true
+    window.setInterval(() => {
+      void pollLocalBridgeTask()
+    }, 1500)
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) void pollLocalBridgeTask()
+    })
+    void pollLocalBridgeTask()
+  }
+
+  async function pollLocalBridgeTask() {
+    const target = detectTarget()
+    if (!target) return
+
+    await postLocalBridgeStatus(statusPayload(target))
+
+    if (document.visibilityState && document.visibilityState !== 'visible') return
+
+    try {
+      const response = await fetch(`${LOCAL_BRIDGE_BASE}/tasks/next`, { cache: 'no-store' })
+      if (!response.ok) return
+      const data = await response.json()
+      const task = data?.task
+      if (!task?.id || !task.payload) return
+
+      const result = await injectTask(task.payload)
+      await postLocalBridgeTaskResult(task.id, {
+        ...result,
+        status: statusPayload(detectTarget())
+      })
+    } catch {
+      // The desktop app may be closed; keep the page-side bridge quiet.
+    }
+  }
+
+  async function postLocalBridgeStatus(status) {
+    await postLocalBridge('/extension/status', status)
+  }
+
+  async function postLocalBridgeOutput(output) {
+    await postLocalBridge('/extension/output', output)
+  }
+
+  async function postLocalBridgeTaskResult(taskId, result) {
+    await postLocalBridge('/tasks/result', { taskId, result })
+  }
+
+  async function postLocalBridge(path, payload) {
+    if (typeof fetch !== 'function') return
+    try {
+      await fetch(`${LOCAL_BRIDGE_BASE}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload || {})
+      })
+    } catch {
+      // No desktop app is listening.
     }
   }
 })()

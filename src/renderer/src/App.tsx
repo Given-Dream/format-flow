@@ -363,6 +363,7 @@ export function App(): JSX.Element {
     if (!store) return []
     return rawSkills.map((skill) => mergeSkillMetadata(skill, store.skillIndex[skill.id]))
   }, [rawSkills, store])
+  const activeTabMeta = tabs.find((tab) => tab.id === activeTab) || tabs[0]
 
   async function commit(nextStore: AppStore): Promise<void> {
     const normalized = normalizeStore(nextStore)
@@ -432,42 +433,54 @@ export function App(): JSX.Element {
       </aside>
 
       <main className="workspace">
-        {activeTab === 'prompts' && <PromptPanel store={store} commit={commit} setNotice={setNotice} />}
-        {activeTab === 'skills' && (
-          <SkillPanel
-            store={store}
-            skills={skills}
-            commit={commit}
-            scanSkills={scanSkills}
-            openPath={(targetPath) => formatFlow.openPath(targetPath)}
-            setNotice={setNotice}
-          />
-        )}
-        {activeTab === 'workflows' && <WorkflowPanel store={store} skills={skills} commit={commit} />}
-        {activeTab === 'runner' && (
-          <RunnerPanel
-            store={store}
-            skills={skills}
-            commit={commit}
-            setNotice={setNotice}
-            pluginStatus={pluginStatus}
-            pluginOutput={pluginOutput}
-            requestPluginStatus={requestPluginStatus}
-          />
-        )}
-        {activeTab === 'mcps' && <McpPanel store={store} commit={commit} setNotice={setNotice} />}
-        {activeTab === 'learning' && (
-          <LearningPanel store={store} commit={commit} scanSkills={scanSkills} setNotice={setNotice} />
-        )}
-        {activeTab === 'settings' && (
-          <SettingsPanel
-            store={store}
-            paths={paths}
-            commit={commit}
-            scanSkills={scanSkills}
-            setNotice={setNotice}
-          />
-        )}
+        <header className="workspace-header">
+          <div>
+            <h1>{activeTabMeta.label}</h1>
+            <p>{activeTabMeta.description}</p>
+          </div>
+          <div className="workspace-status">
+            <span className={isBusy ? 'status-dot busy' : 'status-dot'} />
+            <span>{notice}</span>
+          </div>
+        </header>
+        <div className="workspace-content">
+          {activeTab === 'prompts' && <PromptPanel store={store} commit={commit} setNotice={setNotice} />}
+          {activeTab === 'skills' && (
+            <SkillPanel
+              store={store}
+              skills={skills}
+              commit={commit}
+              scanSkills={scanSkills}
+              openPath={(targetPath) => formatFlow.openPath(targetPath)}
+              setNotice={setNotice}
+            />
+          )}
+          {activeTab === 'workflows' && <WorkflowPanel store={store} skills={skills} commit={commit} />}
+          {activeTab === 'runner' && (
+            <RunnerPanel
+              store={store}
+              skills={skills}
+              commit={commit}
+              setNotice={setNotice}
+              pluginStatus={pluginStatus}
+              pluginOutput={pluginOutput}
+              requestPluginStatus={requestPluginStatus}
+            />
+          )}
+          {activeTab === 'mcps' && <McpPanel store={store} commit={commit} setNotice={setNotice} />}
+          {activeTab === 'learning' && (
+            <LearningPanel store={store} commit={commit} scanSkills={scanSkills} setNotice={setNotice} />
+          )}
+          {activeTab === 'settings' && (
+            <SettingsPanel
+              store={store}
+              paths={paths}
+              commit={commit}
+              scanSkills={scanSkills}
+              setNotice={setNotice}
+            />
+          )}
+        </div>
       </main>
 
       {launcherOpen && (

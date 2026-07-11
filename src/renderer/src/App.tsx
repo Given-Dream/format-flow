@@ -1944,6 +1944,9 @@ function SettingsPanel({
           <button type="button" onClick={() => setCapturing(true)}>
             开始捕获
           </button>
+          <button type="button" onClick={() => setShortcut('Alt+Space')}>
+            Alt+Space
+          </button>
           <button className="primary-action" type="button" onClick={() => void saveShortcut()}>
             保存快捷键
           </button>

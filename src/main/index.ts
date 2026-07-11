@@ -31,6 +31,7 @@ let browserBridgeOutput: Record<string, unknown> | null = null
 let lastExternalForegroundWindow = ''
 let registeredShortcut = ''
 let shortcutCaptureActive = false
+let captureAltSpaceRegistered = false
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 
 function getDataDirectoryPreferencePath(): string {
@@ -1184,7 +1185,7 @@ function createWindow(): void {
   })
 
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (!shortcutCaptureActive || input.type !== 'keyDown') return
+    if (!shortcutCaptureActive || !['keyDown', 'keyUp'].includes(input.type)) return
     event.preventDefault()
     mainWindow?.webContents.send('shortcut:captureInput', {
       key: input.key,
@@ -1222,7 +1223,22 @@ function setShortcutCaptureActive(active: boolean): void {
 
   if (active) {
     if (registeredShortcut) globalShortcut.unregister(registeredShortcut)
+    captureAltSpaceRegistered = globalShortcut.register('Alt+Space', () => {
+      mainWindow?.webContents.send('shortcut:captureInput', {
+        key: 'Space',
+        code: 'Space',
+        control: false,
+        meta: false,
+        alt: true,
+        shift: false
+      })
+    })
     return
+  }
+
+  if (captureAltSpaceRegistered) {
+    globalShortcut.unregister('Alt+Space')
+    captureAltSpaceRegistered = false
   }
 
   if (registeredShortcut && !globalShortcut.isRegistered(registeredShortcut)) {
@@ -1338,6 +1354,7 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   shortcutCaptureActive = false
+  captureAltSpaceRegistered = false
   globalShortcut.unregisterAll()
   browserBridgeServer?.close()
 })

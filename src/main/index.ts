@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, Notification, shell } from 'electron'
 import { promises as fs } from 'node:fs'
 import fsSync from 'node:fs'
 import http from 'node:http'
@@ -1163,6 +1163,8 @@ function createWindow(): void {
       sandbox: false
     }
   })
+  mainWindow.setMenu(null)
+  mainWindow.setMenuBarVisibility(false)
 
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
@@ -1286,6 +1288,7 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   if (process.platform === 'win32') app.setAppUserModelId('com.songyu.formatflow')
+  Menu.setApplicationMenu(null)
   registerIpc()
   startBrowserBridgeServer()
   createWindow()

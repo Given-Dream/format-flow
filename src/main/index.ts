@@ -70,6 +70,45 @@ function getDefaultBackupDirectory(): string {
   return path.join(getDataRoot(), 'backups')
 }
 
+function getBrowserExtensionDirectory(): string {
+  return app.isPackaged ? path.join(process.resourcesPath, 'browser-extension') : path.join(__dirname, '../../browser-extension')
+}
+
+function browserExecutableCandidates(): string[] {
+  if (process.platform !== 'win32') return []
+  return [
+    path.join(process.env.PROGRAMFILES || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    path.join(process.env.PROGRAMFILES || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(process.env['PROGRAMFILES(X86)'] || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+    path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'Application', 'msedge.exe')
+  ].filter(Boolean)
+}
+
+async function openBrowserExtensionInstaller(): Promise<{ ok: boolean; message: string; path: string }> {
+  const extensionPath = getBrowserExtensionDirectory()
+  if (!fsSync.existsSync(extensionPath)) {
+    return { ok: false, message: `Browser extension directory not found: ${extensionPath}`, path: extensionPath }
+  }
+
+  await shell.openPath(extensionPath)
+  const browserPath = browserExecutableCandidates().find((candidate) => fsSync.existsSync(candidate))
+  if (browserPath) {
+    try {
+      await execFile(browserPath, ['chrome://extensions'])
+    } catch {
+      // Opening the folder is still enough for manual loading.
+    }
+  }
+
+  return {
+    ok: true,
+    message: '已打开浏览器插件目录；在 Chrome/Edge 扩展页开启开发者模式后，选择“加载已解压的扩展程序”并选中该目录。',
+    path: extensionPath
+  }
+}
+
 function defaultSkillDirectories(): string[] {
   const candidates = [
     process.env.CODEX_HOME ? path.join(process.env.CODEX_HOME, 'skills') : '',
@@ -537,6 +576,7 @@ function getPaths(): AppPaths {
     defaultBackupDirectory: getDefaultBackupDirectory(),
     storePath: getStorePath(),
     managedSkillDirectory: getManagedSkillDirectory(),
+    browserExtensionDirectory: getBrowserExtensionDirectory(),
     dataDirectoryPreferencePath: getDataDirectoryPreferencePath(),
     defaultSkillDirectories: defaultSkillDirectories()
   }
@@ -1352,6 +1392,7 @@ function registerIpc(): void {
   ipcMain.handle('browserBridge:getStatus', () => getBrowserBridgeStatus())
   ipcMain.handle('browserBridge:getOutput', () => browserBridgeOutput)
   ipcMain.handle('browserBridge:queueTask', (_event, payload: Record<string, unknown>) => queueBrowserBridgeTask(payload))
+  ipcMain.handle('browserExtension:openInstaller', () => openBrowserExtensionInstaller())
   ipcMain.handle('shortcut:set', async (_event, accelerator: string) => {
     const result = registerShortcut(accelerator)
     if (result.ok) {

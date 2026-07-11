@@ -157,6 +157,7 @@ export type AppPaths = {
   defaultBackupDirectory: string
   storePath: string
   managedSkillDirectory: string
+  browserExtensionDirectory?: string
   dataDirectoryPreferencePath?: string
   defaultSkillDirectories: string[]
 }

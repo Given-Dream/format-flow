@@ -1990,6 +1990,15 @@ function SettingsPanel({
     if (result.ok) await commit(nextStore)
   }
 
+  async function openBrowserExtensionInstaller(): Promise<void> {
+    if (!formatFlow.openBrowserExtensionInstaller) {
+      setNotice('浏览器插件目录只在桌面安装版中可用。')
+      return
+    }
+    const result = await formatFlow.openBrowserExtensionInstaller()
+    setNotice(result.message)
+  }
+
   return (
     <section className="panel settings-layout">
       <div className="settings-card">
@@ -2009,6 +2018,12 @@ function SettingsPanel({
           </button>
         </div>
         <p className="hint">按下快捷键后会弹出启动器：调用提示词 / 调用 Skill / 调用工作流。</p>
+        <div className="path-box">
+          <code>{paths?.browserExtensionDirectory || 'browser-extension'}</code>
+          <button type="button" onClick={() => void openBrowserExtensionInstaller()}>
+            安装浏览器插件
+          </button>
+        </div>
         {recommendationsOpen && (
           <RecommendedShortcutModal
             current={shortcut}
@@ -3607,6 +3622,11 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     setShortcut: async (accelerator: string) => ({ ok: !accelerator.startsWith('MouseButton'), accelerator, message: '浏览器审查模式已保存快捷键预览' }),
     setShortcutCaptureActive: async () => undefined,
     onShortcutCaptureInput: () => () => undefined,
+    openBrowserExtensionInstaller: async () => ({
+      ok: false,
+      message: '浏览器插件安装入口只在桌面安装版中可用。',
+      path: ''
+    }),
     openPath: async () => '',
     onOpenLauncher: () => () => undefined
   }

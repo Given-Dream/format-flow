@@ -45,6 +45,8 @@ const api = {
   getBrowserBridgeOutput: (): Promise<Record<string, unknown> | null> => ipcRenderer.invoke('browserBridge:getOutput'),
   queueBrowserBridgeTask: (payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; status?: Record<string, unknown> }> =>
     ipcRenderer.invoke('browserBridge:queueTask', payload),
+  openBrowserExtensionInstaller: (): Promise<{ ok: boolean; message: string; path: string }> =>
+    ipcRenderer.invoke('browserExtension:openInstaller'),
   setShortcut: (accelerator: string): Promise<ShortcutResult> => ipcRenderer.invoke('shortcut:set', accelerator),
   setShortcutCaptureActive: (active: boolean): Promise<void> => ipcRenderer.invoke('shortcut:captureActive', active),
   onShortcutCaptureInput: (listener: (input: Record<string, unknown>) => void): (() => void) => {

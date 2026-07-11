@@ -1806,7 +1806,9 @@ function SettingsPanel({
         setCapturing(false)
         return
       }
-      setShortcut(shortcutFromKeyboardEvent(event))
+      const nextShortcut = shortcutFromKeyboardEvent(event)
+      setShortcut(nextShortcut)
+      if (isModifierOnlyShortcut(nextShortcut)) return
       setCapturing(false)
     }
 
@@ -2823,6 +2825,10 @@ function shortcutFromKeyboardEvent(event: KeyboardEvent): string {
   const key = normalizeShortcutKey(event.key)
   if (!['Control', 'Alt', 'Shift', 'Meta'].includes(key)) parts.push(key)
   return parts.length ? parts.join('+') : key
+}
+
+function isModifierOnlyShortcut(shortcut: string): boolean {
+  return ['CommandOrControl', 'Control', 'Alt', 'Shift', 'Meta'].includes(shortcut)
 }
 
 function normalizeShortcutKey(key: string): string {

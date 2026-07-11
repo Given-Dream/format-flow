@@ -29,6 +29,7 @@ let browserBridgeLastSeen = 0
 let browserBridgeStatus: Record<string, unknown> = disconnectedBrowserBridgeStatus()
 let browserBridgeOutput: Record<string, unknown> | null = null
 let lastExternalForegroundWindow = ''
+let registeredShortcut = ''
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 
 function getDataDirectoryPreferencePath(): string {
@@ -1200,10 +1201,29 @@ async function registerStoredShortcut(): Promise<ShortcutResult> {
 }
 
 function registerShortcut(accelerator: string): ShortcutResult {
-  globalShortcut.unregisterAll()
+  if (accelerator.startsWith('MouseButton')) {
+    return {
+      ok: false,
+      accelerator: registeredShortcut || accelerator,
+      message: '鼠标全局快捷键暂不支持；请使用键盘组合键。'
+    }
+  }
+
+  if (registeredShortcut === accelerator && globalShortcut.isRegistered(accelerator)) {
+    return {
+      ok: true,
+      accelerator,
+      message: '快捷键已注册'
+    }
+  }
+
   const ok = globalShortcut.register(accelerator, () => {
     void toggleMainWindow()
   })
+  if (ok) {
+    if (registeredShortcut && registeredShortcut !== accelerator) globalShortcut.unregister(registeredShortcut)
+    registeredShortcut = accelerator
+  }
   return {
     ok,
     accelerator,

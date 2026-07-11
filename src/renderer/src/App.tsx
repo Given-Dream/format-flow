@@ -110,6 +110,39 @@ type ShortcutCaptureInput = {
   alt?: unknown
   shift?: unknown
 }
+type RecommendedShortcut = {
+  accelerator: string
+  title: string
+  detail: string
+}
+
+const RECOMMENDED_SHORTCUTS: RecommendedShortcut[] = [
+  {
+    accelerator: 'CommandOrControl+Alt+Space',
+    title: 'Ctrl + Alt + Space',
+    detail: '推荐。和 Windows 系统菜单冲突少，适合频繁唤起。'
+  },
+  {
+    accelerator: 'CommandOrControl+Shift+Space',
+    title: 'Ctrl + Shift + Space',
+    detail: '推荐。容易按，也不容易误触系统窗口菜单。'
+  },
+  {
+    accelerator: 'CommandOrControl+Alt+K',
+    title: 'Ctrl + Alt + K',
+    detail: '推荐。字母键组合稳定，适合避开输入法和系统快捷键。'
+  },
+  {
+    accelerator: 'CommandOrControl+Shift+K',
+    title: 'Ctrl + Shift + K',
+    detail: '推荐。适合作为第二选择，记忆成本低。'
+  },
+  {
+    accelerator: 'Alt+Space',
+    title: 'Alt + Space',
+    detail: '可用但不优先推荐。Windows 默认会用它打开窗口系统菜单。'
+  }
+]
 
 const formatFlow = getFormatFlowApi()
 
@@ -1804,6 +1837,7 @@ function SettingsPanel({
   const [gitBackupBranch, setGitBackupBranch] = useState(store.settings.gitBackupBranch || 'main')
   const [gitBackupUserEmail, setGitBackupUserEmail] = useState(store.settings.gitBackupUserEmail || '2878705044@qq.com')
   const [capturing, setCapturing] = useState(false)
+  const [recommendationsOpen, setRecommendationsOpen] = useState(false)
 
   useEffect(() => {
     if (!capturing) return
@@ -1944,14 +1978,24 @@ function SettingsPanel({
           <button type="button" onClick={() => setCapturing(true)}>
             开始捕获
           </button>
-          <button type="button" onClick={() => setShortcut('Alt+Space')}>
-            Alt+Space
+          <button type="button" onClick={() => setRecommendationsOpen(true)}>
+            推荐快捷键
           </button>
           <button className="primary-action" type="button" onClick={() => void saveShortcut()}>
             保存快捷键
           </button>
         </div>
         <p className="hint">按下快捷键后会弹出启动器：调用提示词 / 调用 Skill / 调用工作流。</p>
+        {recommendationsOpen && (
+          <RecommendedShortcutModal
+            current={shortcut}
+            close={() => setRecommendationsOpen(false)}
+            select={(accelerator) => {
+              setShortcut(accelerator)
+              setRecommendationsOpen(false)
+            }}
+          />
+        )}
       </div>
 
       <div className="settings-card">
@@ -2426,6 +2470,34 @@ function FlowNodeCard({ node, skill, mcp }: { node: WorkflowNode; skill?: SkillI
       {mcp && <small>使用 MCP：{mcp.name}</small>}
       <TagRow tags={node.tags.slice(0, 3)} />
     </div>
+  )
+}
+
+function RecommendedShortcutModal({
+  current,
+  close,
+  select
+}: {
+  current: string
+  close: () => void
+  select: (accelerator: string) => void
+}): JSX.Element {
+  return (
+    <Modal title="推荐快捷键" close={close}>
+      <div className="shortcut-recommendations">
+        {RECOMMENDED_SHORTCUTS.map((shortcut) => (
+          <button
+            key={shortcut.accelerator}
+            className={current === shortcut.accelerator ? 'shortcut-option active' : 'shortcut-option'}
+            type="button"
+            onClick={() => select(shortcut.accelerator)}
+          >
+            <strong>{shortcut.title}</strong>
+            <span>{shortcut.detail}</span>
+          </button>
+        ))}
+      </div>
+    </Modal>
   )
 }
 

@@ -946,6 +946,37 @@ label {
   background: var(--accent);
 }
 
+.shortcut-recommendations {
+  display: grid;
+  gap: 10px;
+}
+
+.shortcut-option {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  padding: 13px 14px;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.shortcut-option strong {
+  font-size: 15px;
+}
+
+.shortcut-option span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.shortcut-option.active {
+  color: var(--accent);
+  border-color: rgba(22, 93, 255, 0.42);
+  background: var(--accent-soft);
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

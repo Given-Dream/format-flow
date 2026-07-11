@@ -228,6 +228,30 @@ function showPasteNotification(title: string, body: string): void {
   }
 }
 
+async function showPasteFailureDialog(message: string): Promise<void> {
+  try {
+    if (mainWindow) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: 'Format Flow',
+        message: '自动粘贴失败',
+        detail: message,
+        buttons: ['知道了']
+      })
+    } else {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'Format Flow',
+        message: '自动粘贴失败',
+        detail: message,
+        buttons: ['知道了']
+      })
+    }
+  } catch {
+    // Fall back to the renderer notice if the dialog cannot be shown.
+  }
+}
+
 async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ ok: boolean; message: string }> {
   const cleanText = text.trim()
   if (!cleanText) return { ok: false, message: '没有可粘贴的内容' }
@@ -236,6 +260,7 @@ async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ o
   if (process.platform !== 'win32') {
     const message = '已复制到剪贴板；自动粘贴当前仅支持 Windows。'
     showPasteNotification('Format Flow', message)
+    void showPasteFailureDialog(message)
     return { ok: false, message }
   }
 
@@ -256,6 +281,7 @@ async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ o
     mainWindow?.focus()
     const message = `自动粘贴失败，内容已复制到剪贴板：${error instanceof Error ? error.message : '未知错误'}`
     showPasteNotification('Format Flow', message)
+    void showPasteFailureDialog(message)
     return { ok: false, message }
   }
 }

@@ -102,6 +102,14 @@ type QuickCallItem = {
   summary: string
   tags: string[]
 }
+type ShortcutCaptureInput = {
+  key?: unknown
+  code?: unknown
+  control?: unknown
+  meta?: unknown
+  alt?: unknown
+  shift?: unknown
+}
 
 const formatFlow = getFormatFlowApi()
 
@@ -1800,16 +1808,26 @@ function SettingsPanel({
   useEffect(() => {
     if (!capturing) return
 
+    void formatFlow.setShortcutCaptureActive?.(true)
+
+    function applyShortcutInput(input: ShortcutCaptureInput): void {
+      const nextShortcut = shortcutFromCaptureInput(input)
+      setShortcut(nextShortcut)
+      if (isModifierOnlyShortcut(nextShortcut)) return
+      setCapturing(false)
+    }
+
+    const removeShortcutCaptureInput = formatFlow.onShortcutCaptureInput?.((input: Record<string, unknown>) => {
+      applyShortcutInput(input as ShortcutCaptureInput)
+    })
+
     function onKeyDown(event: KeyboardEvent): void {
       event.preventDefault()
       if (event.key === 'Escape') {
         setCapturing(false)
         return
       }
-      const nextShortcut = shortcutFromKeyboardEvent(event)
-      setShortcut(nextShortcut)
-      if (isModifierOnlyShortcut(nextShortcut)) return
-      setCapturing(false)
+      applyShortcutInput(captureInputFromKeyboardEvent(event))
     }
 
     function onPointerDown(event: PointerEvent): void {
@@ -1822,6 +1840,8 @@ function SettingsPanel({
     window.addEventListener('keydown', onKeyDown, true)
     window.addEventListener('pointerdown', onPointerDown, true)
     return () => {
+      void formatFlow.setShortcutCaptureActive?.(false)
+      removeShortcutCaptureInput?.()
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('pointerdown', onPointerDown, true)
     }
@@ -2818,11 +2838,26 @@ function extractVariables(content: string): string[] {
 }
 
 function shortcutFromKeyboardEvent(event: KeyboardEvent): string {
+  return shortcutFromCaptureInput(captureInputFromKeyboardEvent(event))
+}
+
+function captureInputFromKeyboardEvent(event: KeyboardEvent): ShortcutCaptureInput {
+  return {
+    key: event.key,
+    code: event.code,
+    control: event.ctrlKey,
+    meta: event.metaKey,
+    alt: event.altKey,
+    shift: event.shiftKey
+  }
+}
+
+function shortcutFromCaptureInput(input: ShortcutCaptureInput): string {
   const parts: string[] = []
-  if (event.ctrlKey || event.metaKey) parts.push('CommandOrControl')
-  if (event.altKey) parts.push('Alt')
-  if (event.shiftKey) parts.push('Shift')
-  const key = normalizeShortcutKey(event.key)
+  if (input.control || input.meta) parts.push('CommandOrControl')
+  if (input.alt) parts.push('Alt')
+  if (input.shift) parts.push('Shift')
+  const key = normalizeShortcutKey(String(input.key || input.code || ''))
   if (!['Control', 'Alt', 'Shift', 'Meta'].includes(key)) parts.push(key)
   return parts.length ? parts.join('+') : key
 }
@@ -3472,6 +3507,8 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
       return { ok: true, message: '任务已发送给浏览器插件。' }
     },
     setShortcut: async (accelerator: string) => ({ ok: !accelerator.startsWith('MouseButton'), accelerator, message: '浏览器审查模式已保存快捷键预览' }),
+    setShortcutCaptureActive: async () => undefined,
+    onShortcutCaptureInput: () => () => undefined,
     openPath: async () => '',
     onOpenLauncher: () => () => undefined
   }

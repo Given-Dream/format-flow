@@ -30,6 +30,7 @@ let browserBridgeStatus: Record<string, unknown> = disconnectedBrowserBridgeStat
 let browserBridgeOutput: Record<string, unknown> | null = null
 let lastExternalForegroundWindow = ''
 let registeredShortcut = ''
+let shortcutCaptureActive = false
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 
 function getDataDirectoryPreferencePath(): string {
@@ -1182,6 +1183,19 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (!shortcutCaptureActive || input.type !== 'keyDown') return
+    event.preventDefault()
+    mainWindow?.webContents.send('shortcut:captureInput', {
+      key: input.key,
+      code: input.code,
+      control: input.control,
+      meta: input.meta,
+      alt: input.alt,
+      shift: input.shift
+    })
+  })
+
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
@@ -1200,6 +1214,22 @@ async function toggleMainWindow(): Promise<void> {
 async function registerStoredShortcut(): Promise<ShortcutResult> {
   const store = await loadStore()
   return registerShortcut(store.settings.shortcut)
+}
+
+function setShortcutCaptureActive(active: boolean): void {
+  if (shortcutCaptureActive === active) return
+  shortcutCaptureActive = active
+
+  if (active) {
+    if (registeredShortcut) globalShortcut.unregister(registeredShortcut)
+    return
+  }
+
+  if (registeredShortcut && !globalShortcut.isRegistered(registeredShortcut)) {
+    globalShortcut.register(registeredShortcut, () => {
+      void toggleMainWindow()
+    })
+  }
 }
 
 function registerShortcut(accelerator: string): ShortcutResult {
@@ -1283,6 +1313,9 @@ function registerIpc(): void {
     }
     return result
   })
+  ipcMain.handle('shortcut:captureActive', (_event, active: boolean) => {
+    setShortcutCaptureActive(active)
+  })
   ipcMain.handle('shell:openPath', (_event, targetPath: string) => shell.openPath(targetPath))
 }
 
@@ -1304,6 +1337,7 @@ app.on('before-quit', () => {
 })
 
 app.on('will-quit', () => {
+  shortcutCaptureActive = false
   globalShortcut.unregisterAll()
   browserBridgeServer?.close()
 })

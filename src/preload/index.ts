@@ -46,6 +46,12 @@ const api = {
   queueBrowserBridgeTask: (payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; status?: Record<string, unknown> }> =>
     ipcRenderer.invoke('browserBridge:queueTask', payload),
   setShortcut: (accelerator: string): Promise<ShortcutResult> => ipcRenderer.invoke('shortcut:set', accelerator),
+  setShortcutCaptureActive: (active: boolean): Promise<void> => ipcRenderer.invoke('shortcut:captureActive', active),
+  onShortcutCaptureInput: (listener: (input: Record<string, unknown>) => void): (() => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, input: Record<string, unknown>): void => listener(input)
+    ipcRenderer.on('shortcut:captureInput', wrapped)
+    return () => ipcRenderer.removeListener('shortcut:captureInput', wrapped)
+  },
   openPath: (targetPath: string): Promise<string> => ipcRenderer.invoke('shell:openPath', targetPath),
   onOpenLauncher: (listener: () => void): (() => void) => {
     const wrapped = (): void => listener()

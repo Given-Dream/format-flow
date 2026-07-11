@@ -201,11 +201,16 @@ const tabs: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'settings', label: '设置', description: '快捷键、Skill 路径和数据位置' }
 ]
 
+const activeTabStorageKey = 'format-flow-active-tab'
+
 export function App(): JSX.Element {
   const [store, setStore] = useState<AppStore | null>(null)
   const [paths, setPaths] = useState<AppPaths | null>(null)
   const [rawSkills, setRawSkills] = useState<SkillItem[]>([])
-  const [activeTab, setActiveTab] = useState<TabId>('prompts')
+  const [activeTab, setActiveTabState] = useState<TabId>(() => {
+    const savedTab = localStorage.getItem(activeTabStorageKey)
+    return tabs.some((tab) => tab.id === savedTab) ? (savedTab as TabId) : 'prompts'
+  })
   const [notice, setNotice] = useState('正在加载本地数据...')
   const [isBusy, setIsBusy] = useState(true)
   const [launcherOpen, setLauncherOpen] = useState(false)
@@ -364,6 +369,11 @@ export function App(): JSX.Element {
     return rawSkills.map((skill) => mergeSkillMetadata(skill, store.skillIndex[skill.id]))
   }, [rawSkills, store])
   const activeTabMeta = tabs.find((tab) => tab.id === activeTab) || tabs[0]
+
+  function setActiveTab(tab: TabId): void {
+    localStorage.setItem(activeTabStorageKey, tab)
+    setActiveTabState(tab)
+  }
 
   async function commit(nextStore: AppStore): Promise<void> {
     const normalized = normalizeStore(nextStore)
@@ -2011,7 +2021,7 @@ function SettingsPanel({
         )}
       </div>
 
-      <div className="settings-card">
+      <div className="settings-card skill-directory-card">
         <PanelHeader title="Skill 目录" detail="每行一个目录，扫描其中的 SKILL.md" />
         <div className="directory-list" aria-label="Skill 目录列表">
           {skillDirectories.length > 0 ? (
@@ -2049,7 +2059,7 @@ function SettingsPanel({
         </button>
       </div>
 
-      <div className="settings-card">
+      <div className="settings-card data-location-card">
         <PanelHeader title="数据保存位置" detail="桌面版可选择数据保存目录；安装包阶段会保留这个选择入口" />
         <label>
           数据目录

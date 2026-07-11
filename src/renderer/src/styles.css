@@ -628,14 +628,22 @@ label {
 
 .path-box {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   color: var(--muted);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 10px;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.path-box code {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .workflow-layout {
@@ -966,18 +974,36 @@ label {
 
 .settings-layout {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(360px, 0.95fr) minmax(430px, 1.15fr);
+  grid-auto-rows: minmax(0, 1fr);
   gap: 14px;
+  align-items: stretch;
   padding: 18px;
+  overflow: auto;
 }
 
 .settings-card {
   display: grid;
   align-content: start;
   gap: 16px;
+  min-width: 0;
+  min-height: 0;
   border: 1px solid var(--line);
   background: #ffffff;
   border-radius: var(--radius);
+  overflow: auto;
+}
+
+.skill-directory-card {
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  grid-template-rows: auto minmax(180px, 1fr) auto auto auto;
+}
+
+.data-location-card {
+  grid-column: 1;
+  grid-row: 2 / span 2;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
 }
 
 .capture-box {
@@ -1115,8 +1141,10 @@ label {
 
 .directory-list {
   display: grid;
+  align-content: start;
   gap: 8px;
-  max-height: 260px;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
   padding: 8px;
   border: 1px solid var(--line);
@@ -1137,12 +1165,12 @@ label {
 
 .directory-row code {
   min-width: 0;
-  overflow: hidden;
   color: var(--text);
   font-family: "Cascadia Code", "JetBrains Mono", monospace;
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .directory-row button {
@@ -1158,8 +1186,16 @@ label {
 
 .path-list {
   display: grid;
+  align-content: start;
   gap: 8px;
+  min-width: 0;
+  min-height: 0;
   margin: 0;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
 }
 
 .path-list dt {
@@ -1170,7 +1206,10 @@ label {
 .path-list dd {
   margin: 0 0 14px;
   color: var(--muted);
-  word-break: break-all;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .centered {
@@ -1202,6 +1241,11 @@ label {
   .runner-layout,
   .two-column {
     grid-template-columns: 1fr;
+  }
+
+  .skill-directory-card {
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .panel {

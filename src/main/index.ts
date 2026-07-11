@@ -278,6 +278,8 @@ async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ o
       { windowsHide: true, timeout: 3500 }
     )
     await sleep(120)
+    await restoreExternalForegroundWindow()
+    await sleep(120)
     const foregroundAfter = await getForegroundWindowHandle()
     if (foregroundAfter && foregroundAfter !== lastExternalForegroundWindow) {
       throw new Error('已执行粘贴快捷键，但目标窗口未成功重新获得焦点。')

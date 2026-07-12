@@ -2623,14 +2623,27 @@ function LauncherModal({
   const [mode, setMode] = useState<LauncherMode>('prompt')
   const [query, setQuery] = useState('')
   const [selectedGroup, setSelectedGroup] = useState('all')
-  const quickGroups = mergeGroupsWithTags(store.groups.quickCalls || [], allTags(buildQuickCallItems(store, skills)))
+  const callablePrompts = store.prompts.filter((prompt) => prompt.content.trim())
+  const quickGroupTags =
+    mode === 'prompt'
+      ? allTags(callablePrompts)
+      : mode === 'skill'
+        ? allTags(skills)
+        : allTags(store.workflows)
+  const quickGroups = filterGroupsWithTags(mergeGroupsWithTags(store.groups.quickCalls || [], quickGroupTags), quickGroupTags)
   const groupOptions = flattenGroups(quickGroups)
   const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
-  const promptItems = store.prompts.filter((prompt) => matchesTextAndTags(prompt, query, effectiveTags))
+  const promptItems = callablePrompts.filter((prompt) => matchesTextAndTags(prompt, query, effectiveTags))
   const skillItems = skills.filter((skill) => matchesTextAndTags(skill, query, effectiveTags))
   const workflowItems = store.workflows.filter((workflow) =>
     matchesTextAndTags({ title: workflow.title, summary: workflow.description, tags: workflow.tags }, query, effectiveTags)
   )
+
+  useEffect(() => {
+    if (selectedGroup !== 'all' && !groupOptions.some((group) => group.tag === selectedGroup)) {
+      setSelectedGroup('all')
+    }
+  }, [groupOptions, selectedGroup])
 
   return (
     <Modal title="快捷调用" close={close}>
@@ -3287,6 +3300,16 @@ function mergeGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {
   const existing = new Set(flattenGroups(uniqueGroups).map((group) => group.tag))
   const missing = tags.filter((tag) => !existing.has(tag)).map(groupFromTag)
   return [...uniqueGroups, ...missing]
+}
+
+function filterGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {
+  const allowedTags = new Set(tags)
+  return groups
+    .map((group) => ({
+      ...group,
+      children: filterGroupsWithTags(group.children, tags)
+    }))
+    .filter((group) => allowedTags.has(group.tag) || group.children.length > 0)
 }
 
 function flattenGroups(groups: GroupItem[]): GroupItem[] {

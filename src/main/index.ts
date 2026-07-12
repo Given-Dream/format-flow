@@ -4,7 +4,7 @@ import fsSync from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
 import os from 'node:os'
-import { execFile as execFileCallback } from 'node:child_process'
+import { execFile as execFileCallback, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
@@ -32,6 +32,8 @@ let browserBridgeStatus: Record<string, unknown> = disconnectedBrowserBridgeStat
 let browserBridgeOutput: Record<string, unknown> | null = null
 let lastExternalForegroundWindow = ''
 let registeredShortcut = ''
+let mouseShortcutProcess: ChildProcess | null = null
+let mouseShortcutAccelerator = ''
 let shortcutCaptureActive = false
 let captureAltSpaceRegistered = false
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
@@ -299,6 +301,101 @@ $hwnd = [System.IntPtr]::new([Int64]"${lastExternalForegroundWindow}")
   }
 }
 
+function mouseButtonVirtualKey(accelerator: string): number | null {
+  const match = accelerator.match(/^MouseButton([1-5])$/)
+  if (!match) return null
+  const button = Number(match[1])
+  if (button === 1) return 0x01
+  if (button === 2) return 0x04
+  if (button === 3) return 0x02
+  if (button === 4) return 0x05
+  if (button === 5) return 0x06
+  return null
+}
+
+function isMouseShortcut(accelerator: string): boolean {
+  return mouseButtonVirtualKey(accelerator) !== null
+}
+
+function stopMouseShortcutWatcher(): void {
+  if (!mouseShortcutProcess) return
+  mouseShortcutProcess.removeAllListeners()
+  mouseShortcutProcess.kill()
+  mouseShortcutProcess = null
+  mouseShortcutAccelerator = ''
+}
+
+function startMouseShortcutWatcher(accelerator: string): ShortcutResult {
+  const virtualKey = mouseButtonVirtualKey(accelerator)
+  if (!virtualKey) {
+    return { ok: false, accelerator: registeredShortcut || accelerator, message: '无法识别鼠标快捷键。' }
+  }
+  if (process.platform !== 'win32') {
+    return { ok: false, accelerator: registeredShortcut || accelerator, message: '鼠标全局快捷键当前仅支持 Windows。' }
+  }
+  if (mouseShortcutAccelerator === accelerator && mouseShortcutProcess && !mouseShortcutProcess.killed) {
+    return { ok: true, accelerator, message: mouseShortcutWarning(accelerator) || '鼠标快捷键已注册' }
+  }
+
+  stopMouseShortcutWatcher()
+
+  const script = [
+    'param([Int32]$VirtualKey)',
+    'Add-Type -Namespace FormatFlow -Name MouseShortcut -MemberDefinition @"',
+    '[System.Runtime.InteropServices.DllImport("user32.dll")]',
+    'public static extern short GetAsyncKeyState(int vKey);',
+    '"@',
+    '$wasDown = $false',
+    'while ($true) {',
+    '  $state = [FormatFlow.MouseShortcut]::GetAsyncKeyState($VirtualKey)',
+    '  $down = (($state -band 0x8000) -ne 0)',
+    '  if ($down -and -not $wasDown) {',
+    '    [Console]::Out.WriteLine("TRIGGER")',
+    '    [Console]::Out.Flush()',
+    '    Start-Sleep -Milliseconds 350',
+    '  }',
+    '  $wasDown = $down',
+    '  Start-Sleep -Milliseconds 25',
+    '}'
+  ].join('\r\n')
+
+  const command = `& { ${script} } -VirtualKey ${virtualKey}`
+  const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', (chunk: string) => {
+    if (!String(chunk).includes('TRIGGER') || shortcutCaptureActive) return
+    void toggleMainWindow()
+  })
+  child.stderr.on('data', () => undefined)
+  child.on('exit', () => {
+    if (mouseShortcutProcess === child) {
+      mouseShortcutProcess = null
+      mouseShortcutAccelerator = ''
+    }
+  })
+  child.on('error', () => {
+    if (mouseShortcutProcess === child) {
+      mouseShortcutProcess = null
+      mouseShortcutAccelerator = ''
+    }
+  })
+
+  mouseShortcutProcess = child
+  mouseShortcutAccelerator = accelerator
+  return { ok: true, accelerator, message: mouseShortcutWarning(accelerator) || '鼠标快捷键已注册' }
+}
+
+function mouseShortcutWarning(accelerator: string): string {
+  if (accelerator === 'MouseButton1' || accelerator === 'MouseButton3') {
+    return '鼠标快捷键已保存；左键/右键很容易与正常点击冲突，建议改用 MouseButton4 或 MouseButton5。'
+  }
+  return ''
+}
+
 function showPasteNotification(title: string, body: string): void {
   if (!Notification.isSupported()) return
 
@@ -351,8 +448,6 @@ async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ o
       throw new Error('未记录到可粘贴的目标窗口，请先切换到目标应用再调用快捷调用。')
     }
     const scriptPath = await getPasteScriptPath()
-    mainWindow?.hide()
-    await sleep(180)
     await execFile(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, lastExternalForegroundWindow || '0'],
@@ -473,8 +568,6 @@ async function writeClipboardTextAndPaste(text: string): Promise<{ ok: boolean; 
 
   try {
     const scriptPath = await getPasteScriptPath()
-    mainWindow?.hide()
-    await sleep(180)
     await execFile(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, lastExternalForegroundWindow || '0'],
@@ -1401,7 +1494,8 @@ function setShortcutCaptureActive(active: boolean): void {
   shortcutCaptureActive = active
 
   if (active) {
-    if (registeredShortcut) globalShortcut.unregister(registeredShortcut)
+    if (registeredShortcut && !isMouseShortcut(registeredShortcut)) globalShortcut.unregister(registeredShortcut)
+    stopMouseShortcutWatcher()
     captureAltSpaceRegistered = globalShortcut.register('Alt+Space', () => {
       mainWindow?.webContents.send('shortcut:captureInput', {
         key: 'Space',
@@ -1420,41 +1514,79 @@ function setShortcutCaptureActive(active: boolean): void {
     captureAltSpaceRegistered = false
   }
 
-  if (registeredShortcut && !globalShortcut.isRegistered(registeredShortcut)) {
-    globalShortcut.register(registeredShortcut, () => {
-      void toggleMainWindow()
-    })
+  if (registeredShortcut) {
+    if (isMouseShortcut(registeredShortcut)) {
+      if (!mouseShortcutProcess) startMouseShortcutWatcher(registeredShortcut)
+    } else if (!isKeyboardShortcutRegistered(registeredShortcut)) {
+      try {
+        globalShortcut.register(registeredShortcut, () => {
+          void toggleMainWindow()
+        })
+      } catch {
+        // The explicit save flow will surface conflicts or invalid accelerators to the user.
+      }
+    }
   }
 }
 
 function registerShortcut(accelerator: string): ShortcutResult {
-  if (accelerator.startsWith('MouseButton')) {
+  const normalizedAccelerator = accelerator.trim()
+  if (!normalizedAccelerator) {
+    return { ok: false, accelerator: registeredShortcut, message: '快捷键不能为空。' }
+  }
+
+  if (isMouseShortcut(normalizedAccelerator)) {
+    const result = startMouseShortcutWatcher(normalizedAccelerator)
+    if (result.ok) {
+      if (registeredShortcut && !isMouseShortcut(registeredShortcut)) globalShortcut.unregister(registeredShortcut)
+      registeredShortcut = normalizedAccelerator
+    }
+    return result
+  }
+
+  if (normalizedAccelerator.startsWith('MouseButton')) {
     return {
       ok: false,
-      accelerator: registeredShortcut || accelerator,
-      message: '鼠标全局快捷键暂不支持；请使用键盘组合键。'
+      accelerator: registeredShortcut || normalizedAccelerator,
+      message: '无法识别这个鼠标快捷键，请使用 MouseButton4 或 MouseButton5。'
     }
   }
 
-  if (registeredShortcut === accelerator && globalShortcut.isRegistered(accelerator)) {
+  if (registeredShortcut === normalizedAccelerator && isKeyboardShortcutRegistered(normalizedAccelerator)) {
     return {
       ok: true,
-      accelerator,
+      accelerator: normalizedAccelerator,
       message: '快捷键已注册'
     }
   }
 
-  const ok = globalShortcut.register(accelerator, () => {
-    void toggleMainWindow()
-  })
+  stopMouseShortcutWatcher()
+  let ok = false
+  try {
+    ok = globalShortcut.register(normalizedAccelerator, () => {
+      void toggleMainWindow()
+    })
+  } catch {
+    ok = false
+  }
   if (ok) {
-    if (registeredShortcut && registeredShortcut !== accelerator) globalShortcut.unregister(registeredShortcut)
-    registeredShortcut = accelerator
+    if (registeredShortcut && registeredShortcut !== normalizedAccelerator && !isMouseShortcut(registeredShortcut)) {
+      globalShortcut.unregister(registeredShortcut)
+    }
+    registeredShortcut = normalizedAccelerator
   }
   return {
     ok,
-    accelerator,
-    message: ok ? '快捷键已注册' : '快捷键注册失败，可能被其他程序占用'
+    accelerator: ok ? normalizedAccelerator : registeredShortcut || normalizedAccelerator,
+    message: ok ? '快捷键已注册' : `快捷键“${normalizedAccelerator}”注册失败，可能已被系统或其他软件占用，请换一个组合键。`
+  }
+}
+
+function isKeyboardShortcutRegistered(accelerator: string): boolean {
+  try {
+    return globalShortcut.isRegistered(accelerator)
+  } catch {
+    return false
   }
 }
 
@@ -1504,7 +1636,7 @@ function registerIpc(): void {
         ...store,
         settings: {
           ...store.settings,
-          shortcut: accelerator
+          shortcut: result.accelerator
         }
       })
     }
@@ -1536,6 +1668,7 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   shortcutCaptureActive = false
   captureAltSpaceRegistered = false
+  stopMouseShortcutWatcher()
   globalShortcut.unregisterAll()
   browserBridgeServer?.close()
 })

@@ -131,6 +131,16 @@ const RECOMMENDED_SHORTCUTS: RecommendedShortcut[] = [
     detail: '推荐。和 Windows 系统菜单冲突少，适合频繁唤起。'
   },
   {
+    accelerator: 'MouseButton4',
+    title: '鼠标侧键 1',
+    detail: '推荐。有侧键的鼠标可一键唤起快捷调用，通常不占用键盘组合。'
+  },
+  {
+    accelerator: 'MouseButton5',
+    title: '鼠标侧键 2',
+    detail: '推荐。适合把另一个侧键作为备用唤起入口。'
+  },
+  {
     accelerator: 'CommandOrControl+Shift+Space',
     title: 'Ctrl + Shift + Space',
     detail: '推荐。容易按，也不容易误触系统窗口菜单。'
@@ -2170,7 +2180,7 @@ function SettingsPanel({
       event.preventDefault()
       setShortcut(`MouseButton${event.button + 1}`)
       setCapturing(false)
-      setNotice('已识别鼠标按键；Electron 全局快捷键注册主要支持键盘组合，鼠标键会作为记录保存。')
+      setNotice('已识别鼠标按键；点击“保存快捷键”后会注册为全局鼠标快捷调用。')
     }
 
     window.addEventListener('keydown', onKeyDown, true)
@@ -2217,6 +2227,7 @@ function SettingsPanel({
     const result = await formatFlow.setShortcut(shortcut)
     if (result.ok) {
       await commit({ ...store, settings: { ...store.settings, shortcut: result.accelerator } })
+      setShortcut(result.accelerator)
     }
     setNotice(result.message)
   }

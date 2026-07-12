@@ -12,6 +12,8 @@ import type {
   AppPaths,
   AppStore,
   BackupResult,
+  ExportResult,
+  ExportTextFileRequest,
   GithubSearchResult,
   ImportResult,
   McpServer,
@@ -107,6 +109,30 @@ async function openBrowserExtensionInstaller(): Promise<{ ok: boolean; message: 
     message: '已打开浏览器插件目录；在 Chrome/Edge 扩展页开启开发者模式后，选择“加载已解压的扩展程序”并选中该目录。',
     path: extensionPath
   }
+}
+
+async function exportTextFile(request: ExportTextFileRequest): Promise<ExportResult> {
+  const fileName = typeof request.fileName === 'string' && request.fileName.trim() ? request.fileName.trim() : 'format-flow-export.txt'
+  const content = typeof request.content === 'string' ? request.content : ''
+  if (!content.trim()) return { ok: false, message: '没有可导出的内容' }
+
+  const saveOptions = {
+    title: '导出 Format Flow 内容',
+    defaultPath: fileName,
+    filters: request.filters?.length
+      ? request.filters
+      : [
+          { name: 'Markdown', extensions: ['md'] },
+          { name: 'Text', extensions: ['txt'] },
+          { name: 'JSON', extensions: ['json'] }
+        ]
+  }
+  const result = mainWindow ? await dialog.showSaveDialog(mainWindow, saveOptions) : await dialog.showSaveDialog(saveOptions)
+  if (result.canceled || !result.filePath) return { ok: false, message: '已取消导出' }
+
+  await fs.mkdir(path.dirname(result.filePath), { recursive: true })
+  await fs.writeFile(result.filePath, content, 'utf8')
+  return { ok: true, message: `已导出：${result.filePath}`, path: result.filePath }
 }
 
 function defaultSkillDirectories(): string[] {
@@ -1364,6 +1390,7 @@ function registerIpc(): void {
   ipcMain.handle('paths:chooseBackupDirectory', () => chooseBackupDirectory())
   ipcMain.handle('backup:create', (_event, store: AppStore) => createBackup(store))
   ipcMain.handle('backup:createGit', (_event, store: AppStore) => createGitBackup(store))
+  ipcMain.handle('export:textFile', (_event, request: ExportTextFileRequest) => exportTextFile(request))
   ipcMain.handle('skills:scan', (_event, directories: string[]) => scanSkills(directories))
   ipcMain.handle('skills:importExisting', () => importExistingSkills())
   ipcMain.handle('skills:restoreBackup', () => restoreSkillsFromBackup())

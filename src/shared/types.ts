@@ -184,3 +184,18 @@ export type BackupResult = {
   pushed?: boolean
   remote?: string
 }
+
+export type ExportTextFileRequest = {
+  fileName: string
+  content: string
+  filters?: Array<{
+    name: string
+    extensions: string[]
+  }>
+}
+
+export type ExportResult = {
+  ok: boolean
+  message: string
+  path?: string
+}

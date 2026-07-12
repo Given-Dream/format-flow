@@ -41,6 +41,7 @@ import type {
   GroupItem,
   ImportResult,
   McpServer,
+  NodeKind,
   PromptItem,
   RunStep,
   SkillItem,
@@ -53,6 +54,7 @@ type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'learning'
 type LauncherMode = 'prompt' | 'skill' | 'workflow'
 type QuickCallType = 'prompt' | 'skill' | 'workflow'
 type LearningMethod = 'conversation-review' | 'engineering-cybernetics'
+type ExportFormat = 'markdown' | 'txt' | 'json'
 type FormatFlowApi = Window['formatFlow']
 type AiPluginStatus = {
   bridgeConnected?: boolean
@@ -465,7 +467,7 @@ export function App(): JSX.Element {
               setNotice={setNotice}
             />
           )}
-          {activeTab === 'workflows' && <WorkflowPanel store={store} skills={skills} commit={commit} />}
+          {activeTab === 'workflows' && <WorkflowPanel store={store} skills={skills} commit={commit} setNotice={setNotice} />}
           {activeTab === 'runner' && (
             <RunnerPanel
               store={store}
@@ -521,6 +523,7 @@ function PromptPanel({
   const [githubQuery, setGithubQuery] = useState('codex prompt')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const restoreInputRef = useRef<HTMLInputElement | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const promptGroups = mergeGroupsWithTags(store.groups.prompts, allTags(store.prompts))
@@ -627,6 +630,17 @@ function PromptPanel({
     }
   }
 
+  async function exportPromptItems(items: PromptItem[], scope: string): Promise<void> {
+    const result = await exportResourceFile({
+      kind: 'prompts',
+      scope,
+      format: exportFormat,
+      content: formatPromptsExport(items, exportFormat),
+      emptyMessage: '没有可导出的提示词'
+    })
+    setNotice(result.message)
+  }
+
   return (
     <section className="panel library-layout">
       <ResourceGroupManager
@@ -686,6 +700,20 @@ function PromptPanel({
           <input value={githubQuery} onChange={(event) => setGithubQuery(event.target.value)} aria-label="GitHub Prompt 查询" />
           <button type="button" disabled={githubBusy} onClick={() => void discoverGithubPrompts()}>
             {githubBusy ? '搜索中...' : '从 GitHub 发现 Prompt'}
+          </button>
+        </div>
+
+        <div className="export-strip">
+          <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)} aria-label="提示词导出格式">
+            <option value="markdown">Markdown</option>
+            <option value="txt">TXT</option>
+            <option value="json">JSON</option>
+          </select>
+          <button type="button" onClick={() => void exportPromptItems(visiblePrompts, selectedGroup === 'all' && !query.trim() ? 'all' : 'filtered')}>
+            导出当前列表
+          </button>
+          <button type="button" onClick={() => void exportPromptItems(store.prompts, 'all')}>
+            导出全部提示词
           </button>
         </div>
 
@@ -761,6 +789,7 @@ function SkillPanel({
   const [githubQuery, setGithubQuery] = useState('codex skill')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const skillGroups = mergeGroupsWithTags(store.groups.skills, allTags(skills))
   const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
   const visibleSkills = skills.filter((skill) => matchesTextAndTags(skill, query, effectiveTags))
@@ -840,6 +869,17 @@ function SkillPanel({
     }
   }
 
+  async function exportSkillItems(items: SkillItem[], scope: string): Promise<void> {
+    const result = await exportResourceFile({
+      kind: 'skills',
+      scope,
+      format: exportFormat,
+      content: formatSkillsExport(items, exportFormat),
+      emptyMessage: '没有可导出的 Skill'
+    })
+    setNotice(result.message)
+  }
+
   return (
     <section className="panel library-layout">
       <ResourceGroupManager
@@ -876,6 +916,20 @@ function SkillPanel({
           <input value={githubQuery} onChange={(event) => setGithubQuery(event.target.value)} aria-label="GitHub Skill 查询" />
           <button type="button" disabled={githubBusy} onClick={() => void discoverGithubSkills()}>
             {githubBusy ? '搜索中...' : '从 GitHub 发现 Skill'}
+          </button>
+        </div>
+
+        <div className="export-strip">
+          <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)} aria-label="Skill 导出格式">
+            <option value="markdown">Markdown</option>
+            <option value="txt">TXT</option>
+            <option value="json">JSON</option>
+          </select>
+          <button type="button" onClick={() => void exportSkillItems(visibleSkills, selectedGroup === 'all' && !query.trim() ? 'all' : 'filtered')}>
+            导出当前列表
+          </button>
+          <button type="button" onClick={() => void exportSkillItems(skills, 'all')}>
+            导出全部 Skill
           </button>
         </div>
 
@@ -925,11 +979,13 @@ function SkillPanel({
 function WorkflowPanel({
   store,
   skills,
-  commit
+  commit,
+  setNotice
 }: {
   store: AppStore
   skills: SkillItem[]
   commit: (store: AppStore) => Promise<void>
+  setNotice: (notice: string) => void
 }): JSX.Element {
   const [workflowId, setWorkflowId] = useState(store.workflows[0]?.id || '')
   const workflow = store.workflows.find((item) => item.id === workflowId) || store.workflows[0]
@@ -937,6 +993,7 @@ function WorkflowPanel({
   const [promptToAdd, setPromptToAdd] = useState(store.prompts[0]?.id || '')
   const [skillToCall, setSkillToCall] = useState('')
   const [mcpToCall, setMcpToCall] = useState('')
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const selectedNode = workflow?.nodes.find((node) => node.id === selectedNodeId)
 
   useEffect(() => {
@@ -1019,6 +1076,17 @@ function WorkflowPanel({
     void updateWorkflow({ ...workflow, edges: [...workflow.edges.filter((item) => item.id !== edge.id), edge], updatedAt: nowIso() })
   }
 
+  async function exportWorkflowItems(items: Workflow[], scope: string): Promise<void> {
+    const result = await exportResourceFile({
+      kind: 'workflows',
+      scope,
+      format: exportFormat,
+      content: formatWorkflowsExport(items, store, skills, exportFormat),
+      emptyMessage: '没有可导出的工作流'
+    })
+    setNotice(result.message)
+  }
+
   if (!workflow) {
     return (
       <section className="panel centered">
@@ -1072,6 +1140,19 @@ function WorkflowPanel({
             </select>
             <button type="button" onClick={() => void createNewWorkflow()}>
               新建工作流
+            </button>
+          </div>
+          <div className="export-strip compact">
+            <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)} aria-label="工作流导出格式">
+              <option value="markdown">Markdown</option>
+              <option value="txt">TXT</option>
+              <option value="json">JSON</option>
+            </select>
+            <button type="button" onClick={() => void exportWorkflowItems([workflow], 'current')}>
+              导出当前工作流
+            </button>
+            <button type="button" onClick={() => void exportWorkflowItems(store.workflows, 'all')}>
+              导出全部工作流
             </button>
           </div>
         </div>
@@ -2888,6 +2969,243 @@ function moveGroupById(groups: GroupItem[], id: string, direction: -1 | 1): Grou
   return groups.map((group) => ({ ...group, children: moveGroupById(group.children, id, direction) }))
 }
 
+async function exportResourceFile({
+  kind,
+  scope,
+  format,
+  content,
+  emptyMessage
+}: {
+  kind: 'prompts' | 'skills' | 'workflows'
+  scope: string
+  format: ExportFormat
+  content: string
+  emptyMessage: string
+}): Promise<{ ok: boolean; message: string; path?: string }> {
+  if (!content.trim()) return { ok: false, message: emptyMessage }
+  const extension = exportExtension(format)
+  return formatFlow.exportTextFile({
+    fileName: `format-flow-${kind}-${scope}-${exportTimestamp()}.${extension}`,
+    content,
+    filters: [{ name: exportFormatName(format), extensions: [extension] }]
+  })
+}
+
+function formatPromptsExport(prompts: PromptItem[], format: ExportFormat): string {
+  if (prompts.length === 0) return ''
+  if (format === 'json') {
+    return `${JSON.stringify({ format: 'format-flow-prompts', exportedAt: nowIso(), prompts }, null, 2)}\n`
+  }
+  if (format === 'txt') {
+    return [
+      `Format Flow Prompts`,
+      `Exported: ${nowIso()}`,
+      `Count: ${prompts.length}`,
+      '',
+      ...prompts.flatMap((prompt, index) => [
+        `${index + 1}. ${prompt.title}`,
+        `Summary: ${prompt.summary || ''}`,
+        `Tags: ${formatTags(prompt.tags)}`,
+        `Variables: ${formatTags(prompt.variables)}`,
+        `Version: ${prompt.version}`,
+        `Updated: ${prompt.updatedAt}`,
+        '',
+        prompt.content,
+        '',
+        '---',
+        ''
+      ])
+    ].join('\n')
+  }
+  return [
+    '# Format Flow Prompts',
+    '',
+    `- Exported: ${nowIso()}`,
+    `- Count: ${prompts.length}`,
+    '',
+    ...prompts.flatMap((prompt, index) => [
+      `## ${index + 1}. ${prompt.title}`,
+      '',
+      `- Summary: ${prompt.summary || ''}`,
+      `- Tags: ${formatTags(prompt.tags)}`,
+      `- Variables: ${formatTags(prompt.variables)}`,
+      `- Version: ${prompt.version}`,
+      `- Updated: ${prompt.updatedAt}`,
+      '',
+      codeBlock(prompt.content, 'text'),
+      ''
+    ])
+  ].join('\n')
+}
+
+function formatSkillsExport(skills: SkillItem[], format: ExportFormat): string {
+  if (skills.length === 0) return ''
+  if (format === 'json') {
+    return `${JSON.stringify({ format: 'format-flow-skills', exportedAt: nowIso(), skills }, null, 2)}\n`
+  }
+  if (format === 'txt') {
+    return [
+      `Format Flow Skills`,
+      `Exported: ${nowIso()}`,
+      `Count: ${skills.length}`,
+      '',
+      ...skills.flatMap((skill, index) => [
+        `${index + 1}. ${skill.title || skill.name}`,
+        `Name: ${skill.name}`,
+        `Summary: ${skill.summary || ''}`,
+        `Tags: ${formatTags(skill.tags)}`,
+        `Source: ${skill.source}`,
+        `Path: ${skill.path}`,
+        `Updated: ${skill.updatedAt}`,
+        '',
+        skill.contentPreview || '',
+        '',
+        '---',
+        ''
+      ])
+    ].join('\n')
+  }
+  return [
+    '# Format Flow Skills',
+    '',
+    `- Exported: ${nowIso()}`,
+    `- Count: ${skills.length}`,
+    '',
+    ...skills.flatMap((skill, index) => [
+      `## ${index + 1}. ${skill.title || skill.name}`,
+      '',
+      `- Name: ${skill.name}`,
+      `- Summary: ${skill.summary || ''}`,
+      `- Tags: ${formatTags(skill.tags)}`,
+      `- Source: ${skill.source}`,
+      `- Path: ${skill.path}`,
+      `- Updated: ${skill.updatedAt}`,
+      '',
+      codeBlock(skill.contentPreview || '', 'markdown'),
+      ''
+    ])
+  ].join('\n')
+}
+
+function formatWorkflowsExport(workflows: Workflow[], store: AppStore, skills: SkillItem[], format: ExportFormat): string {
+  if (workflows.length === 0) return ''
+  if (format === 'json') {
+    const promptIds = new Set(workflows.flatMap((workflow) => workflow.nodes.map((node) => node.refId).filter(Boolean)))
+    const skillIds = new Set(workflows.flatMap((workflow) => workflow.nodes.flatMap((node) => [node.refId, node.skillRefId]).filter(Boolean)))
+    const mcpIds = new Set(workflows.flatMap((workflow) => workflow.nodes.map((node) => node.mcpRefId).filter(Boolean)))
+    return `${JSON.stringify(
+      {
+        format: 'format-flow-workflows',
+        exportedAt: nowIso(),
+        workflows,
+        referencedPrompts: store.prompts.filter((prompt) => promptIds.has(prompt.id)),
+        referencedSkills: skills.filter((skill) => skillIds.has(skill.id)),
+        referencedMcpServers: store.mcpServers.filter((mcp) => mcpIds.has(mcp.id))
+      },
+      null,
+      2
+    )}\n`
+  }
+
+  const workflowSections = workflows.flatMap((workflow, workflowIndex) => {
+    const lines = [
+      format === 'markdown' ? `## ${workflowIndex + 1}. ${workflow.title}` : `${workflowIndex + 1}. ${workflow.title}`,
+      '',
+      `Description: ${workflow.description || ''}`,
+      `Tags: ${formatTags(workflow.tags)}`,
+      `Updated: ${workflow.updatedAt}`,
+      '',
+      format === 'markdown' ? '### Steps' : 'Steps',
+      ''
+    ]
+    for (const [nodeIndex, node] of workflow.nodes.entries()) {
+      const prompt = store.prompts.find((item) => item.id === node.refId)
+      const directSkill = skills.find((item) => item.id === node.refId)
+      const callSkill = skills.find((item) => item.id === node.skillRefId)
+      const mcp = store.mcpServers.find((item) => item.id === node.mcpRefId)
+      lines.push(...formatWorkflowNodeExport(node, nodeIndex, prompt, directSkill, callSkill, mcp, format), '')
+    }
+    return [...lines, format === 'markdown' ? '' : '---', '']
+  })
+
+  if (format === 'txt') {
+    return [
+      'Format Flow Workflows',
+      `Exported: ${nowIso()}`,
+      `Count: ${workflows.length}`,
+      '',
+      ...workflowSections
+    ].join('\n')
+  }
+
+  return [
+    '# Format Flow Workflows',
+    '',
+    `- Exported: ${nowIso()}`,
+    `- Count: ${workflows.length}`,
+    '',
+    ...workflowSections
+  ].join('\n')
+}
+
+function formatWorkflowNodeExport(
+  node: WorkflowNode,
+  index: number,
+  prompt: PromptItem | undefined,
+  directSkill: SkillItem | undefined,
+  callSkill: SkillItem | undefined,
+  mcp: McpServer | undefined,
+  format: ExportFormat
+): string[] {
+  const title = `${index + 1}. ${node.title} (${nodeTypeLabel(node.type)})`
+  const lines = [
+    format === 'markdown' ? `#### ${title}` : title,
+    `Summary: ${node.summary || ''}`,
+    `Tags: ${formatTags(node.tags)}`,
+    `Requires review: ${node.requiresReview ? 'yes' : 'no'}`
+  ]
+  if (prompt) lines.push(`Prompt: ${prompt.title}`)
+  if (directSkill) lines.push(`Skill: ${directSkill.title || directSkill.name}`)
+  if (callSkill) lines.push(`Calls Skill: ${callSkill.title || callSkill.name}`)
+  if (mcp) lines.push(`Uses MCP: ${mcp.name}`)
+  if (Object.keys(node.inputs).length > 0) lines.push(`Inputs: ${JSON.stringify(node.inputs)}`)
+  if (node.outputs.length > 0) lines.push(`Outputs: ${node.outputs.join(', ')}`)
+  if (prompt?.content) lines.push('', format === 'markdown' ? codeBlock(prompt.content, 'text') : prompt.content)
+  if (directSkill?.contentPreview) lines.push('', format === 'markdown' ? codeBlock(directSkill.contentPreview, 'markdown') : directSkill.contentPreview)
+  return lines
+}
+
+function codeBlock(content: string, language: string): string {
+  const fence = content.includes('```') ? '````' : '```'
+  return [fence + language, content.trimEnd(), fence].join('\n')
+}
+
+function formatTags(tags: string[]): string {
+  return tags.length ? tags.join(', ') : '-'
+}
+
+function nodeTypeLabel(type: NodeKind): string {
+  if (type === 'prompt') return '提示词'
+  if (type === 'skill') return 'Skill'
+  return '人工审查'
+}
+
+function exportExtension(format: ExportFormat): string {
+  if (format === 'markdown') return 'md'
+  if (format === 'json') return 'json'
+  return 'txt'
+}
+
+function exportFormatName(format: ExportFormat): string {
+  if (format === 'markdown') return 'Markdown'
+  if (format === 'json') return 'JSON'
+  return 'Text'
+}
+
+function exportTimestamp(): string {
+  return new Date().toISOString().replace(/[:.]/g, '-')
+}
+
 function mergePromptItems(existing: PromptItem[], imported: PromptItem[]): { merged: PromptItem[]; added: PromptItem[] } {
   const existingIds = new Set(existing.map((prompt) => prompt.id))
   const added = imported.map((prompt) => {
@@ -3557,6 +3875,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     }),
     createBackup: async (store: AppStore) => createBrowserBackup(store),
     createGitBackup: async (store: AppStore) => createBrowserBackup(store, true),
+    exportTextFile: async ({ fileName, content }: { fileName: string; content: string }) => createBrowserTextExport(fileName, content),
     scanSkills: async () => [],
     importExistingSkills: async () => desktopOnly('浏览器审查模式不能导入本地 Skill'),
     restoreSkillsFromBackup: async () => desktopOnly('浏览器审查模式不能恢复本地 Skill 备份'),
@@ -3674,6 +3993,19 @@ async function createBrowserBackup(store: AppStore, gitRequested = false): Promi
     pushed: false,
     remote: normalized.settings.gitBackupRemote
   }
+}
+
+async function createBrowserTextExport(fileName: string, content: string): Promise<{ ok: boolean; message: string; path?: string }> {
+  if (!content.trim()) return { ok: false, message: '没有可导出的内容' }
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  const safeName = fileName.trim() || 'format-flow-export.txt'
+  anchor.href = url
+  anchor.download = safeName
+  anchor.click()
+  URL.revokeObjectURL(url)
+  return { ok: true, message: `浏览器审查模式已下载：${safeName}`, path: safeName }
 }
 
 async function desktopOnly<T>(message: string): Promise<ImportResult<T>> {

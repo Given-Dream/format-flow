@@ -589,6 +589,20 @@ function PromptPanel({
     await commit({ ...store, groups: { ...store.groups, prompts: groups } })
   }
 
+  async function renameGroup(group: GroupItem, name: string, groups: GroupItem[]): Promise<void> {
+    const nextTag = normalizeTag(name)
+    await commit({
+      ...store,
+      prompts: store.prompts.map((prompt) => ({
+        ...prompt,
+        tags: replaceTag(prompt.tags, group.tag, nextTag),
+        updatedAt: prompt.tags.includes(group.tag) ? nowIso() : prompt.updatedAt
+      })),
+      groups: { ...store.groups, prompts: groups }
+    })
+    if (selectedGroup === group.tag) setSelectedGroup(nextTag)
+  }
+
   async function deleteGroup(group: GroupItem): Promise<void> {
     const tags = collectGroupTags(group)
     await commit({
@@ -683,6 +697,7 @@ function PromptPanel({
         countForTag={(tag) => store.prompts.filter((prompt) => prompt.tags.includes(tag)).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
+        onRename={renameGroup}
         onDelete={deleteGroup}
       />
 
@@ -840,6 +855,26 @@ function SkillPanel({
     await commit({ ...store, groups: { ...store.groups, skills: groups } })
   }
 
+  async function renameGroup(group: GroupItem, name: string, groups: GroupItem[]): Promise<void> {
+    const nextTag = normalizeTag(name)
+    const nextSkillIndex = { ...store.skillIndex }
+    for (const skill of skills) {
+      const metadata = nextSkillIndex[skill.id] || { tags: skill.tags }
+      const tags = metadata.tags || skill.tags
+      if (!tags.includes(group.tag)) continue
+      nextSkillIndex[skill.id] = {
+        ...metadata,
+        tags: replaceTag(tags, group.tag, nextTag)
+      }
+    }
+    await commit({
+      ...store,
+      skillIndex: nextSkillIndex,
+      groups: { ...store.groups, skills: groups }
+    })
+    if (selectedGroup === group.tag) setSelectedGroup(nextTag)
+  }
+
   async function deleteGroup(group: GroupItem): Promise<void> {
     const tags = collectGroupTags(group)
     const nextSkillIndex = { ...store.skillIndex }
@@ -928,6 +963,7 @@ function SkillPanel({
         countForTag={(tag) => skills.filter((skill) => skill.tags.includes(tag)).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
+        onRename={renameGroup}
         onDelete={deleteGroup}
         footer={
           <button className="primary-action" type="button" onClick={() => void scanSkills()}>
@@ -1625,6 +1661,20 @@ function McpPanel({
     await commit({ ...store, groups: { ...store.groups, mcps: groups } })
   }
 
+  async function renameGroup(group: GroupItem, name: string, groups: GroupItem[]): Promise<void> {
+    const nextTag = normalizeTag(name)
+    await commit({
+      ...store,
+      mcpServers: store.mcpServers.map((server) => ({
+        ...server,
+        tags: replaceTag(server.tags, group.tag, nextTag),
+        updatedAt: server.tags.includes(group.tag) ? nowIso() : server.updatedAt
+      })),
+      groups: { ...store.groups, mcps: groups }
+    })
+    if (selectedGroup === group.tag) setSelectedGroup(nextTag)
+  }
+
   async function deleteGroup(group: GroupItem): Promise<void> {
     const tags = collectGroupTags(group)
     await commit({
@@ -1680,6 +1730,7 @@ function McpPanel({
         countForTag={(tag) => store.mcpServers.filter((server) => server.tags.includes(tag)).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
+        onRename={renameGroup}
         onDelete={deleteGroup}
         footer={
           <>
@@ -1742,6 +1793,18 @@ function LearningPanel({
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
     await commit({ ...store, groups: { ...store.groups, learning: groups } })
+  }
+
+  async function renameGroup(group: GroupItem, name: string, groups: GroupItem[]): Promise<void> {
+    const nextTag = normalizeTag(name)
+    setSources((current) =>
+      current.map((source) => ({
+        ...source,
+        tags: replaceTag(source.tags, group.tag, nextTag)
+      }))
+    )
+    await commit({ ...store, groups: { ...store.groups, learning: groups } })
+    if (selectedGroup === group.tag) setSelectedGroup(nextTag)
   }
 
   async function deleteGroup(group: GroupItem): Promise<void> {
@@ -1834,6 +1897,7 @@ function LearningPanel({
         countForTag={(tag) => sources.filter((source) => source.tags.includes(tag)).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
+        onRename={renameGroup}
         onDelete={deleteGroup}
       />
       <div className="learning-left">
@@ -2771,6 +2835,7 @@ function ResourceGroupManager({
   countForTag,
   onSelect,
   onChange,
+  onRename,
   onDelete,
   footer
 }: {
@@ -2783,6 +2848,7 @@ function ResourceGroupManager({
   countForTag: (tag: string) => number
   onSelect: (tag: string) => void
   onChange: (groups: GroupItem[]) => Promise<void>
+  onRename?: (group: GroupItem, name: string, groups: GroupItem[]) => Promise<void>
   onDelete: (group: GroupItem) => Promise<void>
   footer?: ReactNode
 }): JSX.Element {
@@ -2790,6 +2856,7 @@ function ResourceGroupManager({
   const [groupDraft, setGroupDraft] = useState<
     { mode: 'root'; name: string } | { mode: 'child'; parentId: string; parentName: string; name: string } | null
   >(null)
+  const [renameDraft, setRenameDraft] = useState<{ group: GroupItem; name: string; error: string } | null>(null)
   const [moveDraft, setMoveDraft] = useState<{ group: GroupItem; targetParentId: string } | null>(null)
   const [draggedGroupId, setDraggedGroupId] = useState('')
   const [dragOverGroupId, setDragOverGroupId] = useState('')
@@ -2837,6 +2904,30 @@ function ResourceGroupManager({
   function openMoveGroupDialog(group: GroupItem): void {
     setContextMenu(null)
     setMoveDraft({ group, targetParentId: '' })
+  }
+
+  function openRenameGroupDialog(group: GroupItem): void {
+    setContextMenu(null)
+    setRenameDraft({ group, name: group.name, error: '' })
+  }
+
+  async function saveRenameGroup(): Promise<void> {
+    if (!renameDraft) return
+    const name = renameDraft.name.trim()
+    const tag = normalizeTag(name)
+    if (!tag) {
+      setRenameDraft({ ...renameDraft, error: '请输入分组名称' })
+      return
+    }
+    if (flattenGroups(groups).some((group) => group.id !== renameDraft.group.id && group.tag === tag)) {
+      setRenameDraft({ ...renameDraft, error: '已存在同名分组标签' })
+      return
+    }
+
+    const nextGroups = renameGroupById(groups, renameDraft.group.id, tag)
+    await (onRename ? onRename(renameDraft.group, tag, nextGroups) : onChange(nextGroups))
+    onSelect(tag)
+    setRenameDraft(null)
   }
 
   async function saveMoveGroup(): Promise<void> {
@@ -2944,6 +3035,9 @@ function ResourceGroupManager({
           <button type="button" onClick={() => openChildGroupDialog(contextMenu.group)}>
             添加小类
           </button>
+          <button type="button" onClick={() => openRenameGroupDialog(contextMenu.group)}>
+            重命名
+          </button>
           <button type="button" onClick={() => openMoveGroupDialog(contextMenu.group)}>
             移动到其他分组
           </button>
@@ -2971,6 +3065,31 @@ function ResourceGroupManager({
               保存
             </button>
             <button type="button" onClick={() => setGroupDraft(null)}>
+              取消
+            </button>
+          </div>
+        </Modal>
+      )}
+      {renameDraft && (
+        <Modal title={`重命名「${renameDraft.group.name}」`} close={() => setRenameDraft(null)}>
+          <label className="form-field">
+            新名称
+            <input
+              autoFocus
+              value={renameDraft.name}
+              onChange={(event) => setRenameDraft({ ...renameDraft, name: event.target.value, error: '' })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void saveRenameGroup()
+                if (event.key === 'Escape') setRenameDraft(null)
+              }}
+            />
+          </label>
+          {renameDraft.error && <p className="form-error">{renameDraft.error}</p>}
+          <div className="inline-actions">
+            <button className="primary-action" type="button" onClick={() => void saveRenameGroup()}>
+              保存
+            </button>
+            <button type="button" onClick={() => setRenameDraft(null)}>
               取消
             </button>
           </div>
@@ -3161,6 +3280,15 @@ function removeGroupById(groups: GroupItem[], id: string): GroupItem[] {
     .map((group) => ({ ...group, children: removeGroupById(group.children, id) }))
 }
 
+function renameGroupById(groups: GroupItem[], id: string, tag: string): GroupItem[] {
+  const normalizedTag = normalizeTag(tag)
+  return groups.map((group) =>
+    group.id === id
+      ? { ...group, name: normalizedTag, tag: normalizedTag }
+      : { ...group, children: renameGroupById(group.children, id, normalizedTag) }
+  )
+}
+
 function moveGroupById(groups: GroupItem[], id: string, direction: -1 | 1): GroupItem[] {
   const index = groups.findIndex((group) => group.id === id)
   if (index >= 0) {
@@ -3238,6 +3366,12 @@ function addTagToSkillIndex(skillIndex: Record<string, SkillMetadata>, skills: S
 
 function mergeTags(existing: string[], additions: string[]): string[] {
   return Array.from(new Set([...existing, ...additions].map(normalizeTag).filter(Boolean)))
+}
+
+function replaceTag(tags: string[], oldTag: string, newTag: string): string[] {
+  const normalizedOldTag = normalizeTag(oldTag)
+  const normalizedNewTag = normalizeTag(newTag)
+  return Array.from(new Set(tags.map((tag) => (normalizeTag(tag) === normalizedOldTag ? normalizedNewTag : normalizeTag(tag))).filter(Boolean)))
 }
 
 async function exportResourceFile({

@@ -2972,9 +2972,18 @@ function ResourceGroupManager({
   const [moveDraft, setMoveDraft] = useState<{ group: GroupItem; targetParentId: string } | null>(null)
   const [draggedGroupId, setDraggedGroupId] = useState('')
   const [dragOverGroupId, setDragOverGroupId] = useState('')
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set())
   const rootDropTargetId = '__root__'
   const canDropGroupOnRoot = Boolean(draggedGroupId && !groups.some((group) => group.id === draggedGroupId))
   const isRootDropTarget = dragOverGroupId === rootDropTargetId && canDropGroupOnRoot
+
+  useEffect(() => {
+    const availableIds = new Set(flattenGroups(groups).map((group) => group.id))
+    setCollapsedGroupIds((current) => {
+      const next = new Set(Array.from(current).filter((id) => availableIds.has(id)))
+      return next.size === current.size ? current : next
+    })
+  }, [groups])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -3076,6 +3085,18 @@ function ResourceGroupManager({
     onSelect(draggedGroup.tag)
   }
 
+  function toggleGroupCollapsed(groupId: string): void {
+    setCollapsedGroupIds((current) => {
+      const next = new Set(current)
+      if (next.has(groupId)) {
+        next.delete(groupId)
+      } else {
+        next.add(groupId)
+      }
+      return next
+    })
+  }
+
   const moveTargets = moveDraft ? availableGroupMoveTargets(groups, moveDraft.group.id) : []
 
   return (
@@ -3125,6 +3146,8 @@ function ResourceGroupManager({
             setDragOverGroupId={setDragOverGroupId}
             canDropGroupOnTarget={canDropGroupOnTarget}
             dropGroupOnParent={dropGroupOnParent}
+            collapsedGroupIds={collapsedGroupIds}
+            toggleGroupCollapsed={toggleGroupCollapsed}
             openMenu={(menuGroup, event) => {
               event.preventDefault()
               setContextMenu({ group: menuGroup, x: event.clientX, y: event.clientY })
@@ -3253,6 +3276,8 @@ function GroupTreeItem({
   setDragOverGroupId,
   canDropGroupOnTarget,
   dropGroupOnParent,
+  collapsedGroupIds,
+  toggleGroupCollapsed,
   openMenu,
   depth = 0
 }: {
@@ -3269,6 +3294,8 @@ function GroupTreeItem({
   setDragOverGroupId: (id: string) => void
   canDropGroupOnTarget: (group: GroupItem) => boolean
   dropGroupOnParent: (group: GroupItem) => Promise<void>
+  collapsedGroupIds: Set<string>
+  toggleGroupCollapsed: (groupId: string) => void
   openMenu: (group: GroupItem, event: MouseEvent) => void
   depth?: number
 }): JSX.Element {
@@ -3277,6 +3304,8 @@ function GroupTreeItem({
   const isDropTarget = dragOverGroupId === group.id && canDropHere
   const groupTags = collectGroupTags(group)
   const groupCount = countForTags ? countForTags(groupTags) : groupTags.reduce((total, tag) => total + countForTag(tag), 0)
+  const hasChildren = group.children.length > 0
+  const isCollapsed = collapsedGroupIds.has(group.id)
 
   return (
     <div className="group-tree-item" style={{ marginLeft: depth * 14 }}>
@@ -3314,6 +3343,22 @@ function GroupTreeItem({
         onContextMenu={(event) => openMenu(group, event)}
         title="可拖动到其他分组下；右键管理分组"
       >
+        {hasChildren ? (
+          <button
+            className="group-collapse-trigger"
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleGroupCollapsed(group.id)
+            }}
+            aria-label={isCollapsed ? '展开子级分组' : '折叠子级分组'}
+            title={isCollapsed ? '展开子级' : '折叠子级'}
+          >
+            {isCollapsed ? '▸' : '▾'}
+          </button>
+        ) : (
+          <span className="group-collapse-spacer" />
+        )}
         <button className="group-main" type="button" onClick={() => onSelect(group.tag)}>
           <span>{depth > 0 ? '└ ' : ''}{group.name}</span>
           <strong>{groupCount}</strong>
@@ -3322,7 +3367,7 @@ function GroupTreeItem({
           ⋯
         </button>
       </div>
-      {group.children.map((child) => (
+      {!isCollapsed && group.children.map((child) => (
         <GroupTreeItem
           key={child.id}
           group={child}
@@ -3338,6 +3383,8 @@ function GroupTreeItem({
           setDragOverGroupId={setDragOverGroupId}
           canDropGroupOnTarget={canDropGroupOnTarget}
           dropGroupOnParent={dropGroupOnParent}
+          collapsedGroupIds={collapsedGroupIds}
+          toggleGroupCollapsed={toggleGroupCollapsed}
           openMenu={openMenu}
           depth={depth + 1}
         />

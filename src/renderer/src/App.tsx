@@ -2789,6 +2789,9 @@ function ResourceGroupManager({
   const [moveDraft, setMoveDraft] = useState<{ group: GroupItem; targetParentId: string } | null>(null)
   const [draggedGroupId, setDraggedGroupId] = useState('')
   const [dragOverGroupId, setDragOverGroupId] = useState('')
+  const rootDropTargetId = '__root__'
+  const canDropGroupOnRoot = Boolean(draggedGroupId && !groups.some((group) => group.id === draggedGroupId))
+  const isRootDropTarget = dragOverGroupId === rootDropTargetId && canDropGroupOnRoot
 
   useEffect(() => {
     if (!contextMenu) return
@@ -2858,12 +2861,44 @@ function ResourceGroupManager({
     onSelect(draggedGroup.tag)
   }
 
+  async function dropGroupOnRoot(): Promise<void> {
+    const draggedGroup = findGroupById(groups, draggedGroupId)
+    setDragOverGroupId('')
+    setDraggedGroupId('')
+    if (!draggedGroup || groups.some((group) => group.id === draggedGroup.id)) return
+    await onChange(moveGroupToParent(groups, draggedGroup.id, null))
+    onSelect(draggedGroup.tag)
+  }
+
   const moveTargets = moveDraft ? availableGroupMoveTargets(groups, moveDraft.group.id) : []
 
   return (
     <div className="library-sidebar">
       <PanelHeader title={title} detail={detail} />
-      <button className={selectedTag === 'all' ? 'category active' : 'category'} type="button" onClick={() => onSelect('all')}>
+      <button
+        className={[
+          'category',
+          selectedTag === 'all' ? 'active' : '',
+          isRootDropTarget ? 'root-drop-target' : ''
+        ].filter(Boolean).join(' ')}
+        type="button"
+        onClick={() => onSelect('all')}
+        onDragOver={(event) => {
+          if (!canDropGroupOnRoot) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'move'
+          setDragOverGroupId(rootDropTargetId)
+        }}
+        onDragLeave={() => {
+          if (dragOverGroupId === rootDropTargetId) setDragOverGroupId('')
+        }}
+        onDrop={(event) => {
+          if (!canDropGroupOnRoot) return
+          event.preventDefault()
+          void dropGroupOnRoot()
+        }}
+        title="Drop a child group here to move it to the top level"
+      >
         {allLabel}
         <span>{allCount}</span>
       </button>

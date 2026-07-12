@@ -751,13 +751,13 @@ function PromptPanel({
 
   function renderPromptCard(prompt: PromptItem): JSX.Element {
     return (
-      <article key={prompt.id} className="tile-card">
-        <div>
+      <article key={prompt.id} className="tile-card prompt-card">
+        <div className="prompt-card-main">
           <strong>{prompt.title}</strong>
           <p>{prompt.summary}</p>
         </div>
         <TagRow tags={prompt.tags} />
-        <div className="inline-actions">
+        <div className="inline-actions prompt-card-actions">
           <button type="button" onClick={() => setEditing(prompt)}>
             编辑
           </button>

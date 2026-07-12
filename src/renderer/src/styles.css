@@ -423,6 +423,28 @@ label {
   gap: 8px;
 }
 
+.group-tree-item[data-depth="0"] .group-main span {
+  color: #1f2937;
+}
+
+.group-tree-item[data-depth="1"] .group-main span {
+  color: #0f766e;
+}
+
+.group-tree-item[data-depth="2"] .group-main span {
+  color: #7c3aed;
+}
+
+.group-tree-item[data-depth="3"] .group-main span {
+  color: #b45309;
+}
+
+.group-tree-item[data-depth="4"] .group-main span,
+.group-tree-item[data-depth="5"] .group-main span,
+.group-tree-item[data-depth="6"] .group-main span {
+  color: #be123c;
+}
+
 .group-row {
   display: grid;
   grid-template-columns: 28px 1fr auto;
@@ -718,6 +740,34 @@ label {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.prompt-card {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  min-height: 210px;
+  overflow: hidden;
+}
+
+.prompt-card-main {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.prompt-card-main p {
+  display: -webkit-box;
+  max-height: 78px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.prompt-card-actions {
+  align-self: end;
+  padding-top: 2px;
+}
+
+.prompt-card-actions button {
+  min-width: 74px;
 }
 
 .skill-card {

@@ -623,14 +623,19 @@ label {
 }
 
 .import-strip {
-  display: grid;
-  grid-template-columns: repeat(2, auto) minmax(220px, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  align-items: end;
+  align-items: center;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel-strong);
+}
+
+.import-strip input {
+  flex: 1 1 220px;
+  min-width: 180px;
 }
 
 .export-strip {
@@ -713,6 +718,34 @@ label {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.skill-card {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  min-height: 210px;
+  overflow: hidden;
+}
+
+.skill-card-main {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.skill-card-main p {
+  display: -webkit-box;
+  max-height: 78px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.skill-card-actions {
+  align-self: end;
+  padding-top: 2px;
+}
+
+.skill-card-actions button {
+  min-width: 64px;
 }
 
 .item-card {

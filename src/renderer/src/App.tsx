@@ -98,6 +98,13 @@ type LearningDraft = {
   description: string
   content: string
 }
+type ManualSkillDraft = {
+  name: string
+  title: string
+  description: string
+  tags: string[]
+  content: string
+}
 type QuickCallItem = {
   id: string
   type: QuickCallType
@@ -931,6 +938,7 @@ function SkillPanel({
   const [query, setQuery] = useState('')
   const [selectedGroup, setSelectedGroup] = useState('all')
   const [editing, setEditing] = useState<SkillItem | null>(null)
+  const [manualSkillOpen, setManualSkillOpen] = useState(false)
   const [githubQuery, setGithubQuery] = useState('codex skill')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
@@ -996,19 +1004,24 @@ function SkillPanel({
     if (tags.includes(selectedGroup)) setSelectedGroup('all')
   }
 
-  async function applySkillImport(result: ImportResult<SkillItem>): Promise<void> {
+  async function applySkillImport(result: ImportResult<SkillItem>, extraTags: string[] = []): Promise<void> {
     setNotice(result.message)
     if (!result.ok) return
     const directories = Array.from(
       new Set([...store.settings.skillDirectories, result.managedDirectory || '', ...(result.installedPaths || [])].filter(Boolean))
     )
+    const importTags = mergeTags(activeSkillGroupTag ? [activeSkillGroupTag] : [], extraTags)
+    let nextSkillIndex = store.skillIndex
+    for (const tag of importTags) {
+      nextSkillIndex = addTagToSkillIndex(nextSkillIndex, result.items, tag)
+    }
     await commit({
       ...store,
-      skillIndex: addTagToSkillIndex(store.skillIndex, result.items, activeSkillGroupTag),
+      skillIndex: nextSkillIndex,
       settings: { ...store.settings, skillDirectories: directories }
     })
     await scanSkills(directories)
-    if (activeSkillGroupTag) setNotice(`${result.message}；已加入“${activeSkillGroupTag}”分组`)
+    if (importTags.length > 0) setNotice(`${result.message}；已加入 ${importTags.map((tag) => `“${tag}”`).join('、')} 分组`)
   }
 
   async function runSkillImport(loader: () => Promise<ImportResult<SkillItem>>): Promise<void> {
@@ -1037,6 +1050,15 @@ function SkillPanel({
       await applySkillImport(await formatFlow.installGithubSkill(result))
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'GitHub Skill 安装失败')
+    }
+  }
+
+  async function installManualSkill(draft: ManualSkillDraft): Promise<void> {
+    try {
+      await applySkillImport(await formatFlow.installGeneratedSkill(draft.name, buildManualSkillContent(draft)), draft.tags)
+      setManualSkillOpen(false)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '手动添加 Skill 失败')
     }
   }
 
@@ -1077,6 +1099,9 @@ function SkillPanel({
         <PanelHeader title="Skill 管理" detail={`${visibleSkills.length} / ${skills.length} 个 Skill`} />
         <SearchBox query={query} setQuery={setQuery} placeholder="搜索 Skill 名称、摘要或标签" />
         <div className="import-strip">
+          <button className="primary-action" type="button" onClick={() => setManualSkillOpen(true)}>
+            新建 Skill
+          </button>
           <button type="button" onClick={() => void runSkillImport(formatFlow.restoreSkillsFromBackup)}>
             从备份恢复
           </button>
@@ -1119,13 +1144,13 @@ function SkillPanel({
 
         <div className="tile-grid">
           {visibleSkills.map((skill) => (
-            <article key={skill.id} className="tile-card">
-              <div>
+            <article key={skill.id} className="tile-card skill-card">
+              <div className="skill-card-main">
                 <strong>{skill.title}</strong>
                 <p>{skill.summary}</p>
               </div>
               <TagRow tags={skill.tags} />
-              <div className="inline-actions">
+              <div className="inline-actions skill-card-actions">
                 <button type="button" onClick={() => setEditing(skill)}>
                   编辑
                 </button>
@@ -1143,6 +1168,13 @@ function SkillPanel({
           skill={editing}
           close={() => setEditing(null)}
           save={saveMetadata}
+        />
+      )}
+      {manualSkillOpen && (
+        <ManualSkillModal
+          initialTag={activeSkillGroupTag}
+          close={() => setManualSkillOpen(false)}
+          save={installManualSkill}
         />
       )}
     </section>
@@ -2535,6 +2567,95 @@ function SkillEditorModal({
   )
 }
 
+function ManualSkillModal({
+  initialTag,
+  close,
+  save
+}: {
+  initialTag: string
+  close: () => void
+  save: (draft: ManualSkillDraft) => Promise<void>
+}): JSX.Element {
+  const [title, setTitle] = useState('新的 Skill')
+  const [name, setName] = useState('new-skill')
+  const [description, setDescription] = useState('Use when this manual Skill should guide the current task.')
+  const [tagText, setTagText] = useState(tagsToText(initialTag ? [initialTag] : ['manual']))
+  const [content, setContent] = useState(
+    [
+      '## When to Use',
+      '- Use this Skill when...',
+      '',
+      '## Instructions',
+      '- Step 1:',
+      '- Step 2:',
+      '',
+      '## Output',
+      '- Return...'
+    ].join('\n')
+  )
+  const [error, setError] = useState('')
+
+  function updateTitle(nextTitle: string): void {
+    setTitle(nextTitle)
+    if (!name.trim() || name === slugifySkillName(title)) {
+      setName(slugifySkillName(nextTitle))
+    }
+  }
+
+  async function saveDraft(): Promise<void> {
+    const cleanName = slugifySkillName(name || title)
+    if (!cleanName) {
+      setError('请输入 Skill 名称')
+      return
+    }
+    if (!content.trim()) {
+      setError('请输入 Skill 内容')
+      return
+    }
+    await save({
+      name: cleanName,
+      title: title.trim() || cleanName,
+      description: description.trim() || 'Use when this manual Skill should guide the current task.',
+      tags: parseTags(tagText),
+      content: content.trim()
+    })
+  }
+
+  return (
+    <Modal title="新建 Skill" close={close}>
+      <label>
+        标题
+        <input value={title} onChange={(event) => updateTitle(event.target.value)} />
+      </label>
+      <label>
+        目录名称
+        <input value={name} onChange={(event) => setName(slugifySkillName(event.target.value))} />
+      </label>
+      <label>
+        触发描述
+        <input value={description} onChange={(event) => setDescription(event.target.value)} />
+      </label>
+      <label>
+        分类标签
+        <input value={tagText} onChange={(event) => setTagText(event.target.value)} />
+      </label>
+      <label className="grow">
+        Skill 内容
+        <textarea className="content-editor" value={content} onChange={(event) => setContent(event.target.value)} />
+      </label>
+      {error && <p className="form-error">{error}</p>}
+      <div className="inline-actions">
+        <button className="primary-action" type="button" onClick={() => void saveDraft()}>
+          保存 Skill
+        </button>
+        <button type="button" onClick={close}>
+          取消
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 function McpEditorModal({
   server,
   close,
@@ -3319,7 +3440,7 @@ function GroupTreeItem({
   const isCollapsed = collapsedGroupIds.has(group.id)
 
   return (
-    <div className="group-tree-item" style={{ marginLeft: depth * 14 }}>
+    <div className="group-tree-item" data-depth={depth}>
       <div
         className={[
           'category group-row',
@@ -3371,7 +3492,7 @@ function GroupTreeItem({
           <span className="group-collapse-spacer" />
         )}
         <button className="group-main" type="button" onClick={() => onSelect(group.tag)}>
-          <span>{depth > 0 ? '└ ' : ''}{group.name}</span>
+          <span>{group.name}</span>
           <strong>{groupCount}</strong>
         </button>
         <button className="group-menu-trigger" type="button" onClick={(event) => openMenu(group, event)} aria-label="打开分组菜单">
@@ -4280,6 +4401,19 @@ function inferConstraintSignals(text: string): string[] {
   if (/安装包|打包/.test(text)) constraints.add('安装包必须对应已验证源码')
   if (/浏览器|插件/.test(text)) constraints.add('插件只能操作已打开且受支持的 AI 页面')
   return Array.from(constraints)
+}
+
+function buildManualSkillContent(draft: ManualSkillDraft): string {
+  return [
+    '---',
+    `name: ${slugifySkillName(draft.name)}`,
+    `description: ${draft.description}`,
+    '---',
+    '',
+    `# ${draft.title}`,
+    '',
+    draft.content.trim()
+  ].join('\n')
 }
 
 function buildLearningSkillDraft(sources: LearningSource[], method: LearningMethod, errorSources: LearningSource[] = []): LearningDraft {

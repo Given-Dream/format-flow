@@ -86,6 +86,22 @@ export function createPrompt(overrides: Partial<PromptItem> = {}): PromptItem {
   }
 }
 
+export function clonePromptToGroup(prompt: PromptItem, targetTag: string, title = `${prompt.title} 副本`): PromptItem {
+  const timestamp = nowIso()
+  const normalizedTag = normalizeTag(targetTag)
+  return {
+    ...prompt,
+    id: newId('prompt'),
+    title,
+    tags: normalizedTag ? [normalizedTag] : [],
+    variables: extractPromptVariables(prompt.content),
+    version: 1,
+    favorite: false,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  }
+}
+
 export function createPromptFromText(content: string, sourceName = 'Imported Prompt'): PromptItem {
   const cleanContent = content.trim()
   const title =

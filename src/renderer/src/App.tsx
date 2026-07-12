@@ -14,6 +14,7 @@ import {
   allTags,
   approvalNode,
   buildExecutionPrompt,
+  clonePromptToGroup,
   createMcpServer,
   createPrompt,
   createPromptFromText,
@@ -538,6 +539,7 @@ function PromptPanel({
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
+  const [promptClipboard, setPromptClipboard] = useState<PromptItem | null>(null)
   const restoreInputRef = useRef<HTMLInputElement | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const promptGroups = mergeGroupsWithTags(store.groups.prompts, allTags(store.prompts))
@@ -582,7 +584,25 @@ function PromptPanel({
 
   async function deletePrompt(prompt: PromptItem): Promise<void> {
     await commit({ ...store, prompts: store.prompts.filter((item) => item.id !== prompt.id) })
+    if (promptClipboard?.id === prompt.id) setPromptClipboard(null)
     setEditing(null)
+  }
+
+  function copyPromptItem(prompt: PromptItem): void {
+    setPromptClipboard(prompt)
+    setNotice(`已复制提示词条目：${prompt.title}；可在目标分组菜单中粘贴`)
+  }
+
+  async function pastePromptItemToGroup(group: GroupItem): Promise<void> {
+    if (!promptClipboard) {
+      setNotice('请先在提示词卡片中点击“复制条目”')
+      return
+    }
+    const title = uniquePromptCopyTitle(promptClipboard.title, store.prompts)
+    const copiedPrompt = clonePromptToGroup(promptClipboard, group.tag, title)
+    await commit({ ...store, prompts: [copiedPrompt, ...store.prompts] })
+    setSelectedGroup(group.tag)
+    setNotice(`已将提示词条目“${promptClipboard.title}”粘贴到“${group.name}”分组`)
   }
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
@@ -715,6 +735,28 @@ function PromptPanel({
         onCreate={createGroup}
         onRename={renameGroup}
         onDelete={deleteGroup}
+        renderGroupContextActions={(group, closeMenu) => (
+          <button
+            type="button"
+            disabled={!promptClipboard}
+            onClick={() => void pastePromptItemToGroup(group).then(closeMenu)}
+          >
+            粘贴提示词条目
+          </button>
+        )}
+        footer={
+          promptClipboard ? (
+            <div className="clipboard-note">
+              <strong>已复制条目</strong>
+              <span>{promptClipboard.title}</span>
+              {selectedGroup !== 'all' && (
+                <button type="button" onClick={() => void pastePromptItemToGroup(findGroupByTag(promptGroups, selectedGroup) || groupFromTag(selectedGroup))}>
+                  粘贴到当前分组
+                </button>
+              )}
+            </div>
+          ) : undefined
+        }
       />
 
       <div className="library-main">
@@ -805,11 +847,14 @@ function PromptPanel({
                   type="button"
                   onClick={() =>
                     void writeClipboardText(prompt.content).then((result) =>
-                      setNotice(result.ok ? `已复制提示词：${prompt.title}` : result.message)
+                      setNotice(result.ok ? `已复制提示词内容：${prompt.title}` : result.message)
                     )
                   }
                 >
-                  复制
+                  复制内容
+                </button>
+                <button type="button" onClick={() => copyPromptItem(prompt)}>
+                  复制条目
                 </button>
               </div>
             </article>
@@ -2871,6 +2916,7 @@ function ResourceGroupManager({
   onCreate,
   onRename,
   onDelete,
+  renderGroupContextActions,
   footer
 }: {
   title: string
@@ -2886,6 +2932,7 @@ function ResourceGroupManager({
   onCreate?: (parent: GroupItem | null, group: GroupItem, groups: GroupItem[]) => Promise<void>
   onRename?: (group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]) => Promise<void>
   onDelete: (group: GroupItem) => Promise<void>
+  renderGroupContextActions?: (group: GroupItem, closeMenu: () => void) => ReactNode
   footer?: ReactNode
 }): JSX.Element {
   const [contextMenu, setContextMenu] = useState<{ group: GroupItem; x: number; y: number } | null>(null)
@@ -3077,6 +3124,7 @@ function ResourceGroupManager({
           <button type="button" onClick={() => openMoveGroupDialog(contextMenu.group)}>
             移动到其他分组
           </button>
+          {renderGroupContextActions?.(contextMenu.group, () => setContextMenu(null))}
           <button className="danger" type="button" onClick={() => void onDelete(contextMenu.group).then(() => setContextMenu(null))}>
             删除分组/小类
           </button>
@@ -3453,6 +3501,18 @@ function addTagToPrompts(prompts: PromptItem[], tag: string): PromptItem[] {
     tags: mergeTags(prompt.tags, [normalizedTag]),
     updatedAt: nowIso()
   }))
+}
+
+function uniquePromptCopyTitle(title: string, prompts: PromptItem[]): string {
+  const baseTitle = `${title} 副本`
+  const existingTitles = new Set(prompts.map((prompt) => prompt.title))
+  if (!existingTitles.has(baseTitle)) return baseTitle
+
+  let index = 2
+  while (existingTitles.has(`${baseTitle} ${index}`)) {
+    index += 1
+  }
+  return `${baseTitle} ${index}`
 }
 
 function addTagToSkillIndex(skillIndex: Record<string, SkillMetadata>, skills: SkillItem[], tag: string): Record<string, SkillMetadata> {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   approvalNode,
   buildExecutionPrompt,
+  clonePromptToGroup,
   createPrompt,
   createRunSteps,
   createWorkflow,
@@ -55,6 +56,27 @@ describe('skill parsing', () => {
 })
 
 describe('prompt and MCP imports', () => {
+  it('clones a prompt into a target group without sharing the original item', () => {
+    const prompt = createPrompt({
+      id: 'prompt_original',
+      title: 'Original',
+      content: 'Use {{input}} safely.',
+      tags: ['source'],
+      version: 7,
+      favorite: true
+    })
+
+    const cloned = clonePromptToGroup(prompt, 'Target', 'Original 副本')
+
+    expect(cloned.id).not.toBe(prompt.id)
+    expect(cloned.title).toBe('Original 副本')
+    expect(cloned.content).toBe(prompt.content)
+    expect(cloned.tags).toEqual(['target'])
+    expect(cloned.variables).toEqual(['input'])
+    expect(cloned.version).toBe(1)
+    expect(cloned.favorite).toBe(false)
+  })
+
   it('imports prompts from app backup JSON', () => {
     const prompts = parsePromptImport(
       JSON.stringify({

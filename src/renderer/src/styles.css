@@ -402,6 +402,16 @@ label {
   color: var(--on-accent);
 }
 
+.group-row.dragging {
+  opacity: 0.55;
+}
+
+.group-row.drop-target {
+  border-color: rgba(22, 93, 255, 0.75);
+  background: rgba(22, 93, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(22, 93, 255, 0.35);
+}
+
 .group-main {
   display: flex;
   align-items: center;

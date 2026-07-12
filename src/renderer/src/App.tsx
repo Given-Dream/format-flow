@@ -2787,6 +2787,8 @@ function ResourceGroupManager({
     { mode: 'root'; name: string } | { mode: 'child'; parentId: string; parentName: string; name: string } | null
   >(null)
   const [moveDraft, setMoveDraft] = useState<{ group: GroupItem; targetParentId: string } | null>(null)
+  const [draggedGroupId, setDraggedGroupId] = useState('')
+  const [dragOverGroupId, setDragOverGroupId] = useState('')
 
   useEffect(() => {
     if (!contextMenu) return
@@ -2842,6 +2844,20 @@ function ResourceGroupManager({
     await onChange(moveGroupById(groups, group.id, direction))
   }
 
+  function canDropGroupOnTarget(targetGroup: GroupItem): boolean {
+    const draggedGroup = findGroupById(groups, draggedGroupId)
+    return Boolean(draggedGroup && draggedGroup.id !== targetGroup.id && !groupContainsId(draggedGroup, targetGroup.id))
+  }
+
+  async function dropGroupOnParent(targetParent: GroupItem): Promise<void> {
+    const draggedGroup = findGroupById(groups, draggedGroupId)
+    setDragOverGroupId('')
+    setDraggedGroupId('')
+    if (!draggedGroup || draggedGroup.id === targetParent.id || groupContainsId(draggedGroup, targetParent.id)) return
+    await onChange(moveGroupToParent(groups, draggedGroup.id, targetParent.id))
+    onSelect(draggedGroup.tag)
+  }
+
   const moveTargets = moveDraft ? availableGroupMoveTargets(groups, moveDraft.group.id) : []
 
   return (
@@ -2861,6 +2877,12 @@ function ResourceGroupManager({
             onSelect={onSelect}
             moveGroup={moveGroup}
             deleteGroup={onDelete}
+            draggedGroupId={draggedGroupId}
+            dragOverGroupId={dragOverGroupId}
+            setDraggedGroupId={setDraggedGroupId}
+            setDragOverGroupId={setDragOverGroupId}
+            canDropGroupOnTarget={canDropGroupOnTarget}
+            dropGroupOnParent={dropGroupOnParent}
             openMenu={(menuGroup, event) => {
               event.preventDefault()
               setContextMenu({ group: menuGroup, x: event.clientX, y: event.clientY })
@@ -2953,6 +2975,12 @@ function GroupTreeItem({
   onSelect,
   moveGroup,
   deleteGroup,
+  draggedGroupId,
+  dragOverGroupId,
+  setDraggedGroupId,
+  setDragOverGroupId,
+  canDropGroupOnTarget,
+  dropGroupOnParent,
   openMenu,
   depth = 0
 }: {
@@ -2962,15 +2990,54 @@ function GroupTreeItem({
   onSelect: (tag: string) => void
   moveGroup: (group: GroupItem, direction: -1 | 1) => Promise<void>
   deleteGroup: (group: GroupItem) => Promise<void>
+  draggedGroupId: string
+  dragOverGroupId: string
+  setDraggedGroupId: (id: string) => void
+  setDragOverGroupId: (id: string) => void
+  canDropGroupOnTarget: (group: GroupItem) => boolean
+  dropGroupOnParent: (group: GroupItem) => Promise<void>
   openMenu: (group: GroupItem, event: MouseEvent) => void
   depth?: number
 }): JSX.Element {
+  const isDragged = draggedGroupId === group.id
+  const canDropHere = Boolean(draggedGroupId) && canDropGroupOnTarget(group)
+  const isDropTarget = dragOverGroupId === group.id && canDropHere
+
   return (
     <div className="group-tree-item" style={{ marginLeft: depth * 14 }}>
       <div
-        className={selectedTag === group.tag ? 'category group-row active' : 'category group-row'}
+        className={[
+          'category group-row',
+          selectedTag === group.tag ? 'active' : '',
+          isDragged ? 'dragging' : '',
+          isDropTarget ? 'drop-target' : ''
+        ].filter(Boolean).join(' ')}
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = 'move'
+          event.dataTransfer.setData('text/plain', group.id)
+          setDraggedGroupId(group.id)
+        }}
+        onDragEnd={() => {
+          setDraggedGroupId('')
+          setDragOverGroupId('')
+        }}
+        onDragOver={(event) => {
+          if (!canDropHere) return
+          event.preventDefault()
+          event.dataTransfer.dropEffect = 'move'
+          setDragOverGroupId(group.id)
+        }}
+        onDragLeave={() => {
+          if (dragOverGroupId === group.id) setDragOverGroupId('')
+        }}
+        onDrop={(event) => {
+          if (!canDropHere) return
+          event.preventDefault()
+          void dropGroupOnParent(group)
+        }}
         onContextMenu={(event) => openMenu(group, event)}
-        title="右键管理分组"
+        title="可拖动到其他分组下；右键管理分组"
       >
         <button className="group-main" type="button" onClick={() => onSelect(group.tag)}>
           <span>{depth > 0 ? '└ ' : ''}{group.name}</span>
@@ -2989,6 +3056,12 @@ function GroupTreeItem({
           onSelect={onSelect}
           moveGroup={moveGroup}
           deleteGroup={deleteGroup}
+          draggedGroupId={draggedGroupId}
+          dragOverGroupId={dragOverGroupId}
+          setDraggedGroupId={setDraggedGroupId}
+          setDragOverGroupId={setDragOverGroupId}
+          canDropGroupOnTarget={canDropGroupOnTarget}
+          dropGroupOnParent={dropGroupOnParent}
           openMenu={openMenu}
           depth={depth + 1}
         />

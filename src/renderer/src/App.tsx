@@ -539,6 +539,7 @@ function PromptPanel({
   const promptGroups = mergeGroupsWithTags(store.groups.prompts, allTags(store.prompts))
   const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
   const visiblePrompts = store.prompts.filter((prompt) => matchesTextAndTags(prompt, query, effectiveTags))
+  const activePromptGroupTag = selectedGroup === 'all' ? '' : selectedGroup
 
   async function savePrompt(prompt: PromptItem): Promise<void> {
     try {
@@ -564,9 +565,11 @@ function PromptPanel({
 
   async function createNewPrompt(): Promise<void> {
     try {
-      const prompt = createPrompt()
+      const prompt = createPrompt({
+        tags: activePromptGroupTag ? [activePromptGroupTag] : []
+      })
       await commit({ ...store, prompts: [prompt, ...store.prompts] })
-      setNotice('已创建新提示词，请编辑后保存')
+      setNotice(activePromptGroupTag ? `已在“${activePromptGroupTag}”分组中新建提示词，请编辑后保存` : '已创建新提示词，请编辑后保存')
       setEditing(prompt)
     } catch (error) {
       setNotice(error instanceof Error ? `新建提示词失败：${error.message}` : '新建提示词失败')
@@ -604,7 +607,7 @@ function PromptPanel({
       const result = await loader()
       setNotice(result.message)
       if (!result.ok) return
-      const { merged, added } = mergePromptItems(store.prompts, result.items)
+      const { merged, added } = mergePromptItems(store.prompts, addTagToPrompts(result.items, activePromptGroupTag))
       await commit({ ...store, prompts: merged })
       if (added[0]) setEditing(added[0])
     } catch (error) {
@@ -619,9 +622,9 @@ function PromptPanel({
       for (const file of Array.from(files)) {
         imported.push(...parsePromptImport(await file.text(), file.name))
       }
-      const { merged, added } = mergePromptItems(store.prompts, imported)
+      const { merged, added } = mergePromptItems(store.prompts, addTagToPrompts(imported, activePromptGroupTag))
       await commit({ ...store, prompts: merged })
-      setNotice(`${label}：导入 ${added.length} 个提示词`)
+      setNotice(`${label}：导入 ${added.length} 个提示词${activePromptGroupTag ? `到“${activePromptGroupTag}”分组` : ''}`)
       if (added[0]) setEditing(added[0])
     } catch (error) {
       setNotice(error instanceof Error ? error.message : `${label}失败`)
@@ -645,7 +648,7 @@ function PromptPanel({
     try {
       const imported = await formatFlow.importGithubPrompt(result)
       setNotice(imported.message)
-      const { merged, added } = mergePromptItems(store.prompts, imported.items)
+      const { merged, added } = mergePromptItems(store.prompts, addTagToPrompts(imported.items, activePromptGroupTag))
       await commit({ ...store, prompts: merged })
       if (added[0]) setEditing(added[0])
     } catch (error) {
@@ -816,6 +819,7 @@ function SkillPanel({
   const skillGroups = mergeGroupsWithTags(store.groups.skills, allTags(skills))
   const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
   const visibleSkills = skills.filter((skill) => matchesTextAndTags(skill, query, effectiveTags))
+  const activeSkillGroupTag = selectedGroup === 'all' ? '' : selectedGroup
 
   async function saveMetadata(skill: SkillItem, metadata: SkillMetadata): Promise<void> {
     await commit({
@@ -859,8 +863,13 @@ function SkillPanel({
     const directories = Array.from(
       new Set([...store.settings.skillDirectories, result.managedDirectory || '', ...(result.installedPaths || [])].filter(Boolean))
     )
-    await commit({ ...store, settings: { ...store.settings, skillDirectories: directories } })
+    await commit({
+      ...store,
+      skillIndex: addTagToSkillIndex(store.skillIndex, result.items, activeSkillGroupTag),
+      settings: { ...store.settings, skillDirectories: directories }
+    })
     await scanSkills(directories)
+    if (activeSkillGroupTag) setNotice(`${result.message}；已加入“${activeSkillGroupTag}”分组`)
   }
 
   async function runSkillImport(loader: () => Promise<ImportResult<SkillItem>>): Promise<void> {
@@ -3003,6 +3012,34 @@ function moveGroupById(groups: GroupItem[], id: string, direction: -1 | 1): Grou
     return next
   }
   return groups.map((group) => ({ ...group, children: moveGroupById(group.children, id, direction) }))
+}
+
+function addTagToPrompts(prompts: PromptItem[], tag: string): PromptItem[] {
+  const normalizedTag = normalizeTag(tag)
+  if (!normalizedTag) return prompts
+  return prompts.map((prompt) => ({
+    ...prompt,
+    tags: mergeTags(prompt.tags, [normalizedTag]),
+    updatedAt: nowIso()
+  }))
+}
+
+function addTagToSkillIndex(skillIndex: Record<string, SkillMetadata>, skills: SkillItem[], tag: string): Record<string, SkillMetadata> {
+  const normalizedTag = normalizeTag(tag)
+  if (!normalizedTag || skills.length === 0) return skillIndex
+  const nextSkillIndex = { ...skillIndex }
+  for (const skill of skills) {
+    const metadata = nextSkillIndex[skill.id]
+    nextSkillIndex[skill.id] = {
+      ...metadata,
+      tags: mergeTags(metadata?.tags || skill.tags, [normalizedTag])
+    }
+  }
+  return nextSkillIndex
+}
+
+function mergeTags(existing: string[], additions: string[]): string[] {
+  return Array.from(new Set([...existing, ...additions].map(normalizeTag).filter(Boolean)))
 }
 
 async function exportResourceFile({

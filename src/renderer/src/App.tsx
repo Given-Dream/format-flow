@@ -589,6 +589,20 @@ function PromptPanel({
     await commit({ ...store, groups: { ...store.groups, prompts: groups } })
   }
 
+  async function createGroup(parent: GroupItem | null, group: GroupItem, groups: GroupItem[]): Promise<void> {
+    await commit({
+      ...store,
+      prompts: parent
+        ? store.prompts.map((prompt) =>
+            prompt.tags.includes(parent.tag)
+              ? { ...prompt, tags: mergeTags(prompt.tags, [group.tag]), updatedAt: nowIso() }
+              : prompt
+          )
+        : store.prompts,
+      groups: { ...store.groups, prompts: groups }
+    })
+  }
+
   async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
     const nextTag = renamedGroup.tag
     await commit({
@@ -695,8 +709,10 @@ function PromptPanel({
         groups={promptGroups}
         selectedTag={selectedGroup}
         countForTag={(tag) => store.prompts.filter((prompt) => prompt.tags.includes(tag)).length}
+        countForTags={(tags) => store.prompts.filter((prompt) => prompt.tags.some((tag) => tags.includes(tag))).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
+        onCreate={createGroup}
         onRename={renameGroup}
         onDelete={deleteGroup}
       />
@@ -961,6 +977,7 @@ function SkillPanel({
         groups={skillGroups}
         selectedTag={selectedGroup}
         countForTag={(tag) => skills.filter((skill) => skill.tags.includes(tag)).length}
+        countForTags={(tags) => skills.filter((skill) => skill.tags.some((tag) => tags.includes(tag))).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
         onRename={renameGroup}
@@ -1728,6 +1745,7 @@ function McpPanel({
         groups={mcpGroups}
         selectedTag={selectedGroup}
         countForTag={(tag) => store.mcpServers.filter((server) => server.tags.includes(tag)).length}
+        countForTags={(tags) => store.mcpServers.filter((server) => server.tags.some((tag) => tags.includes(tag))).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
         onRename={renameGroup}
@@ -1895,6 +1913,7 @@ function LearningPanel({
         groups={learningGroups}
         selectedTag={selectedGroup}
         countForTag={(tag) => sources.filter((source) => source.tags.includes(tag)).length}
+        countForTags={(tags) => sources.filter((source) => source.tags.some((tag) => tags.includes(tag))).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
         onRename={renameGroup}
@@ -2833,8 +2852,10 @@ function ResourceGroupManager({
   groups,
   selectedTag,
   countForTag,
+  countForTags,
   onSelect,
   onChange,
+  onCreate,
   onRename,
   onDelete,
   footer
@@ -2846,8 +2867,10 @@ function ResourceGroupManager({
   groups: GroupItem[]
   selectedTag: string
   countForTag: (tag: string) => number
+  countForTags?: (tags: string[]) => number
   onSelect: (tag: string) => void
   onChange: (groups: GroupItem[]) => Promise<void>
+  onCreate?: (parent: GroupItem | null, group: GroupItem, groups: GroupItem[]) => Promise<void>
   onRename?: (group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]) => Promise<void>
   onDelete: (group: GroupItem) => Promise<void>
   footer?: ReactNode
@@ -2882,16 +2905,18 @@ function ResourceGroupManager({
     const name = groupDraft.name.trim()
     if (!name) return
     const nextGroup = createGroupFromName(name, groups)
+    let nextGroups: GroupItem[]
+    let parentGroup: GroupItem | null = null
     if (groupDraft.mode === 'root') {
-      await onChange([...groups, nextGroup])
+      nextGroups = [...groups, nextGroup]
     } else {
-      await onChange(
-        updateGroupById(groups, groupDraft.parentId, (group) => ({
-          ...group,
-          children: [...group.children, nextGroup]
-        }))
-      )
+      parentGroup = findGroupById(groups, groupDraft.parentId) || null
+      nextGroups = updateGroupById(groups, groupDraft.parentId, (group) => ({
+        ...group,
+        children: [...group.children, nextGroup]
+      }))
     }
+    await (onCreate ? onCreate(parentGroup, nextGroup, nextGroups) : onChange(nextGroups))
     onSelect(nextGroup.tag)
     setGroupDraft(null)
   }
@@ -3001,6 +3026,7 @@ function ResourceGroupManager({
             group={group}
             selectedTag={selectedTag}
             countForTag={countForTag}
+            countForTags={countForTags}
             onSelect={onSelect}
             moveGroup={moveGroup}
             deleteGroup={onDelete}
@@ -3127,6 +3153,7 @@ function GroupTreeItem({
   group,
   selectedTag,
   countForTag,
+  countForTags,
   onSelect,
   moveGroup,
   deleteGroup,
@@ -3142,6 +3169,7 @@ function GroupTreeItem({
   group: GroupItem
   selectedTag: string
   countForTag: (tag: string) => number
+  countForTags?: (tags: string[]) => number
   onSelect: (tag: string) => void
   moveGroup: (group: GroupItem, direction: -1 | 1) => Promise<void>
   deleteGroup: (group: GroupItem) => Promise<void>
@@ -3157,6 +3185,8 @@ function GroupTreeItem({
   const isDragged = draggedGroupId === group.id
   const canDropHere = Boolean(draggedGroupId) && canDropGroupOnTarget(group)
   const isDropTarget = dragOverGroupId === group.id && canDropHere
+  const groupTags = collectGroupTags(group)
+  const groupCount = countForTags ? countForTags(groupTags) : groupTags.reduce((total, tag) => total + countForTag(tag), 0)
 
   return (
     <div className="group-tree-item" style={{ marginLeft: depth * 14 }}>
@@ -3196,7 +3226,7 @@ function GroupTreeItem({
       >
         <button className="group-main" type="button" onClick={() => onSelect(group.tag)}>
           <span>{depth > 0 ? '└ ' : ''}{group.name}</span>
-          <strong>{countForTag(group.tag)}</strong>
+          <strong>{groupCount}</strong>
         </button>
         <button className="group-menu-trigger" type="button" onClick={(event) => openMenu(group, event)} aria-label="打开分组菜单">
           ⋯
@@ -3208,6 +3238,7 @@ function GroupTreeItem({
           group={child}
           selectedTag={selectedTag}
           countForTag={countForTag}
+          countForTags={countForTags}
           onSelect={onSelect}
           moveGroup={moveGroup}
           deleteGroup={deleteGroup}

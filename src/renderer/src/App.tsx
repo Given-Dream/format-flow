@@ -2786,6 +2786,7 @@ function ResourceGroupManager({
   const [groupDraft, setGroupDraft] = useState<
     { mode: 'root'; name: string } | { mode: 'child'; parentId: string; parentName: string; name: string } | null
   >(null)
+  const [moveDraft, setMoveDraft] = useState<{ group: GroupItem; targetParentId: string } | null>(null)
 
   useEffect(() => {
     if (!contextMenu) return
@@ -2824,9 +2825,24 @@ function ResourceGroupManager({
     setGroupDraft({ mode: 'child', parentId: parent.id, parentName: parent.name, name: '' })
   }
 
+  function openMoveGroupDialog(group: GroupItem): void {
+    setContextMenu(null)
+    setMoveDraft({ group, targetParentId: '' })
+  }
+
+  async function saveMoveGroup(): Promise<void> {
+    if (!moveDraft) return
+    const nextGroups = moveGroupToParent(groups, moveDraft.group.id, moveDraft.targetParentId || null)
+    await onChange(nextGroups)
+    onSelect(moveDraft.group.tag)
+    setMoveDraft(null)
+  }
+
   async function moveGroup(group: GroupItem, direction: -1 | 1): Promise<void> {
     await onChange(moveGroupById(groups, group.id, direction))
   }
+
+  const moveTargets = moveDraft ? availableGroupMoveTargets(groups, moveDraft.group.id) : []
 
   return (
     <div className="library-sidebar">
@@ -2867,6 +2883,9 @@ function ResourceGroupManager({
           <button type="button" onClick={() => openChildGroupDialog(contextMenu.group)}>
             添加小类
           </button>
+          <button type="button" onClick={() => openMoveGroupDialog(contextMenu.group)}>
+            移动到其他分组
+          </button>
           <button className="danger" type="button" onClick={() => void onDelete(contextMenu.group).then(() => setContextMenu(null))}>
             删除分组/小类
           </button>
@@ -2891,6 +2910,33 @@ function ResourceGroupManager({
               保存
             </button>
             <button type="button" onClick={() => setGroupDraft(null)}>
+              取消
+            </button>
+          </div>
+        </Modal>
+      )}
+      {moveDraft && (
+        <Modal title={`移动「${moveDraft.group.name}」`} close={() => setMoveDraft(null)}>
+          <label className="form-field">
+            目标位置
+            <select
+              autoFocus
+              value={moveDraft.targetParentId}
+              onChange={(event) => setMoveDraft({ ...moveDraft, targetParentId: event.target.value })}
+            >
+              <option value="">顶层分组</option>
+              {moveTargets.map((target) => (
+                <option key={target.group.id} value={target.group.id}>
+                  {'　'.repeat(target.depth)}{target.group.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="inline-actions">
+            <button className="primary-action" type="button" onClick={() => void saveMoveGroup()}>
+              移动
+            </button>
+            <button type="button" onClick={() => setMoveDraft(null)}>
               取消
             </button>
           </div>
@@ -3014,6 +3060,44 @@ function moveGroupById(groups: GroupItem[], id: string, direction: -1 | 1): Grou
     return next
   }
   return groups.map((group) => ({ ...group, children: moveGroupById(group.children, id, direction) }))
+}
+
+function moveGroupToParent(groups: GroupItem[], groupId: string, targetParentId: string | null): GroupItem[] {
+  const group = findGroupById(groups, groupId)
+  if (!group) return groups
+  if (targetParentId && (targetParentId === groupId || groupContainsId(group, targetParentId))) return groups
+
+  const withoutGroup = removeGroupById(groups, groupId)
+  if (!targetParentId) return [...withoutGroup, group]
+
+  return updateGroupById(withoutGroup, targetParentId, (parent) => ({
+    ...parent,
+    children: [...parent.children, group]
+  }))
+}
+
+function findGroupById(groups: GroupItem[], id: string): GroupItem | undefined {
+  for (const group of groups) {
+    if (group.id === id) return group
+    const child = findGroupById(group.children, id)
+    if (child) return child
+  }
+  return undefined
+}
+
+function groupContainsId(group: GroupItem, id: string): boolean {
+  return group.children.some((child) => child.id === id || groupContainsId(child, id))
+}
+
+function availableGroupMoveTargets(groups: GroupItem[], movingGroupId: string): Array<{ group: GroupItem; depth: number }> {
+  const movingGroup = findGroupById(groups, movingGroupId)
+  return flattenGroupTargets(groups).filter(
+    (target) => target.group.id !== movingGroupId && (!movingGroup || !groupContainsId(movingGroup, target.group.id))
+  )
+}
+
+function flattenGroupTargets(groups: GroupItem[], depth = 0): Array<{ group: GroupItem; depth: number }> {
+  return groups.flatMap((group) => [{ group, depth }, ...flattenGroupTargets(group.children, depth + 1)])
 }
 
 function addTagToPrompts(prompts: PromptItem[], tag: string): PromptItem[] {

@@ -641,6 +641,42 @@ label {
   padding-right: 4px;
 }
 
+.prompt-section-list {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.prompt-group-section {
+  display: grid;
+  gap: 10px;
+}
+
+.prompt-group-section header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+}
+
+.prompt-group-section header strong {
+  font-size: 15px;
+}
+
+.prompt-group-section header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prompt-group-section .tile-grid {
+  overflow: visible;
+  padding-right: 0;
+}
+
 .tile-card {
   display: grid;
   gap: 12px;

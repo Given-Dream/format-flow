@@ -105,6 +105,11 @@ type QuickCallItem = {
   summary: string
   tags: string[]
 }
+type PromptGroupSection = {
+  id: string
+  title: string
+  items: PromptItem[]
+}
 type ShortcutCaptureInput = {
   key?: unknown
   code?: unknown
@@ -543,8 +548,16 @@ function PromptPanel({
   const restoreInputRef = useRef<HTMLInputElement | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
   const promptGroups = mergeGroupsWithTags(store.groups.prompts, allTags(store.prompts))
-  const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
-  const visiblePrompts = store.prompts.filter((prompt) => matchesTextAndTags(prompt, query, effectiveTags))
+  const selectedPromptGroup = selectedGroup === 'all' ? undefined : findGroupByTag(promptGroups, selectedGroup)
+  const selectedPromptTags = selectedPromptGroup ? collectGroupTags(selectedPromptGroup) : selectedGroup === 'all' ? [] : [selectedGroup]
+  const selectedPromptTagSet = new Set(selectedPromptTags.map(normalizeTag))
+  const visiblePrompts = store.prompts.filter(
+    (prompt) =>
+      matchesTextAndTags(prompt, query, []) &&
+      (selectedGroup === 'all' || prompt.tags.some((tag) => selectedPromptTagSet.has(normalizeTag(tag))))
+  )
+  const promptSections =
+    selectedPromptGroup && selectedPromptGroup.children.length > 0 ? buildPromptGroupSections(selectedPromptGroup, visiblePrompts) : []
   const activePromptGroupTag = selectedGroup === 'all' ? '' : selectedGroup
 
   async function savePrompt(prompt: PromptItem): Promise<void> {
@@ -719,6 +732,36 @@ function PromptPanel({
     setNotice(result.message)
   }
 
+  function renderPromptCard(prompt: PromptItem): JSX.Element {
+    return (
+      <article key={prompt.id} className="tile-card">
+        <div>
+          <strong>{prompt.title}</strong>
+          <p>{prompt.summary}</p>
+        </div>
+        <TagRow tags={prompt.tags} />
+        <div className="inline-actions">
+          <button type="button" onClick={() => setEditing(prompt)}>
+            编辑
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              void writeClipboardText(prompt.content).then((result) =>
+                setNotice(result.ok ? `已复制提示词内容：${prompt.title}` : result.message)
+              )
+            }
+          >
+            复制内容
+          </button>
+          <button type="button" onClick={() => copyPromptItem(prompt)}>
+            复制条目
+          </button>
+        </div>
+      </article>
+    )
+  }
+
   return (
     <section className="panel library-layout">
       <ResourceGroupManager
@@ -831,35 +874,21 @@ function PromptPanel({
           </div>
         )}
 
-        <div className="tile-grid">
-          {visiblePrompts.map((prompt) => (
-            <article key={prompt.id} className="tile-card">
-              <div>
-                <strong>{prompt.title}</strong>
-                <p>{prompt.summary}</p>
-              </div>
-              <TagRow tags={prompt.tags} />
-              <div className="inline-actions">
-                <button type="button" onClick={() => setEditing(prompt)}>
-                  编辑
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void writeClipboardText(prompt.content).then((result) =>
-                      setNotice(result.ok ? `已复制提示词内容：${prompt.title}` : result.message)
-                    )
-                  }
-                >
-                  复制内容
-                </button>
-                <button type="button" onClick={() => copyPromptItem(prompt)}>
-                  复制条目
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
+        {promptSections.length > 0 ? (
+          <div className="prompt-section-list">
+            {promptSections.map((section) => (
+              <section key={section.id} className="prompt-group-section">
+                <header>
+                  <strong>{section.title}</strong>
+                  <span>{section.items.length} 个提示词</span>
+                </header>
+                <div className="tile-grid">{section.items.map(renderPromptCard)}</div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <div className="tile-grid">{visiblePrompts.map(renderPromptCard)}</div>
+        )}
       </div>
 
       {editing && (
@@ -3380,6 +3409,41 @@ function ensureUniqueGroupTags(groups: GroupItem[], usedTags = new Set<string>()
 
 function collectGroupTags(group: GroupItem): string[] {
   return [group.tag, ...group.children.flatMap(collectGroupTags)]
+}
+
+function buildPromptGroupSections(group: GroupItem, prompts: PromptItem[]): PromptGroupSection[] {
+  const childGroups = group.children.map((child) => ({
+    group: child,
+    tags: new Set(collectGroupTags(child))
+  }))
+  const childTags = new Set(childGroups.flatMap((child) => Array.from(child.tags)))
+  const sections: PromptGroupSection[] = []
+  const directItems = prompts.filter(
+    (prompt) =>
+      prompt.tags.some((tag) => normalizeTag(tag) === normalizeTag(group.tag)) &&
+      !prompt.tags.some((tag) => childTags.has(normalizeTag(tag)))
+  )
+
+  if (directItems.length > 0) {
+    sections.push({
+      id: `${group.id}-direct`,
+      title: `${group.name}（当前分组）`,
+      items: directItems
+    })
+  }
+
+  for (const child of childGroups) {
+    const items = prompts.filter((prompt) => prompt.tags.some((tag) => child.tags.has(normalizeTag(tag))))
+    if (items.length > 0) {
+      sections.push({
+        id: child.group.id,
+        title: child.group.name,
+        items
+      })
+    }
+  }
+
+  return sections
 }
 
 function groupNameForTag(groups: GroupItem[], tag: string): string {

@@ -380,8 +380,13 @@ export function App(): JSX.Element {
   async function commit(nextStore: AppStore): Promise<void> {
     const normalized = normalizeStore(nextStore)
     setStore(normalized)
-    const saved = await formatFlow.saveStore(normalized)
-    setStore(saved)
+    try {
+      const saved = await formatFlow.saveStore(normalized)
+      setStore(saved)
+    } catch (error) {
+      setNotice(`保存失败：${error instanceof Error ? error.message : '无法写入数据文件'}`)
+      throw error
+    }
   }
 
   async function scanSkills(directories = store?.settings.skillDirectories || []): Promise<void> {
@@ -389,6 +394,10 @@ export function App(): JSX.Element {
     const scanned = await formatFlow.scanSkills(directories)
     setRawSkills(scanned)
     setNotice(`扫描完成：${scanned.length} 个 Skill`)
+  }
+
+  async function refreshPaths(): Promise<void> {
+    setPaths(await formatFlow.getPaths())
   }
 
   async function pasteQuickCall(text: string, success: string): Promise<void> {
@@ -489,6 +498,7 @@ export function App(): JSX.Element {
               paths={paths}
               commit={commit}
               scanSkills={scanSkills}
+              refreshPaths={refreshPaths}
               setNotice={setNotice}
             />
           )}
@@ -531,23 +541,36 @@ function PromptPanel({
   const visiblePrompts = store.prompts.filter((prompt) => matchesTextAndTags(prompt, query, effectiveTags))
 
   async function savePrompt(prompt: PromptItem): Promise<void> {
-    const nextPrompt = {
-      ...prompt,
-      variables: extractVariables(prompt.content),
-      version: prompt.version + 1,
-      updatedAt: nowIso()
+    try {
+      const nextPrompt = {
+        ...prompt,
+        variables: extractVariables(prompt.content),
+        version: prompt.version + 1,
+        updatedAt: nowIso()
+      }
+      const exists = store.prompts.some((item) => item.id === nextPrompt.id)
+      await commit({
+        ...store,
+        prompts: exists
+          ? store.prompts.map((item) => (item.id === nextPrompt.id ? nextPrompt : item))
+          : [nextPrompt, ...store.prompts]
+      })
+      setNotice(`已保存提示词：${nextPrompt.title}`)
+      setEditing(null)
+    } catch (error) {
+      setNotice(error instanceof Error ? `提示词保存失败：${error.message}` : '提示词保存失败')
     }
-    await commit({
-      ...store,
-      prompts: store.prompts.map((item) => (item.id === nextPrompt.id ? nextPrompt : item))
-    })
-    setEditing(null)
   }
 
   async function createNewPrompt(): Promise<void> {
-    const prompt = createPrompt()
-    await commit({ ...store, prompts: [prompt, ...store.prompts] })
-    setEditing(prompt)
+    try {
+      const prompt = createPrompt()
+      await commit({ ...store, prompts: [prompt, ...store.prompts] })
+      setNotice('已创建新提示词，请编辑后保存')
+      setEditing(prompt)
+    } catch (error) {
+      setNotice(error instanceof Error ? `新建提示词失败：${error.message}` : '新建提示词失败')
+    }
   }
 
   async function deletePrompt(prompt: PromptItem): Promise<void> {
@@ -1001,9 +1024,12 @@ function WorkflowPanel({
   }, [workflowId, store.workflows])
 
   async function updateWorkflow(nextWorkflow: Workflow): Promise<void> {
+    const exists = store.workflows.some((item) => item.id === nextWorkflow.id)
     await commit({
       ...store,
-      workflows: store.workflows.map((item) => (item.id === nextWorkflow.id ? nextWorkflow : item))
+      workflows: exists
+        ? store.workflows.map((item) => (item.id === nextWorkflow.id ? nextWorkflow : item))
+        : [nextWorkflow, ...store.workflows]
     })
   }
 
@@ -1924,12 +1950,14 @@ function SettingsPanel({
   paths,
   commit,
   scanSkills,
+  refreshPaths,
   setNotice
 }: {
   store: AppStore
   paths: AppPaths | null
   commit: (store: AppStore) => Promise<void>
   scanSkills: (directories: string[]) => Promise<void>
+  refreshPaths: () => Promise<void>
   setNotice: (notice: string) => void
 }): JSX.Element {
   const [skillDirectories, setSkillDirectories] = useState(() => normalizeSkillDirectories(store.settings.skillDirectories))
@@ -2033,10 +2061,12 @@ function SettingsPanel({
     if (!result.ok) return
     setDataDirectory(result.path)
     await commit({ ...store, settings: { ...store.settings, dataDirectory: result.path } })
+    await refreshPaths()
   }
 
   async function saveDataDirectory(): Promise<void> {
     await commit({ ...store, settings: { ...store.settings, dataDirectory } })
+    await refreshPaths()
     setNotice(dataDirectory ? '数据保存目录已保存' : '数据保存目录已恢复默认')
   }
 
@@ -2176,6 +2206,12 @@ function SettingsPanel({
           <dd>{paths?.dataDirectory}</dd>
           <dt>当前数据文件</dt>
           <dd>{paths?.storePath}</dd>
+          <dt>提示词分类目录</dt>
+          <dd>{paths?.promptDirectory || '未加载'}</dd>
+          <dt>工作流分类目录</dt>
+          <dd>{paths?.workflowDirectory || '未加载'}</dd>
+          <dt>Skill 元数据文件</dt>
+          <dd>{paths?.skillMetadataPath || '未加载'}</dd>
           <dt>托管 Skill 目录</dt>
           <dd>{paths?.managedSkillDirectory}</dd>
           <dt>数据目录偏好文件</dt>
@@ -3850,6 +3886,9 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     dataDirectory: 'browser-localStorage',
     defaultBackupDirectory: 'browser-downloads',
     storePath: 'localStorage:format-flow-store',
+    promptDirectory: 'browser-downloads/prompts',
+    workflowDirectory: 'browser-downloads/workflows',
+    skillMetadataPath: 'browser-localStorage:skillIndex',
     managedSkillDirectory: 'browser-review-mode',
     dataDirectoryPreferencePath: '',
     defaultSkillDirectories: []

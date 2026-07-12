@@ -156,6 +156,9 @@ export type AppPaths = {
   dataDirectory: string
   defaultBackupDirectory: string
   storePath: string
+  promptDirectory?: string
+  workflowDirectory?: string
+  skillMetadataPath?: string
   managedSkillDirectory: string
   browserExtensionDirectory?: string
   dataDirectoryPreferencePath?: string

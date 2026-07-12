@@ -68,6 +68,22 @@ function getManagedSkillDirectory(): string {
   return path.join(getDataRoot(), 'managed-skills')
 }
 
+function getPromptDirectory(): string {
+  return path.join(getDataRoot(), 'prompts')
+}
+
+function getWorkflowDirectory(): string {
+  return path.join(getDataRoot(), 'workflows')
+}
+
+function getSkillMetadataDirectory(): string {
+  return path.join(getDataRoot(), 'skills')
+}
+
+function getSkillMetadataPath(): string {
+  return path.join(getSkillMetadataDirectory(), 'metadata.json')
+}
+
 function getDefaultBackupDirectory(): string {
   return path.join(getDataRoot(), 'backups')
 }
@@ -576,7 +592,9 @@ async function loadStore(): Promise<AppStore> {
   const storePath = getStorePath()
   try {
     const content = await fs.readFile(storePath, 'utf8')
-    return normalizeStore(JSON.parse(content) as Partial<AppStore>)
+    const normalized = normalizeStore(JSON.parse(content) as Partial<AppStore>)
+    await saveCategorizedStoreFiles(normalized)
+    return normalized
   } catch {
     const store = normalizeStore(null)
     await saveStore(store)
@@ -586,13 +604,68 @@ async function loadStore(): Promise<AppStore> {
 
 async function saveStore(store: AppStore): Promise<AppStore> {
   const normalized = normalizeStore(store)
-  if (normalized.settings.dataDirectory) {
-    await writeDataDirectoryPreference(normalized.settings.dataDirectory)
-  }
+  await writeDataDirectoryPreference(normalized.settings.dataDirectory || '')
   const storePath = getStorePath()
   await fs.mkdir(path.dirname(storePath), { recursive: true })
   await fs.writeFile(storePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8')
+  await saveCategorizedStoreFiles(normalized)
   return normalized
+}
+
+async function saveCategorizedStoreFiles(store: AppStore): Promise<void> {
+  const dataRoot = getDataRoot()
+  const promptDirectory = getPromptDirectory()
+  const workflowDirectory = getWorkflowDirectory()
+  const skillDirectory = getSkillMetadataDirectory()
+
+  await resetManagedDataDirectory(promptDirectory, dataRoot)
+  await resetManagedDataDirectory(workflowDirectory, dataRoot)
+  await fs.mkdir(skillDirectory, { recursive: true })
+
+  await Promise.all(
+    store.prompts.map((prompt) =>
+      fs.writeFile(
+        path.join(promptDirectory, `${safeSegment(prompt.title)}-${safeSegment(prompt.id)}.json`),
+        `${JSON.stringify(prompt, null, 2)}\n`,
+        'utf8'
+      )
+    )
+  )
+
+  await Promise.all(
+    store.workflows.map((workflow) =>
+      fs.writeFile(
+        path.join(workflowDirectory, `${safeSegment(workflow.title)}-${safeSegment(workflow.id)}.json`),
+        `${JSON.stringify(workflow, null, 2)}\n`,
+        'utf8'
+      )
+    )
+  )
+
+  await fs.writeFile(
+    getSkillMetadataPath(),
+    `${JSON.stringify(
+      {
+        format: 'format-flow-skill-metadata',
+        updatedAt: new Date().toISOString(),
+        skillIndex: store.skillIndex,
+        groups: store.groups.skills,
+        skillDirectories: store.settings.skillDirectories,
+        managedSkillDirectory: getManagedSkillDirectory()
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  )
+}
+
+async function resetManagedDataDirectory(directory: string, dataRoot: string): Promise<void> {
+  if (!isPathInside(directory, dataRoot)) {
+    throw new Error(`Refusing to reset data directory outside data root: ${directory}`)
+  }
+  await fs.rm(directory, { recursive: true, force: true })
+  await fs.mkdir(directory, { recursive: true })
 }
 
 function getPaths(): AppPaths {
@@ -601,6 +674,9 @@ function getPaths(): AppPaths {
     dataDirectory: getDataRoot(),
     defaultBackupDirectory: getDefaultBackupDirectory(),
     storePath: getStorePath(),
+    promptDirectory: getPromptDirectory(),
+    workflowDirectory: getWorkflowDirectory(),
+    skillMetadataPath: getSkillMetadataPath(),
     managedSkillDirectory: getManagedSkillDirectory(),
     browserExtensionDirectory: getBrowserExtensionDirectory(),
     dataDirectoryPreferencePath: getDataDirectoryPreferencePath(),

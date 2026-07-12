@@ -589,8 +589,8 @@ function PromptPanel({
     await commit({ ...store, groups: { ...store.groups, prompts: groups } })
   }
 
-  async function renameGroup(group: GroupItem, name: string, groups: GroupItem[]): Promise<void> {
-    const nextTag = normalizeTag(name)
+  async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
+    const nextTag = renamedGroup.tag
     await commit({
       ...store,
       prompts: store.prompts.map((prompt) => ({
@@ -706,7 +706,7 @@ function PromptPanel({
         <div className="toolbar-grid">
           <SearchBox query={query} setQuery={setQuery} placeholder="搜索标题、摘要、正文或标签" />
           <div className="group-selection-note">
-            当前分组：{selectedGroup === 'all' ? '全部提示词' : selectedGroup}
+            当前分组：{selectedGroup === 'all' ? '全部提示词' : groupNameForTag(promptGroups, selectedGroup)}
           </div>
           <button className="primary-action" type="button" onClick={() => void createNewPrompt()}>
             新建提示词
@@ -855,8 +855,8 @@ function SkillPanel({
     await commit({ ...store, groups: { ...store.groups, skills: groups } })
   }
 
-  async function renameGroup(group: GroupItem, name: string, groups: GroupItem[]): Promise<void> {
-    const nextTag = normalizeTag(name)
+  async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
+    const nextTag = renamedGroup.tag
     const nextSkillIndex = { ...store.skillIndex }
     for (const skill of skills) {
       const metadata = nextSkillIndex[skill.id] || { tags: skill.tags }
@@ -1661,8 +1661,8 @@ function McpPanel({
     await commit({ ...store, groups: { ...store.groups, mcps: groups } })
   }
 
-  async function renameGroup(group: GroupItem, name: string, groups: GroupItem[]): Promise<void> {
-    const nextTag = normalizeTag(name)
+  async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
+    const nextTag = renamedGroup.tag
     await commit({
       ...store,
       mcpServers: store.mcpServers.map((server) => ({
@@ -1795,8 +1795,8 @@ function LearningPanel({
     await commit({ ...store, groups: { ...store.groups, learning: groups } })
   }
 
-  async function renameGroup(group: GroupItem, name: string, groups: GroupItem[]): Promise<void> {
-    const nextTag = normalizeTag(name)
+  async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
+    const nextTag = renamedGroup.tag
     setSources((current) =>
       current.map((source) => ({
         ...source,
@@ -2848,7 +2848,7 @@ function ResourceGroupManager({
   countForTag: (tag: string) => number
   onSelect: (tag: string) => void
   onChange: (groups: GroupItem[]) => Promise<void>
-  onRename?: (group: GroupItem, name: string, groups: GroupItem[]) => Promise<void>
+  onRename?: (group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]) => Promise<void>
   onDelete: (group: GroupItem) => Promise<void>
   footer?: ReactNode
 }): JSX.Element {
@@ -2881,7 +2881,7 @@ function ResourceGroupManager({
     if (!groupDraft) return
     const name = groupDraft.name.trim()
     if (!name) return
-    const nextGroup = groupFromTag(name)
+    const nextGroup = createGroupFromName(name, groups)
     if (groupDraft.mode === 'root') {
       await onChange([...groups, nextGroup])
     } else {
@@ -2919,14 +2919,11 @@ function ResourceGroupManager({
       setRenameDraft({ ...renameDraft, error: '请输入分组名称' })
       return
     }
-    if (flattenGroups(groups).some((group) => group.id !== renameDraft.group.id && group.tag === tag)) {
-      setRenameDraft({ ...renameDraft, error: '已存在同名分组标签' })
-      return
-    }
-
     const nextGroups = renameGroupById(groups, renameDraft.group.id, tag)
-    await (onRename ? onRename(renameDraft.group, tag, nextGroups) : onChange(nextGroups))
-    onSelect(tag)
+    const renamedGroup = findGroupById(nextGroups, renameDraft.group.id)
+    if (!renamedGroup) return
+    await (onRename ? onRename(renameDraft.group, renamedGroup, nextGroups) : onChange(nextGroups))
+    onSelect(renamedGroup.tag)
     setRenameDraft(null)
   }
 
@@ -3255,17 +3252,70 @@ function buildQuickCallItems(store: AppStore, skills: SkillItem[]): QuickCallIte
 }
 
 function mergeGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {
-  const existing = new Set(flattenGroups(groups).map((group) => group.tag))
+  const uniqueGroups = ensureUniqueGroupTags(groups)
+  const existing = new Set(flattenGroups(uniqueGroups).map((group) => group.tag))
   const missing = tags.filter((tag) => !existing.has(tag)).map(groupFromTag)
-  return [...groups, ...missing]
+  return [...uniqueGroups, ...missing]
 }
 
 function flattenGroups(groups: GroupItem[]): GroupItem[] {
   return groups.flatMap((group) => [group, ...flattenGroups(group.children)])
 }
 
+function ensureUniqueGroupTags(groups: GroupItem[], usedTags = new Set<string>()): GroupItem[] {
+  return groups.map((group) => {
+    const name = normalizeTag(group.name) || normalizeTag(group.tag) || 'group'
+    const tag = nextAvailableGroupTag(normalizeTag(group.tag) || name, usedTags)
+    usedTags.add(tag)
+    return {
+      ...group,
+      name,
+      tag,
+      children: ensureUniqueGroupTags(group.children, usedTags)
+    }
+  })
+}
+
 function collectGroupTags(group: GroupItem): string[] {
   return [group.tag, ...group.children.flatMap(collectGroupTags)]
+}
+
+function groupNameForTag(groups: GroupItem[], tag: string): string {
+  return findGroupByTag(groups, tag)?.name || tag
+}
+
+function findGroupByTag(groups: GroupItem[], tag: string): GroupItem | undefined {
+  for (const group of groups) {
+    if (group.tag === tag) return group
+    const child = findGroupByTag(group.children, tag)
+    if (child) return child
+  }
+  return undefined
+}
+
+function createGroupFromName(name: string, groups: GroupItem[]): GroupItem {
+  const normalizedName = normalizeTag(name) || 'group'
+  return {
+    id: newId('group'),
+    name: normalizedName,
+    tag: uniqueGroupTag(normalizedName, groups),
+    children: []
+  }
+}
+
+function uniqueGroupTag(name: string, groups: GroupItem[], excludeId = ''): string {
+  const base = normalizeTag(name) || 'group'
+  const existingTags = new Set(flattenGroups(groups).filter((group) => group.id !== excludeId).map((group) => group.tag))
+  return nextAvailableGroupTag(base, existingTags)
+}
+
+function nextAvailableGroupTag(base: string, existingTags: Set<string>): string {
+  if (!existingTags.has(base)) return base
+  let index = 2
+  while (existingTags.has(`${base}-${index}`)) {
+    index += 1
+  }
+  return `${base}-${index}`
 }
 
 function updateGroupById(groups: GroupItem[], id: string, update: (group: GroupItem) => GroupItem): GroupItem[] {
@@ -3280,13 +3330,14 @@ function removeGroupById(groups: GroupItem[], id: string): GroupItem[] {
     .map((group) => ({ ...group, children: removeGroupById(group.children, id) }))
 }
 
-function renameGroupById(groups: GroupItem[], id: string, tag: string): GroupItem[] {
-  const normalizedTag = normalizeTag(tag)
-  return groups.map((group) =>
-    group.id === id
-      ? { ...group, name: normalizedTag, tag: normalizedTag }
-      : { ...group, children: renameGroupById(group.children, id, normalizedTag) }
-  )
+function renameGroupById(groups: GroupItem[], id: string, name: string): GroupItem[] {
+  const normalizedName = normalizeTag(name) || 'group'
+  const nextTag = uniqueGroupTag(normalizedName, groups, id)
+  return updateGroupById(groups, id, (group) => ({
+    ...group,
+    name: normalizedName,
+    tag: nextTag
+  }))
 }
 
 function moveGroupById(groups: GroupItem[], id: string, direction: -1 | 1): GroupItem[] {

@@ -738,12 +738,13 @@ function PromptPanel({
     }
   }
 
-  async function exportPromptItems(items: PromptItem[], scope: string): Promise<void> {
+  async function exportPromptItems(items: PromptItem[], scope: string, groupContext?: GroupItem): Promise<void> {
+    const exportItems = groupContext ? addPromptGroupExportTags(items, groupContext) : items
     const result = await exportResourceFile({
       kind: 'prompts',
       scope,
       format: exportFormat,
-      content: formatPromptsExport(items, exportFormat),
+      content: formatPromptsExport(exportItems, exportFormat),
       emptyMessage: '没有可导出的提示词'
     })
     setNotice(result.message)
@@ -872,7 +873,16 @@ function PromptPanel({
             <option value="txt">TXT</option>
             <option value="json">JSON</option>
           </select>
-          <button type="button" onClick={() => void exportPromptItems(visiblePrompts, selectedGroup === 'all' && !query.trim() ? 'all' : 'filtered')}>
+          <button
+            type="button"
+            onClick={() =>
+              void exportPromptItems(
+                visiblePrompts,
+                selectedGroup === 'all' && !query.trim() ? 'all' : 'filtered',
+                selectedGroup === 'all' ? undefined : selectedPromptGroup || groupFromTag(selectedGroup)
+              )
+            }
+          >
             导出当前列表
           </button>
           <button type="button" onClick={() => void exportPromptItems(store.prompts, 'all')}>
@@ -3744,6 +3754,28 @@ function addTagToPrompts(prompts: PromptItem[], tag: string): PromptItem[] {
     tags: mergeTags(prompt.tags, [normalizedTag]),
     updatedAt: nowIso()
   }))
+}
+
+function addPromptGroupExportTags(prompts: PromptItem[], group: GroupItem): PromptItem[] {
+  return prompts.map((prompt) => ({
+    ...prompt,
+    tags: mergeTags(prompt.tags, promptGroupExportTags(prompt, group))
+  }))
+}
+
+function promptGroupExportTags(prompt: PromptItem, group: GroupItem): string[] {
+  const promptTags = new Set(prompt.tags.map(normalizeTag))
+  return groupPathTagsForPrompt(group, promptTags)
+}
+
+function groupPathTagsForPrompt(group: GroupItem, promptTags: Set<string>): string[] {
+  const ownTag = normalizeTag(group.tag)
+  const childPathTags = group.children.flatMap((child) => groupPathTagsForPrompt(child, promptTags))
+
+  if (promptTags.has(ownTag) || childPathTags.length > 0) {
+    return [group.tag, ...childPathTags]
+  }
+  return []
 }
 
 function uniquePromptCopyTitle(title: string, prompts: PromptItem[]): string {

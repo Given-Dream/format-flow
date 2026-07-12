@@ -157,5 +157,5 @@ FunctionEnd
 !endif
 
 !macro customHeader
-  BrandingText "Format Flow 0.1.4  Given-Dream"
+  BrandingText "Format Flow ${VERSION}  Given-Dream"
 !macroend

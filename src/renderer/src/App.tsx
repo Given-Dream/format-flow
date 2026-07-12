@@ -147,6 +147,7 @@ const RECOMMENDED_SHORTCUTS: RecommendedShortcut[] = [
 ]
 
 const formatFlow = getFormatFlowApi()
+const appVersion = __APP_VERSION__
 
 async function writeClipboardText(text: string): Promise<{ ok: boolean; message: string }> {
   if (!text.trim()) return { ok: false, message: '没有可复制的内容' }
@@ -428,7 +429,10 @@ export function App(): JSX.Element {
         <div className="brand">
           <div className="brand-mark">FF</div>
           <div>
-            <strong>Format Flow</strong>
+            <div className="brand-title">
+              <strong>Format Flow</strong>
+              <span className="version-badge">v{appVersion}</span>
+            </div>
             <span>Prompt + Skill 工作台</span>
           </div>
         </div>

@@ -2804,16 +2804,18 @@ function ResourceGroupManager({
     if (!groupDraft) return
     const name = groupDraft.name.trim()
     if (!name) return
+    const nextGroup = groupFromTag(name)
     if (groupDraft.mode === 'root') {
-      await onChange([...groups, groupFromTag(name)])
+      await onChange([...groups, nextGroup])
     } else {
       await onChange(
         updateGroupById(groups, groupDraft.parentId, (group) => ({
           ...group,
-          children: [...group.children, groupFromTag(name)]
+          children: [...group.children, nextGroup]
         }))
       )
     }
+    onSelect(nextGroup.tag)
     setGroupDraft(null)
   }
 

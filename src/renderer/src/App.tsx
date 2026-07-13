@@ -2855,13 +2855,19 @@ function LauncherModal({
       : mode === 'skill'
         ? allTags(skills)
         : allTags(store.workflows)
-  const quickGroups = filterGroupsWithTags(mergeGroupsWithTags(store.groups.quickCalls || [], quickGroupTags), quickGroupTags)
+  const quickGroupSource =
+    mode === 'prompt' ? store.groups.prompts : mode === 'skill' ? store.groups.skills : store.groups.quickCalls || []
+  const quickGroups = filterGroupsWithTags(mergeGroupsWithTags(quickGroupSource, quickGroupTags), quickGroupTags)
   const groupOptions = flattenGroups(quickGroups)
-  const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
-  const promptItems = callablePrompts.filter((prompt) => matchesTextAndTags(prompt, query, effectiveTags))
-  const skillItems = skills.filter((skill) => matchesTextAndTags(skill, query, effectiveTags))
+  const selectedQuickGroup = selectedGroup === 'all' ? undefined : findGroupByTag(quickGroups, selectedGroup)
+  const selectedQuickTags = selectedQuickGroup ? collectGroupTags(selectedQuickGroup) : selectedGroup === 'all' ? [] : [selectedGroup]
+  const selectedQuickTagSet = new Set(selectedQuickTags.map(normalizeTag))
+  const childQuickGroups = selectedGroup === 'all' ? quickGroups : selectedQuickGroup?.children || []
+  const quickGroupPath = selectedQuickGroup ? findGroupPathByTag(quickGroups, selectedGroup) : []
+  const promptItems = callablePrompts.filter((prompt) => matchesQuickCallFilters(prompt, query, selectedQuickTagSet, selectedGroup))
+  const skillItems = skills.filter((skill) => matchesQuickCallFilters(skill, query, selectedQuickTagSet, selectedGroup))
   const workflowItems = store.workflows.filter((workflow) =>
-    matchesTextAndTags({ title: workflow.title, summary: workflow.description, tags: workflow.tags }, query, effectiveTags)
+    matchesQuickCallFilters({ title: workflow.title, summary: workflow.description, tags: workflow.tags }, query, selectedQuickTagSet, selectedGroup)
   )
   const fillSlots = fillDraft ? extractPromptFillSlots(fillDraft.prompt.content) : []
   const filledPromptContent = fillDraft ? fillPromptPlaceholders(fillDraft.prompt.content, fillDraft.values) : ''
@@ -2885,6 +2891,17 @@ function LauncherModal({
     void pasteQuickCall(prompt.content, `已粘贴提示词：${prompt.title}`)
       .then(close)
       .catch(() => undefined)
+  }
+
+  function quickGroupCount(group: GroupItem): number {
+    const tags = new Set(collectGroupTags(group).map(normalizeTag))
+    const items =
+      mode === 'prompt'
+        ? callablePrompts
+        : mode === 'skill'
+          ? skills
+          : store.workflows.map((workflow) => ({ title: workflow.title, summary: workflow.description, tags: workflow.tags }))
+    return items.filter((item) => item.tags.some((tag) => tags.has(normalizeTag(tag)))).length
   }
 
   if (fillDraft) {
@@ -2938,17 +2955,65 @@ function LauncherModal({
   return (
     <Modal title="快捷调用" close={close}>
       <div className="launcher-tabs">
-        <button className={mode === 'prompt' ? 'active' : ''} type="button" onClick={() => setMode('prompt')}>
+        <button
+          className={mode === 'prompt' ? 'active' : ''}
+          type="button"
+          onClick={() => {
+            setMode('prompt')
+            setSelectedGroup('all')
+          }}
+        >
           调用提示词
         </button>
-        <button className={mode === 'skill' ? 'active' : ''} type="button" onClick={() => setMode('skill')}>
+        <button
+          className={mode === 'skill' ? 'active' : ''}
+          type="button"
+          onClick={() => {
+            setMode('skill')
+            setSelectedGroup('all')
+          }}
+        >
           调用 Skill
         </button>
-        <button className={mode === 'workflow' ? 'active' : ''} type="button" onClick={() => setMode('workflow')}>
+        <button
+          className={mode === 'workflow' ? 'active' : ''}
+          type="button"
+          onClick={() => {
+            setMode('workflow')
+            setSelectedGroup('all')
+          }}
+        >
           调用工作流
         </button>
       </div>
       <SearchBox query={query} setQuery={setQuery} placeholder="搜索要调用的内容" />
+      <div className="launcher-group-browser">
+        <div className="launcher-group-path">
+          <button className={selectedGroup === 'all' ? 'active' : ''} type="button" onClick={() => setSelectedGroup('all')}>
+            全部
+          </button>
+          {quickGroupPath.map((group) => (
+            <button
+              key={group.id}
+              className={selectedGroup === group.tag ? 'active' : ''}
+              type="button"
+              onClick={() => setSelectedGroup(group.tag)}
+            >
+              {group.name}
+            </button>
+          ))}
+        </div>
+        {childQuickGroups.length > 0 && (
+          <div className="launcher-group-grid">
+            {childQuickGroups.map((group) => (
+              <button key={group.id} type="button" onClick={() => setSelectedGroup(group.tag)}>
+                <strong>{group.name}</strong>
+                <span>{quickGroupCount(group)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       <label>
         快捷分组
         <select value={selectedGroup} onChange={(event) => setSelectedGroup(event.target.value)}>
@@ -3741,6 +3806,26 @@ function findGroupByTag(groups: GroupItem[], tag: string): GroupItem | undefined
     if (child) return child
   }
   return undefined
+}
+
+function findGroupPathByTag(groups: GroupItem[], tag: string, path: GroupItem[] = []): GroupItem[] {
+  for (const group of groups) {
+    const nextPath = [...path, group]
+    if (group.tag === tag) return nextPath
+    const childPath = findGroupPathByTag(group.children, tag, nextPath)
+    if (childPath.length > 0) return childPath
+  }
+  return []
+}
+
+function matchesQuickCallFilters(
+  item: { title?: string; name?: string; summary?: string; content?: string; tags?: string[] },
+  query: string,
+  selectedTagSet: Set<string>,
+  selectedGroup: string
+): boolean {
+  if (!matchesTextAndTags(item, query, [])) return false
+  return selectedGroup === 'all' || (item.tags || []).some((tag) => selectedTagSet.has(normalizeTag(tag)))
 }
 
 function createGroupFromName(name: string, groups: GroupItem[]): GroupItem {

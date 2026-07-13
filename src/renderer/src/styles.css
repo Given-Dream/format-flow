@@ -1329,6 +1329,53 @@ label {
   border-color: var(--accent);
 }
 
+.launcher-group-browser {
+  display: grid;
+  gap: 10px;
+}
+
+.launcher-group-path,
+.launcher-group-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.launcher-group-path button {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.launcher-group-path button:not(:last-child)::after {
+  content: ">";
+  margin-left: 8px;
+  color: var(--muted);
+}
+
+.launcher-group-path .active,
+.launcher-group-grid button:hover {
+  color: var(--accent);
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--accent-soft);
+}
+
+.launcher-group-grid button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 10px;
+}
+
+.launcher-group-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.launcher-group-browser + label {
+  display: none;
+}
+
 .launcher-list {
   display: grid;
   gap: 10px;

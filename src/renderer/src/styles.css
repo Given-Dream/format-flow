@@ -516,6 +516,8 @@ label {
   display: grid;
   gap: 6px;
   min-width: 170px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   padding: 8px;
   border: 1px solid var(--line);
   background: #ffffff;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, MouseEvent, ReactNode } from 'react'
 import {
   Background,
@@ -3115,9 +3115,25 @@ function ResourceGroupManager({
   const [draggedGroupId, setDraggedGroupId] = useState('')
   const [dragOverGroupId, setDragOverGroupId] = useState('')
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set())
+  const contextMenuRef = useRef<HTMLDivElement | null>(null)
   const rootDropTargetId = '__root__'
   const canDropGroupOnRoot = Boolean(draggedGroupId && !groups.some((group) => group.id === draggedGroupId))
   const isRootDropTarget = dragOverGroupId === rootDropTargetId && canDropGroupOnRoot
+
+  useLayoutEffect(() => {
+    if (!contextMenu) return
+    const menu = contextMenuRef.current
+    if (!menu) return
+
+    const margin = 12
+    const rect = menu.getBoundingClientRect()
+    const nextX = Math.max(margin, Math.min(contextMenu.x, window.innerWidth - rect.width - margin))
+    const nextY = Math.max(margin, Math.min(contextMenu.y, window.innerHeight - rect.height - margin))
+
+    if (Math.abs(nextX - contextMenu.x) > 0.5 || Math.abs(nextY - contextMenu.y) > 0.5) {
+      setContextMenu({ ...contextMenu, x: nextX, y: nextY })
+    }
+  }, [contextMenu])
 
   useEffect(() => {
     const availableIds = new Set(flattenGroups(groups).map((group) => group.id))
@@ -3302,7 +3318,12 @@ function ResourceGroupManager({
       </button>
       {footer && <div className="group-footer">{footer}</div>}
       {contextMenu && (
-        <div className="context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+        <div
+          ref={contextMenuRef}
+          className="context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
           <button type="button" onClick={() => void moveGroup(contextMenu.group, -1).then(() => setContextMenu(null))}>
             上移
           </button>

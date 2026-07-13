@@ -179,6 +179,8 @@ const RECOMMENDED_SHORTCUTS: RecommendedShortcut[] = [
 
 const formatFlow = getFormatFlowApi()
 const appVersion = __APP_VERSION__
+const quickLauncherModeStorageKey = 'format-flow-quick-launcher-mode'
+const quickLauncherGroupStoragePrefix = 'format-flow-quick-launcher-group'
 
 async function writeClipboardText(text: string): Promise<{ ok: boolean; message: string }> {
   if (!text.trim()) return { ok: false, message: '没有可复制的内容' }
@@ -2844,9 +2846,9 @@ function LauncherModal({
   setActiveTab: (tab: TabId) => void
   pasteQuickCall: (text: string, success: string) => Promise<void>
 }): JSX.Element {
-  const [mode, setMode] = useState<LauncherMode>('prompt')
+  const [mode, setMode] = useState<LauncherMode>(() => readStoredQuickLauncherMode())
   const [query, setQuery] = useState('')
-  const [selectedGroup, setSelectedGroup] = useState('all')
+  const [selectedGroup, setSelectedGroup] = useState(() => readStoredQuickLauncherGroup(mode))
   const [fillDraft, setFillDraft] = useState<PromptFillDraft | null>(null)
   const callablePrompts = store.prompts.filter((prompt) => prompt.content.trim())
   const quickGroupTags =
@@ -2878,6 +2880,15 @@ function LauncherModal({
       setSelectedGroup('all')
     }
   }, [groupOptions, selectedGroup])
+
+  useEffect(() => {
+    writeStoredQuickLauncherState(mode, selectedGroup)
+  }, [mode, selectedGroup])
+
+  function selectLauncherMode(nextMode: LauncherMode): void {
+    setMode(nextMode)
+    setSelectedGroup(readStoredQuickLauncherGroup(nextMode))
+  }
 
   function callPrompt(prompt: PromptItem): void {
     const slots = extractPromptFillSlots(prompt.content)
@@ -2959,8 +2970,7 @@ function LauncherModal({
           className={mode === 'prompt' ? 'active' : ''}
           type="button"
           onClick={() => {
-            setMode('prompt')
-            setSelectedGroup('all')
+            selectLauncherMode('prompt')
           }}
         >
           调用提示词
@@ -2969,8 +2979,7 @@ function LauncherModal({
           className={mode === 'skill' ? 'active' : ''}
           type="button"
           onClick={() => {
-            setMode('skill')
-            setSelectedGroup('all')
+            selectLauncherMode('skill')
           }}
         >
           调用 Skill
@@ -2979,8 +2988,7 @@ function LauncherModal({
           className={mode === 'workflow' ? 'active' : ''}
           type="button"
           onClick={() => {
-            setMode('workflow')
-            setSelectedGroup('all')
+            selectLauncherMode('workflow')
           }}
         >
           调用工作流
@@ -3826,6 +3834,20 @@ function matchesQuickCallFilters(
 ): boolean {
   if (!matchesTextAndTags(item, query, [])) return false
   return selectedGroup === 'all' || (item.tags || []).some((tag) => selectedTagSet.has(normalizeTag(tag)))
+}
+
+function readStoredQuickLauncherMode(): LauncherMode {
+  const storedMode = localStorage.getItem(quickLauncherModeStorageKey)
+  return storedMode === 'skill' || storedMode === 'workflow' || storedMode === 'prompt' ? storedMode : 'prompt'
+}
+
+function readStoredQuickLauncherGroup(mode: LauncherMode): string {
+  return localStorage.getItem(`${quickLauncherGroupStoragePrefix}-${mode}`) || 'all'
+}
+
+function writeStoredQuickLauncherState(mode: LauncherMode, selectedGroup: string): void {
+  localStorage.setItem(quickLauncherModeStorageKey, mode)
+  localStorage.setItem(`${quickLauncherGroupStoragePrefix}-${mode}`, selectedGroup || 'all')
 }
 
 function createGroupFromName(name: string, groups: GroupItem[]): GroupItem {

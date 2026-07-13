@@ -447,6 +447,10 @@ async function writeClipboardTextAndPasteWithFeedback(text: string): Promise<{ o
     if (!lastExternalForegroundWindow || lastExternalForegroundWindow === '0') {
       throw new Error('未记录到可粘贴的目标窗口，请先切换到目标应用再调用快捷调用。')
     }
+    if (mainWindow?.isVisible()) {
+      mainWindow.hide()
+      await sleep(120)
+    }
     const scriptPath = await getPasteScriptPath()
     await execFile(
       'powershell.exe',

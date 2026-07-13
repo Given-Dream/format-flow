@@ -202,6 +202,11 @@ async function writeClipboardTextAndPaste(text: string): Promise<{ ok: boolean; 
   return writeClipboardText(text)
 }
 
+function confirmDestructiveAction(title: string, details: string[] = []): boolean {
+  const body = details.map((detail) => detail.trim()).filter(Boolean)
+  return window.confirm([title, ...body].join('\n\n'))
+}
+
 async function queueBrowserPluginTask(payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; status?: Record<string, unknown> }> {
   if (!isBrowserReviewMode() && formatFlow.queueBrowserBridgeTask) {
     return formatFlow.queueBrowserBridgeTask(payload)
@@ -623,9 +628,11 @@ function PromptPanel({
   }
 
   async function deletePrompt(prompt: PromptItem): Promise<void> {
+    if (!confirmDestructiveAction(`确认删除提示词“${prompt.title}”？`, ['此操作会从提示词库移除该条目。'])) return
     await commit({ ...store, prompts: store.prompts.filter((item) => item.id !== prompt.id) })
     if (promptClipboard?.id === prompt.id) setPromptClipboard(null)
     setEditing(null)
+    setNotice(`已删除提示词：${prompt.title}`)
   }
 
   function copyPromptItem(prompt: PromptItem): void {
@@ -679,6 +686,15 @@ function PromptPanel({
 
   async function deleteGroup(group: GroupItem): Promise<void> {
     const tags = collectGroupTags(group)
+    const affectedCount = store.prompts.filter((prompt) => prompt.tags.some((tag) => tags.includes(tag))).length
+    if (
+      !confirmDestructiveAction(`确认删除提示词分组“${group.name}”？`, [
+        group.children.length > 0 ? `会同时删除 ${group.children.length} 个下级分组。` : '',
+        `会从 ${affectedCount} 个提示词中移除该分组标签，但不会删除提示词正文。`
+      ])
+    ) {
+      return
+    }
     await commit({
       ...store,
       prompts: store.prompts.map((prompt) => ({
@@ -1005,6 +1021,15 @@ function SkillPanel({
 
   async function deleteGroup(group: GroupItem): Promise<void> {
     const tags = collectGroupTags(group)
+    const affectedCount = skills.filter((skill) => skill.tags.some((tag) => tags.includes(tag))).length
+    if (
+      !confirmDestructiveAction(`确认删除 Skill 分组“${group.name}”？`, [
+        group.children.length > 0 ? `会同时删除 ${group.children.length} 个下级分组。` : '',
+        `会从 ${affectedCount} 个 Skill 中移除该分组标签，但不会删除 Skill 文件。`
+      ])
+    ) {
+      return
+    }
     const nextSkillIndex = { ...store.skillIndex }
     for (const skill of skills) {
       const metadata = nextSkillIndex[skill.id] || { tags: skill.tags }
@@ -1259,6 +1284,8 @@ function WorkflowPanel({
 
   async function removeNode(nodeId: string): Promise<void> {
     if (!workflow) return
+    const node = workflow.nodes.find((item) => item.id === nodeId)
+    if (!confirmDestructiveAction(`确认删除节点“${node?.title || '未命名节点'}”？`, ['此操作会从当前工作流中移除该节点并重新生成执行顺序。'])) return
     const nodes = workflow.nodes.filter((node) => node.id !== nodeId)
     await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
   }
@@ -1806,8 +1833,10 @@ function McpPanel({
   }
 
   async function deleteMcp(server: McpServer): Promise<void> {
+    if (!confirmDestructiveAction(`确认删除 MCP“${server.name}”？`, ['此操作会从 MCP 服务列表中移除该配置。'])) return
     await commit({ ...store, mcpServers: store.mcpServers.filter((item) => item.id !== server.id) })
     setEditing(null)
+    setNotice(`已删除 MCP：${server.name}`)
   }
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
@@ -1830,6 +1859,15 @@ function McpPanel({
 
   async function deleteGroup(group: GroupItem): Promise<void> {
     const tags = collectGroupTags(group)
+    const affectedCount = store.mcpServers.filter((server) => server.tags.some((tag) => tags.includes(tag))).length
+    if (
+      !confirmDestructiveAction(`确认删除 MCP 分组“${group.name}”？`, [
+        group.children.length > 0 ? `会同时删除 ${group.children.length} 个下级分组。` : '',
+        `会从 ${affectedCount} 个 MCP 配置中移除该分组标签，但不会删除 MCP 配置本身。`
+      ])
+    ) {
+      return
+    }
     await commit({
       ...store,
       mcpServers: store.mcpServers.map((server) => ({
@@ -1963,6 +2001,15 @@ function LearningPanel({
 
   async function deleteGroup(group: GroupItem): Promise<void> {
     const tags = collectGroupTags(group)
+    const affectedCount = sources.filter((source) => source.tags.some((tag) => tags.includes(tag))).length
+    if (
+      !confirmDestructiveAction(`确认删除学习分组“${group.name}”？`, [
+        group.children.length > 0 ? `会同时删除 ${group.children.length} 个下级分组。` : '',
+        `会从 ${affectedCount} 条学习样本中移除该分组标签，但不会删除样本内容。`
+      ])
+    ) {
+      return
+    }
     setSources((current) =>
       current.map((source) => ({
         ...source,
@@ -2001,6 +2048,8 @@ function LearningPanel({
   }
 
   function removeSource(id: string): void {
+    const source = sources.find((item) => item.id === id)
+    if (!confirmDestructiveAction(`确认移除学习样本“${source?.title || '未命名样本'}”？`, ['此操作会从当前学习样本列表中移除该条记录。'])) return
     setSources((current) => current.filter((source) => source.id !== id))
   }
 
@@ -2259,6 +2308,7 @@ function SettingsPanel({
   }
 
   function removeSkillDirectory(directory: string): void {
+    if (!confirmDestructiveAction('确认移除这个 Skill 目录？', [`目录：${directory}`, '此操作只会从扫描列表移除目录，不会删除磁盘文件。'])) return
     setSkillDirectories(skillDirectories.filter((item) => item !== directory))
   }
 

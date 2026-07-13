@@ -1347,6 +1347,24 @@ label {
   font-size: 13px;
 }
 
+.prompt-fill-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.prompt-fill-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.prompt-fill-fields textarea {
+  min-height: 96px;
+}
+
+.prompt-fill-preview textarea {
+  min-height: 180px;
+}
+
 .directory-editor {
   min-height: 220px;
 }

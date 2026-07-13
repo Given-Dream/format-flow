@@ -117,6 +117,14 @@ type PromptGroupSection = {
   title: string
   items: PromptItem[]
 }
+type PromptFillSlot = {
+  label: string
+  token: string
+}
+type PromptFillDraft = {
+  prompt: PromptItem
+  values: Record<string, string>
+}
 type ShortcutCaptureInput = {
   key?: unknown
   code?: unknown
@@ -2839,6 +2847,7 @@ function LauncherModal({
   const [mode, setMode] = useState<LauncherMode>('prompt')
   const [query, setQuery] = useState('')
   const [selectedGroup, setSelectedGroup] = useState('all')
+  const [fillDraft, setFillDraft] = useState<PromptFillDraft | null>(null)
   const callablePrompts = store.prompts.filter((prompt) => prompt.content.trim())
   const quickGroupTags =
     mode === 'prompt'
@@ -2854,12 +2863,77 @@ function LauncherModal({
   const workflowItems = store.workflows.filter((workflow) =>
     matchesTextAndTags({ title: workflow.title, summary: workflow.description, tags: workflow.tags }, query, effectiveTags)
   )
+  const fillSlots = fillDraft ? extractPromptFillSlots(fillDraft.prompt.content) : []
+  const filledPromptContent = fillDraft ? fillPromptPlaceholders(fillDraft.prompt.content, fillDraft.values) : ''
+  const fillReady = fillDraft ? fillSlots.every((slot) => fillDraft.values[slot.label]?.trim()) : false
 
   useEffect(() => {
     if (selectedGroup !== 'all' && !groupOptions.some((group) => group.tag === selectedGroup)) {
       setSelectedGroup('all')
     }
   }, [groupOptions, selectedGroup])
+
+  function callPrompt(prompt: PromptItem): void {
+    const slots = extractPromptFillSlots(prompt.content)
+    if (slots.length > 0) {
+      setFillDraft({
+        prompt,
+        values: Object.fromEntries(slots.map((slot) => [slot.label, '']))
+      })
+      return
+    }
+    void pasteQuickCall(prompt.content, `已粘贴提示词：${prompt.title}`)
+      .then(close)
+      .catch(() => undefined)
+  }
+
+  if (fillDraft) {
+    return (
+      <Modal title={`填写提示词：${fillDraft.prompt.title}`} close={close}>
+        <div className="prompt-fill-layout">
+          <div className="prompt-fill-fields">
+            {fillSlots.map((slot) => (
+              <label key={slot.label}>
+                {slot.label}
+                <textarea
+                  autoFocus={slot === fillSlots[0]}
+                  value={fillDraft.values[slot.label] || ''}
+                  placeholder={`请输入${slot.label}...`}
+                  onChange={(event) =>
+                    setFillDraft({
+                      ...fillDraft,
+                      values: { ...fillDraft.values, [slot.label]: event.target.value }
+                    })
+                  }
+                />
+              </label>
+            ))}
+          </div>
+          <label className="prompt-fill-preview">
+            填充预览
+            <textarea className="content-editor readonly" readOnly value={filledPromptContent} />
+          </label>
+          <div className="inline-actions">
+            <button
+              className="primary-action"
+              type="button"
+              disabled={!fillReady}
+              onClick={() =>
+                void pasteQuickCall(filledPromptContent, `已粘贴提示词：${fillDraft.prompt.title}`)
+                  .then(close)
+                  .catch(() => undefined)
+              }
+            >
+              粘贴填充后内容
+            </button>
+            <button type="button" onClick={() => setFillDraft(null)}>
+              返回列表
+            </button>
+          </div>
+        </div>
+      </Modal>
+    )
+  }
 
   return (
     <Modal title="快捷调用" close={close}>
@@ -2892,7 +2966,7 @@ function LauncherModal({
             <button
               key={prompt.id}
               type="button"
-              onClick={() => void pasteQuickCall(prompt.content, `已粘贴提示词：${prompt.title}`).then(close).catch(() => undefined)}
+              onClick={() => callPrompt(prompt)}
             >
               <strong>{prompt.title}</strong>
               <span>{prompt.summary}</span>
@@ -4131,7 +4205,30 @@ function parseEnvText(value: string): Record<string, string> {
 }
 
 function extractVariables(content: string): string[] {
-  return Array.from(new Set(Array.from(content.matchAll(/\{\{\s*([a-zA-Z0-9_-]+)\s*\}\}/g)).map((match) => match[1])))
+  return Array.from(
+    new Set([
+      ...Array.from(content.matchAll(/\{\{\s*([a-zA-Z0-9_-]+)\s*\}\}/g)).map((match) => match[1]),
+      ...extractPromptFillSlots(content).map((slot) => slot.label)
+    ])
+  )
+}
+
+function extractPromptFillSlots(content: string): PromptFillSlot[] {
+  const slots = new Map<string, PromptFillSlot>()
+  for (const match of content.matchAll(/【\s*请填写\s*[:：]\s*([^】]+?)\s*】/g)) {
+    const label = normalizeFillLabel(match[1])
+    const token = match[0]
+    if (label && !slots.has(label)) slots.set(label, { label, token })
+  }
+  return Array.from(slots.values())
+}
+
+function fillPromptPlaceholders(content: string, values: Record<string, string>): string {
+  return content.replace(/【\s*请填写\s*[:：]\s*([^】]+?)\s*】/g, (_token, rawLabel: string) => values[normalizeFillLabel(rawLabel)] || '')
+}
+
+function normalizeFillLabel(label: string): string {
+  return label.replace(/\s+/g, ' ').trim()
 }
 
 function shortcutFromKeyboardEvent(event: KeyboardEvent): string {

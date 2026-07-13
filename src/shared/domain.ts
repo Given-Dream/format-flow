@@ -715,7 +715,12 @@ function inferSkillTags(name: string, filePath: string): string[] {
 }
 
 function extractPromptVariables(content: string): string[] {
-  return Array.from(new Set(Array.from(content.matchAll(/\{\{\s*([a-zA-Z0-9_-]+)\s*\}\}/g)).map((match) => match[1])))
+  return Array.from(
+    new Set([
+      ...Array.from(content.matchAll(/\{\{\s*([a-zA-Z0-9_-]+)\s*\}\}/g)).map((match) => match[1]),
+      ...Array.from(content.matchAll(/【\s*请填写\s*[:：]\s*([^】]+?)\s*】/g)).map((match) => match[1].replace(/\s+/g, ' ').trim())
+    ].filter(Boolean))
+  )
 }
 
 function parseArgsText(value: string): string[] {

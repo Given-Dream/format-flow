@@ -22,6 +22,11 @@ describe('tag parsing and search', () => {
     expect(parseTags('7- 结果')).toEqual(['7- 结果'])
   })
 
+  it('extracts custom fill placeholders from prompt content', () => {
+    const [prompt] = parsePromptImport('请分析【请填写：摘要草稿】和 {{source}}。', 'fill.md')
+    expect(prompt.variables).toEqual(['source', '摘要草稿'])
+  })
+
   it('repairs tags that were split from an existing spaced group tag', () => {
     const normalized = normalizeStore({
       prompts: [

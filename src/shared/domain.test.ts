@@ -8,6 +8,7 @@ import {
   createWorkflow,
   matchesTextAndTags,
   nodeFromPrompt,
+  normalizeStore,
   parseSkillMarkdown,
   parseMcpConfig,
   parsePromptImport,
@@ -16,8 +17,37 @@ import {
 } from './domain'
 
 describe('tag parsing and search', () => {
-  it('normalizes comma, whitespace and hash separated tags', () => {
-    expect(parseTags('Codex, #Review，safe safe')).toEqual(['codex', 'review', 'safe'])
+  it('normalizes comma separated tags without splitting spaces inside a tag', () => {
+    expect(parseTags('Codex, #Review，safe safe')).toEqual(['codex', 'review', 'safe safe'])
+    expect(parseTags('7- 结果')).toEqual(['7- 结果'])
+  })
+
+  it('repairs tags that were split from an existing spaced group tag', () => {
+    const normalized = normalizeStore({
+      prompts: [
+        createPrompt({
+          id: 'prompt_split_tag',
+          title: 'Split tag',
+          tags: ['7-', '结果']
+        })
+      ],
+      groups: {
+        prompts: [
+          {
+            id: 'group_result',
+            name: '7- 结果',
+            tag: '7- 结果',
+            children: []
+          }
+        ],
+        skills: [],
+        mcps: [],
+        quickCalls: [],
+        learning: []
+      }
+    })
+
+    expect(normalized.prompts[0].tags).toEqual(['7- 结果'])
   })
 
   it('matches text query and all selected tags', () => {

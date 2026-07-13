@@ -34,7 +34,7 @@ export function parseTags(value: string): string[] {
   return Array.from(
     new Set(
       value
-        .split(/[,，\s]+/)
+        .split(/[,，;；\r\n]+/)
         .map(normalizeTag)
         .filter(Boolean)
     )
@@ -263,12 +263,15 @@ export function defaultStore(): AppStore {
 export function normalizeStore(value: Partial<AppStore> | null | undefined): AppStore {
   const base = defaultStore()
   if (!value) return base
+  const rawPrompts = Array.isArray(value.prompts) ? value.prompts : base.prompts
+  const groups = normalizeGroups(value.groups, rawPrompts)
+  const prompts = repairSplitGroupTags(rawPrompts, groups.prompts)
 
   return {
     version: STORE_VERSION,
-    prompts: Array.isArray(value.prompts) ? value.prompts : base.prompts,
+    prompts,
     skillIndex: value.skillIndex && typeof value.skillIndex === 'object' ? value.skillIndex : {},
-    groups: normalizeGroups(value.groups, Array.isArray(value.prompts) ? value.prompts : base.prompts),
+    groups: normalizeGroups(value.groups, prompts),
     mcpServers: Array.isArray(value.mcpServers) ? value.mcpServers : [],
     workflows: Array.isArray(value.workflows) ? value.workflows.map(normalizeWorkflow) : base.workflows,
     runs: Array.isArray(value.runs) ? value.runs : [],
@@ -283,6 +286,39 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
         typeof value.settings?.gitBackupUserEmail === 'string' ? value.settings.gitBackupUserEmail : '2878705044@qq.com'
     }
   }
+}
+
+function repairSplitGroupTags(prompts: PromptItem[], groups: GroupItem[]): PromptItem[] {
+  const splittableGroups = flattenGroupItems(groups)
+    .map((group) => ({
+      tag: normalizeTag(group.tag),
+      parts: normalizeTag(group.tag)
+        .split(/\s+/)
+        .map(normalizeTag)
+        .filter(Boolean)
+    }))
+    .filter((group) => group.tag && group.parts.length > 1)
+
+  if (splittableGroups.length === 0) return prompts
+
+  return prompts.map((prompt) => {
+    let tags = prompt.tags.map(normalizeTag).filter(Boolean)
+    let changed = false
+
+    for (const group of splittableGroups) {
+      const tagSet = new Set(tags)
+      if (tagSet.has(group.tag) || !group.parts.every((part) => tagSet.has(part))) continue
+      tags = tags.filter((tag) => !group.parts.includes(tag))
+      tags.push(group.tag)
+      changed = true
+    }
+
+    return changed ? { ...prompt, tags: Array.from(new Set(tags)) } : prompt
+  })
+}
+
+function flattenGroupItems(groups: GroupItem[]): GroupItem[] {
+  return groups.flatMap((group) => [group, ...flattenGroupItems(group.children)])
 }
 
 export function nodeFromPrompt(prompt: PromptItem, index: number, skill?: SkillItem, mcp?: McpServer): WorkflowNode {

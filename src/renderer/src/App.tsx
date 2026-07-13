@@ -435,8 +435,8 @@ export function App(): JSX.Element {
   }
 
   async function pasteQuickCall(text: string, success: string): Promise<void> {
-    setNotice('正在粘贴到上一个窗口...')
-    const result = await writeClipboardTextAndPaste(text)
+    setNotice('正在复制到剪贴板...')
+    const result = await writeClipboardText(text)
     if (!result.ok) {
       setNotice(result.message)
       throw new Error(result.message)
@@ -2899,7 +2899,7 @@ function LauncherModal({
       })
       return
     }
-    void pasteQuickCall(prompt.content, `已粘贴提示词：${prompt.title}`)
+    void pasteQuickCall(prompt.content, `已复制提示词：${prompt.title}`)
       .then(close)
       .catch(() => undefined)
   }
@@ -2947,12 +2947,12 @@ function LauncherModal({
               type="button"
               disabled={!fillReady}
               onClick={() =>
-                void pasteQuickCall(filledPromptContent, `已粘贴提示词：${fillDraft.prompt.title}`)
+                void pasteQuickCall(filledPromptContent, `已复制提示词：${fillDraft.prompt.title}`)
                   .then(close)
                   .catch(() => undefined)
               }
             >
-              粘贴填充后内容
+              复制填充后内容
             </button>
             <button type="button" onClick={() => setFillDraft(null)}>
               返回列表
@@ -3051,7 +3051,7 @@ function LauncherModal({
               key={skill.id}
               type="button"
               onClick={() =>
-                void pasteQuickCall(`使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`, `已粘贴 Skill 调用信息：${skill.title}`)
+                void pasteQuickCall(`使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`, `已复制 Skill 调用信息：${skill.title}`)
                   .then(close)
                   .catch(() => undefined)
               }
@@ -3070,7 +3070,7 @@ function LauncherModal({
                 const task = firstNode
                   ? buildExecutionPrompt(firstNode, store.prompts, skills, '', store.mcpServers)
                   : `调用工作流：${workflow.title}\n${workflow.description}`
-                void pasteQuickCall(task, `已粘贴工作流首个顺序运行任务：${workflow.title}`)
+                void pasteQuickCall(task, `已复制工作流首个顺序运行任务：${workflow.title}`)
                   .then(() => {
                     setActiveTab('runner')
                     close()

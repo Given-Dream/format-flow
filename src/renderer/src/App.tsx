@@ -4040,13 +4040,14 @@ async function exportResourceFile({
 
 function formatPromptsExport(prompts: PromptItem[], format: ExportFormat): string {
   if (prompts.length === 0) return ''
+  const exportedAt = nowIso()
   if (format === 'json') {
-    return `${JSON.stringify({ format: 'format-flow-prompts', exportedAt: nowIso(), prompts }, null, 2)}\n`
+    return `${JSON.stringify({ format: 'format-flow-prompts', exportedAt, prompts }, null, 2)}\n`
   }
   if (format === 'txt') {
     return [
       `Format Flow Prompts`,
-      `Exported: ${nowIso()}`,
+      `Exported: ${exportedAt}`,
       `Count: ${prompts.length}`,
       '',
       ...prompts.flatMap((prompt, index) => [
@@ -4067,8 +4068,10 @@ function formatPromptsExport(prompts: PromptItem[], format: ExportFormat): strin
   return [
     '# Format Flow Prompts',
     '',
-    `- Exported: ${nowIso()}`,
+    `- Exported: ${exportedAt}`,
     `- Count: ${prompts.length}`,
+    '',
+    promptBackupComment(prompts, exportedAt),
     '',
     ...prompts.flatMap((prompt, index) => [
       `## ${index + 1}. ${prompt.title}`,
@@ -4225,6 +4228,16 @@ function formatWorkflowNodeExport(
 function codeBlock(content: string, language: string): string {
   const fence = content.includes('```') ? '````' : '```'
   return [fence + language, content.trimEnd(), fence].join('\n')
+}
+
+function base64EncodeUtf8(value: string): string {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.slice(index, index + chunkSize))
+  }
+  return btoa(binary)
 }
 
 function formatTags(tags: string[]): string {
@@ -4671,6 +4684,11 @@ function buildManualSkillContent(draft: ManualSkillDraft): string {
     '',
     draft.content.trim()
   ].join('\n')
+}
+
+function promptBackupComment(prompts: PromptItem[], exportedAt: string): string {
+  const payload = JSON.stringify({ format: 'format-flow-prompts', exportedAt, prompts })
+  return ['<!-- format-flow-prompts-json', base64EncodeUtf8(payload), '-->'].join('\n')
 }
 
 function buildLearningSkillDraft(sources: LearningSource[], method: LearningMethod, errorSources: LearningSource[] = []): LearningDraft {

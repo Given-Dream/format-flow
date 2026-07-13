@@ -123,6 +123,9 @@ export function parsePromptImport(content: string, sourceName = 'backup'): Promp
   const trimmed = content.trim()
   if (!trimmed) return []
 
+  const embeddedBackup = parseEmbeddedPromptMarkdownBackup(trimmed, sourceName)
+  if (embeddedBackup.length > 0) return embeddedBackup
+
   try {
     const parsed = JSON.parse(trimmed) as unknown
     const candidates = Array.isArray(parsed)
@@ -132,26 +135,113 @@ export function parsePromptImport(content: string, sourceName = 'backup'): Promp
         : []
 
     if (candidates.length > 0) {
-      return candidates.filter(isRecord).map((item) =>
-        createPrompt({
-          id: typeof item.id === 'string' ? item.id : newId('prompt'),
-          title: stringOr(item.title, sourceName.replace(/\.[^.]+$/, '') || 'Imported Prompt'),
-          summary: stringOr(item.summary, 'Imported prompt'),
-          content: stringOr(item.content, ''),
-          tags: Array.isArray(item.tags) ? item.tags.map(String).map(normalizeTag).filter(Boolean) : ['imported'],
-          variables: Array.isArray(item.variables)
-            ? item.variables.map(String)
-            : extractPromptVariables(stringOr(item.content, '')),
-          version: numberOr(item.version, 1),
-          favorite: Boolean(item.favorite)
-        })
-      )
+      return promptItemsFromRecords(candidates, sourceName)
     }
   } catch {
-    // Non-JSON prompt files are imported as a single prompt.
+    // Try the readable Markdown export format before falling back to a single prompt.
   }
 
+  const markdownPrompts = parsePromptMarkdownExport(trimmed, sourceName)
+  if (markdownPrompts.length > 0) return markdownPrompts
+
   return [createPromptFromText(trimmed, sourceName)]
+}
+
+function promptItemsFromRecords(candidates: unknown[], sourceName: string): PromptItem[] {
+  return candidates.filter(isRecord).map((item) => {
+    const promptContent = stringOr(item.content, '')
+    return createPrompt({
+      id: typeof item.id === 'string' ? item.id : newId('prompt'),
+      title: stringOr(item.title, sourceName.replace(/\.[^.]+$/, '') || 'Imported Prompt'),
+      summary: stringOr(item.summary, 'Imported prompt'),
+      content: promptContent,
+      tags: Array.isArray(item.tags) ? item.tags.map(String).map(normalizeTag).filter(Boolean) : ['imported'],
+      variables: Array.isArray(item.variables) ? item.variables.map(String) : extractPromptVariables(promptContent),
+      version: numberOr(item.version, 1),
+      favorite: Boolean(item.favorite),
+      createdAt: stringOr(item.createdAt, nowIso()),
+      updatedAt: stringOr(item.updatedAt, nowIso())
+    })
+  })
+}
+
+function parseEmbeddedPromptMarkdownBackup(content: string, sourceName: string): PromptItem[] {
+  const match = content.match(/<!--\s*format-flow-prompts-json\s+([A-Za-z0-9+/=\s]+?)\s*-->/)
+  if (!match) return []
+
+  try {
+    const decoded = decodeBase64Utf8(match[1])
+    const parsed = JSON.parse(decoded) as unknown
+    const candidates = isRecord(parsed) && Array.isArray(parsed.prompts) ? parsed.prompts : []
+    return candidates.length > 0 ? promptItemsFromRecords(candidates, sourceName) : []
+  } catch {
+    return []
+  }
+}
+
+function parsePromptMarkdownExport(content: string, sourceName: string): PromptItem[] {
+  if (!/^#\s+Format Flow Prompts\s*$/m.test(content)) return []
+
+  const sectionMatches = Array.from(content.matchAll(/^##\s+(?:\d+\.\s*)?(.+?)\s*$/gm))
+  if (sectionMatches.length === 0) return []
+
+  const prompts: PromptItem[] = []
+  for (let index = 0; index < sectionMatches.length; index += 1) {
+    const match = sectionMatches[index]
+    const title = match[1]?.trim() || sourceName.replace(/\.[^.]+$/, '') || 'Imported Prompt'
+    const sectionStart = (match.index ?? 0) + match[0].length
+    const sectionEnd = index + 1 < sectionMatches.length ? sectionMatches[index + 1].index ?? content.length : content.length
+    const section = content.slice(sectionStart, sectionEnd).trim()
+    const promptContent = extractFirstMarkdownCodeBlock(section).trim()
+    if (!promptContent) continue
+
+    const summary = markdownMetaValue(section, 'Summary') || trimSummary(firstPlainParagraph(promptContent) || 'Imported prompt')
+    const tags = parseExportedList(markdownMetaValue(section, 'Tags')).map(normalizeTag).filter(Boolean)
+    const variables = parseExportedList(markdownMetaValue(section, 'Variables'))
+    const versionValue = Number.parseInt(markdownMetaValue(section, 'Version') || '', 10)
+    const updatedAt = markdownMetaValue(section, 'Updated')
+
+    prompts.push(
+      createPrompt({
+        title,
+        summary,
+        content: promptContent,
+        tags,
+        variables: variables.length > 0 ? variables : extractPromptVariables(promptContent),
+        version: Number.isFinite(versionValue) ? versionValue : 1,
+        updatedAt: updatedAt || nowIso()
+      })
+    )
+  }
+
+  return prompts
+}
+
+function extractFirstMarkdownCodeBlock(section: string): string {
+  const match = section.match(/(?:^|\n)(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1[ \t]*(?:\n|$)/)
+  return match?.[2] || ''
+}
+
+function markdownMetaValue(section: string, key: string): string {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = section.match(new RegExp(`^-\\s+${escapedKey}:\\s*(.*)$`, 'm'))
+  return match?.[1]?.trim() || ''
+}
+
+function parseExportedList(value: string): string[] {
+  if (!value || value === '-') return []
+  return value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+}
+
+function decodeBase64Utf8(value: string): string {
+  const normalized = value.replace(/\s/g, '')
+  if (typeof Buffer !== 'undefined') return Buffer.from(normalized, 'base64').toString('utf8')
+  const binary = atob(normalized)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
 }
 
 export function createMcpServer(overrides: Partial<McpServer> = {}): McpServer {

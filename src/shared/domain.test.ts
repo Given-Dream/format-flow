@@ -134,6 +134,86 @@ describe('prompt and MCP imports', () => {
     expect(prompts[0].tags).toEqual(['backup'])
   })
 
+  it('imports prompts from exported Markdown as separate prompt items', () => {
+    const prompts = parsePromptImport(
+      [
+        '# Format Flow Prompts',
+        '',
+        '- Exported: 2026-07-13T00:00:00.000Z',
+        '- Count: 2',
+        '',
+        '## 1. First Prompt',
+        '',
+        '- Summary: First summary',
+        '- Tags: Alpha, Parent/Child',
+        '- Variables: input',
+        '- Version: 3',
+        '- Updated: 2026-07-13T01:00:00.000Z',
+        '',
+        '```text',
+        'Use {{input}} safely.',
+        '```',
+        '',
+        '## 2. Second Prompt',
+        '',
+        '- Summary: Second summary',
+        '- Tags: Beta',
+        '- Variables: -',
+        '- Version: 1',
+        '- Updated: 2026-07-13T02:00:00.000Z',
+        '',
+        '```text',
+        'Summarize this text.',
+        '```',
+        ''
+      ].join('\n'),
+      'prompts.md'
+    )
+
+    expect(prompts).toHaveLength(2)
+    expect(prompts[0].title).toBe('First Prompt')
+    expect(prompts[0].content).toBe('Use {{input}} safely.')
+    expect(prompts[0].tags).toEqual(['alpha', 'parent/child'])
+    expect(prompts[0].variables).toEqual(['input'])
+    expect(prompts[0].version).toBe(3)
+    expect(prompts[1].title).toBe('Second Prompt')
+    expect(prompts[1].content).toBe('Summarize this text.')
+    expect(prompts[1].tags).toEqual(['beta'])
+  })
+
+  it('imports prompts from the embedded Markdown backup block', () => {
+    const payload = {
+      format: 'format-flow-prompts',
+      prompts: [
+        {
+          id: 'prompt_embedded',
+          title: 'Embedded Prompt',
+          summary: 'Exact backup',
+          content: 'Keep exact fields.',
+          tags: ['Backup'],
+          variables: ['field'],
+          version: 5,
+          favorite: true,
+          createdAt: '2026-07-13T00:00:00.000Z',
+          updatedAt: '2026-07-13T01:00:00.000Z'
+        }
+      ]
+    }
+    const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
+
+    const prompts = parsePromptImport(
+      ['# Format Flow Prompts', '', '<!-- format-flow-prompts-json', encoded, '-->', '', 'Readable fallback'].join('\n'),
+      'prompts.md'
+    )
+
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0].id).toBe('prompt_embedded')
+    expect(prompts[0].title).toBe('Embedded Prompt')
+    expect(prompts[0].favorite).toBe(true)
+    expect(prompts[0].createdAt).toBe('2026-07-13T00:00:00.000Z')
+    expect(prompts[0].updatedAt).toBe('2026-07-13T01:00:00.000Z')
+  })
+
   it('imports MCP servers from JSON and TOML configs', () => {
     const jsonServers = parseMcpConfig(
       JSON.stringify({

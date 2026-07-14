@@ -54,6 +54,7 @@ import type {
 type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'learning' | 'settings'
 type LauncherMode = 'prompt' | 'skill' | 'workflow'
 type QuickCallType = 'prompt' | 'skill' | 'workflow'
+type WorkflowPickerKind = 'workflow' | 'prompt' | 'skill' | 'mcp'
 type LearningMethod = 'conversation-review' | 'engineering-cybernetics'
 type ExportFormat = 'markdown' | 'txt' | 'json'
 type FormatFlowApi = Window['formatFlow']
@@ -116,6 +117,12 @@ type PromptGroupSection = {
   id: string
   title: string
   items: PromptItem[]
+}
+type PickerItem = {
+  id: string
+  title: string
+  summary: string
+  tags: string[]
 }
 type PromptFillSlot = {
   label: string
@@ -1307,6 +1314,7 @@ function WorkflowPanel({
   const [metadataEditing, setMetadataEditing] = useState<Workflow | null>(null)
   const [workflowClipboard, setWorkflowClipboard] = useState<Workflow | null>(null)
   const [editingWorkflowId, setEditingWorkflowId] = useState('')
+  const [pickerOpen, setPickerOpen] = useState<WorkflowPickerKind | null>(null)
   const [workflowId, setWorkflowId] = useState(store.workflows[0]?.id || '')
   const workflow = editingWorkflowId ? store.workflows.find((item) => item.id === editingWorkflowId) : undefined
   const [selectedNodeId, setSelectedNodeId] = useState(workflow?.nodes[0]?.id || '')
@@ -1319,10 +1327,18 @@ function WorkflowPanel({
   const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
   const visibleWorkflows = store.workflows.filter((item) => matchesTextAndTags(item, query, effectiveTags))
   const activeWorkflowGroupTag = selectedGroup === 'all' ? '' : selectedGroup
+  const selectedPrompt = store.prompts.find((item) => item.id === promptToAdd)
+  const selectedSkill = skills.find((item) => item.id === skillToCall)
+  const selectedMcp = store.mcpServers.find((item) => item.id === mcpToCall)
 
   useEffect(() => {
     if (!workflowId && store.workflows[0]) setWorkflowId(store.workflows[0].id)
   }, [workflowId, store.workflows])
+
+  useEffect(() => {
+    if (promptToAdd && store.prompts.some((prompt) => prompt.id === promptToAdd)) return
+    setPromptToAdd(store.prompts[0]?.id || '')
+  }, [promptToAdd, store.prompts])
 
   async function updateWorkflow(nextWorkflow: Workflow): Promise<void> {
     const exists = store.workflows.some((item) => item.id === nextWorkflow.id)
@@ -1428,14 +1444,18 @@ function WorkflowPanel({
     const skill = skills.find((item) => item.id === skillToCall)
     const mcp = store.mcpServers.find((item) => item.id === mcpToCall)
     if (!prompt) return
-    const nodes = [...workflow.nodes, nodeFromPrompt(prompt, workflow.nodes.length, skill, mcp)]
+    const nextNode = nodeFromPrompt(prompt, workflow.nodes.length, skill, mcp)
+    const nodes = [...workflow.nodes, nextNode]
     await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
+    setSelectedNodeId(nextNode.id)
   }
 
   async function appendApprovalNode(): Promise<void> {
     if (!workflow) return
-    const nodes = [...workflow.nodes, approvalNode(workflow.nodes.length)]
+    const nextNode = approvalNode(workflow.nodes.length)
+    const nodes = [...workflow.nodes, nextNode]
     await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
+    setSelectedNodeId(nextNode.id)
   }
 
   async function removeNode(nodeId: string): Promise<void> {
@@ -1444,6 +1464,14 @@ function WorkflowPanel({
     if (!confirmDestructiveAction(`确认删除节点“${node?.title || '未命名节点'}”？`, ['此操作会从当前工作流中移除该节点并重新生成执行顺序。'])) return
     const nodes = workflow.nodes.filter((node) => node.id !== nodeId)
     await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
+  }
+
+  function selectWorkflowForEditing(nextWorkflowId: string): void {
+    const nextWorkflow = store.workflows.find((item) => item.id === nextWorkflowId)
+    if (!nextWorkflow) return
+    setWorkflowId(nextWorkflow.id)
+    setEditingWorkflowId(nextWorkflow.id)
+    setSelectedNodeId(nextWorkflow.nodes[0]?.id || '')
   }
 
   async function updateSelectedNode(patch: Partial<WorkflowNode>): Promise<void> {
@@ -1660,13 +1688,9 @@ function WorkflowPanel({
         <div>
           <PanelHeader title="工作流编排" detail="提示词节点可选择调用哪个 Skill" />
           <div className="inline-actions">
-            <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
-              {store.workflows.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.title}
-                </option>
-              ))}
-            </select>
+            <button className="picker-trigger wide" type="button" onClick={() => setPickerOpen('workflow')}>
+              <span>{workflow?.title || '选择工作流'}</span>
+            </button>
             <button type="button" onClick={() => void createNewWorkflow()}>
               新建工作流
             </button>
@@ -1690,30 +1714,16 @@ function WorkflowPanel({
         </div>
 
         <div className="node-adders workflow-adders">
-          <select value={promptToAdd} onChange={(event) => setPromptToAdd(event.target.value)}>
-            {store.prompts.map((prompt) => (
-              <option key={prompt.id} value={prompt.id}>
-                {prompt.title}
-              </option>
-            ))}
-          </select>
-          <select value={skillToCall} onChange={(event) => setSkillToCall(event.target.value)}>
-            <option value="">不调用 Skill</option>
-            {skills.map((skill) => (
-              <option key={skill.id} value={skill.id}>
-                调用：{skill.title}
-              </option>
-            ))}
-          </select>
-          <select value={mcpToCall} onChange={(event) => setMcpToCall(event.target.value)}>
-            <option value="">不使用 MCP</option>
-            {store.mcpServers.map((mcp) => (
-              <option key={mcp.id} value={mcp.id}>
-                MCP：{mcp.name}
-              </option>
-            ))}
-          </select>
-          <button className="primary-action" type="button" onClick={() => void appendPromptNode()}>
+          <button className="picker-trigger" type="button" onClick={() => setPickerOpen('prompt')}>
+            <span>{selectedPrompt?.title || '选择提示词'}</span>
+          </button>
+          <button className="picker-trigger" type="button" onClick={() => setPickerOpen('skill')}>
+            <span>{selectedSkill ? `调用：${selectedSkill.title}` : '不调用 Skill'}</span>
+          </button>
+          <button className="picker-trigger" type="button" onClick={() => setPickerOpen('mcp')}>
+            <span>{selectedMcp ? `MCP：${selectedMcp.name}` : '不使用 MCP'}</span>
+          </button>
+          <button className="primary-action" type="button" disabled={!selectedPrompt} onClick={() => void appendPromptNode()}>
             添加提示词步骤
           </button>
           <button type="button" onClick={() => void appendApprovalNode()}>
@@ -1721,6 +1731,65 @@ function WorkflowPanel({
           </button>
         </div>
       </div>
+
+      {pickerOpen === 'workflow' && (
+        <ResourcePickerModal
+          title="选择工作流"
+          groups={workflowGroups}
+          allLabel="全部工作流"
+          items={store.workflows.map(workflowToPickerItem)}
+          selectedId={workflow?.id || ''}
+          close={() => setPickerOpen(null)}
+          select={(id) => {
+            selectWorkflowForEditing(id)
+            setPickerOpen(null)
+          }}
+        />
+      )}
+      {pickerOpen === 'prompt' && (
+        <ResourcePickerModal
+          title="选择提示词"
+          groups={mergeGroupsWithTags(store.groups.prompts, allTags(store.prompts))}
+          allLabel="全部提示词"
+          items={store.prompts.map(promptToPickerItem)}
+          selectedId={promptToAdd}
+          close={() => setPickerOpen(null)}
+          select={(id) => {
+            setPromptToAdd(id)
+            setPickerOpen(null)
+          }}
+        />
+      )}
+      {pickerOpen === 'skill' && (
+        <ResourcePickerModal
+          title="选择调用 Skill"
+          groups={mergeGroupsWithTags(store.groups.skills, allTags(skills))}
+          allLabel="全部 Skill"
+          items={skills.map(skillToPickerItem)}
+          selectedId={skillToCall}
+          noneLabel="不调用 Skill"
+          close={() => setPickerOpen(null)}
+          select={(id) => {
+            setSkillToCall(id)
+            setPickerOpen(null)
+          }}
+        />
+      )}
+      {pickerOpen === 'mcp' && (
+        <ResourcePickerModal
+          title="选择 MCP"
+          groups={mergeGroupsWithTags(store.groups.mcps, allTags(store.mcpServers))}
+          allLabel="全部 MCP"
+          items={store.mcpServers.map(mcpToPickerItem)}
+          selectedId={mcpToCall}
+          noneLabel="不使用 MCP"
+          close={() => setPickerOpen(null)}
+          select={(id) => {
+            setMcpToCall(id)
+            setPickerOpen(null)
+          }}
+        />
+      )}
 
       <div className="workflow-main">
         <div className="flow-canvas">
@@ -3149,6 +3218,95 @@ function WorkflowMetadataModal({
   )
 }
 
+function ResourcePickerModal({
+  title,
+  groups,
+  allLabel,
+  items,
+  selectedId,
+  noneLabel,
+  close,
+  select
+}: {
+  title: string
+  groups: GroupItem[]
+  allLabel: string
+  items: PickerItem[]
+  selectedId: string
+  noneLabel?: string
+  close: () => void
+  select: (id: string) => void
+}): JSX.Element {
+  const [query, setQuery] = useState('')
+  const [selectedGroup, setSelectedGroup] = useState('all')
+  const selectedGroupItem = selectedGroup === 'all' ? undefined : findGroupByTag(groups, selectedGroup)
+  const selectedTags = selectedGroupItem ? collectGroupTags(selectedGroupItem) : selectedGroup === 'all' ? [] : [selectedGroup]
+  const selectedTagSet = new Set(selectedTags.map(normalizeTag))
+  const visibleItems = items.filter(
+    (item) =>
+      matchesTextAndTags(item, query, []) &&
+      (selectedGroup === 'all' || item.tags.some((tag) => selectedTagSet.has(normalizeTag(tag))))
+  )
+  const groupTargets = flattenGroupTargets(groups)
+
+  return (
+    <Modal title={title} close={close}>
+      <div className="resource-picker">
+        <aside className="resource-picker-groups">
+          <button
+            className={selectedGroup === 'all' ? 'active' : ''}
+            type="button"
+            onClick={() => setSelectedGroup('all')}
+          >
+            <span>{allLabel}</span>
+            <strong>{items.length}</strong>
+          </button>
+          {groupTargets.map(({ group, depth }) => {
+            const tags = collectGroupTags(group)
+            const count = items.filter((item) => item.tags.some((tag) => tags.includes(normalizeTag(tag)))).length
+            return (
+              <button
+                key={group.id}
+                className={selectedGroup === group.tag ? 'active' : ''}
+                type="button"
+                onClick={() => setSelectedGroup(group.tag)}
+                style={{ paddingLeft: 12 + depth * 16 }}
+              >
+                <span>{group.name}</span>
+                <strong>{count}</strong>
+              </button>
+            )
+          })}
+        </aside>
+        <section className="resource-picker-main">
+          <SearchBox query={query} setQuery={setQuery} placeholder="搜索名称、摘要或标签" />
+          {noneLabel && (
+            <button className={!selectedId ? 'picker-option active' : 'picker-option'} type="button" onClick={() => select('')}>
+              <strong>{noneLabel}</strong>
+              <span>不绑定此项</span>
+            </button>
+          )}
+          <div className="picker-option-list">
+            {visibleItems.map((item) => (
+              <button
+                key={item.id}
+                className={item.id === selectedId ? 'picker-option active' : 'picker-option'}
+                type="button"
+                onClick={() => select(item.id)}
+              >
+                <strong>{item.title}</strong>
+                <span>{item.summary || '无摘要'}</span>
+                <TagRow tags={item.tags.slice(0, 6)} />
+              </button>
+            ))}
+            {visibleItems.length === 0 && <EmptyState title="没有匹配项" detail="换个分组或关键词再试。" />}
+          </div>
+        </section>
+      </div>
+    </Modal>
+  )
+}
+
 function NodeInspector({
   node,
   prompt,
@@ -4127,6 +4285,42 @@ function buildQuickCallItems(store: AppStore, skills: SkillItem[]): QuickCallIte
       tags: workflow.tags
     }))
   ]
+}
+
+function workflowToPickerItem(workflow: Workflow): PickerItem {
+  return {
+    id: workflow.id,
+    title: workflow.title,
+    summary: workflow.description,
+    tags: workflow.tags
+  }
+}
+
+function promptToPickerItem(prompt: PromptItem): PickerItem {
+  return {
+    id: prompt.id,
+    title: prompt.title,
+    summary: prompt.summary,
+    tags: prompt.tags
+  }
+}
+
+function skillToPickerItem(skill: SkillItem): PickerItem {
+  return {
+    id: skill.id,
+    title: skill.title,
+    summary: skill.summary,
+    tags: skill.tags
+  }
+}
+
+function mcpToPickerItem(mcp: McpServer): PickerItem {
+  return {
+    id: mcp.id,
+    title: mcp.name,
+    summary: mcp.url || [mcp.command, ...mcp.args].filter(Boolean).join(' ') || mcp.transport,
+    tags: [mcp.transport, ...mcp.tags]
+  }
 }
 
 function mergeGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {

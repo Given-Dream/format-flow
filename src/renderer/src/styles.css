@@ -914,6 +914,99 @@ label {
   grid-template-columns: 1fr 1fr 1fr auto auto;
 }
 
+.picker-trigger {
+  justify-content: space-between;
+  min-width: 0;
+  text-align: left;
+}
+
+.picker-trigger span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-trigger::after {
+  content: ">";
+  color: var(--muted);
+  transform: rotate(90deg);
+}
+
+.picker-trigger.wide {
+  min-width: 260px;
+}
+
+.resource-picker {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(320px, 1fr);
+  gap: 14px;
+  min-height: 420px;
+  max-height: 70vh;
+}
+
+.resource-picker-groups,
+.resource-picker-main,
+.picker-option-list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.resource-picker-groups,
+.resource-picker-main {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.resource-picker-groups {
+  padding-right: 8px;
+  border-right: 1px solid var(--line);
+}
+
+.resource-picker-groups button,
+.picker-option {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+}
+
+.resource-picker-groups button {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 36px;
+}
+
+.resource-picker-groups button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-picker-groups button strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.resource-picker-groups button.active,
+.picker-option.active {
+  color: var(--accent);
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--accent-soft);
+}
+
+.picker-option-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.picker-option span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .workflow-main {
   display: grid;
   grid-template-columns: 1fr 360px;

@@ -131,8 +131,12 @@ type PromptFillSlot = {
   token: string
 }
 type PromptFillDraft = {
-  prompt: PromptItem
+  title: string
+  content: string
+  submitLabel: string
+  cancelLabel?: string
   values: Record<string, string>
+  submit: (filledContent: string) => void
 }
 type ShortcutCaptureInput = {
   key?: unknown
@@ -1901,6 +1905,7 @@ function RunnerPanel({
   const [outputDraft, setOutputDraft] = useState('')
   const [reviewDraft, setReviewDraft] = useState('')
   const [reviewDialog, setReviewDialog] = useState<ReviewMessage[]>([])
+  const [taskFillDraft, setTaskFillDraft] = useState<PromptFillDraft | null>(null)
   const lastPluginOutputRef = useRef<number>(0)
   const workflow = store.workflows.find((item) => item.id === workflowId) || store.workflows[0]
   const activeRun =
@@ -1910,11 +1915,15 @@ function RunnerPanel({
   const currentNode = workflow?.nodes.find((node) => node.id === currentStep?.nodeId)
   const previousOutput = activeRun && activeRun.currentStepIndex > 0 ? activeRun.steps[activeRun.currentStepIndex - 1].output : ''
   const executionPrompt = currentNode ? buildExecutionPrompt(currentNode, store.prompts, skills, previousOutput, store.mcpServers) : ''
+  const taskFillSlots = taskFillDraft ? extractPromptFillSlots(taskFillDraft.content) : []
+  const taskFillPreview = taskFillDraft ? fillPromptPlaceholders(taskFillDraft.content, taskFillDraft.values) : ''
+  const taskFillReady = taskFillDraft ? taskFillSlots.every((slot) => taskFillDraft.values[slot.label]?.trim()) : false
 
   useEffect(() => {
     setOutputDraft(currentStep?.output || '')
     setReviewDraft('')
     setReviewDialog([])
+    setTaskFillDraft(null)
     lastPluginOutputRef.current = 0
   }, [activeRun?.id, currentStep?.id])
 
@@ -1959,14 +1968,33 @@ function RunnerPanel({
 
   async function sendCurrentTask(): Promise<void> {
     if (!executionPrompt) return
-    const clipboardResult = await writeClipboardText(executionPrompt)
+    const slots = extractPromptFillSlots(executionPrompt)
+    if (slots.length > 0) {
+      setTaskFillDraft({
+        title: `填写工作流节点：${currentStep?.title || currentNode?.title || '当前节点'}`,
+        content: executionPrompt,
+        submitLabel: '填充并发送当前任务',
+        cancelLabel: '暂不发送',
+        values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
+        submit: (filledTask) => {
+          setTaskFillDraft(null)
+          void sendTaskText(filledTask)
+        }
+      })
+      return
+    }
+    await sendTaskText(executionPrompt)
+  }
+
+  async function sendTaskText(taskText: string): Promise<void> {
+    const clipboardResult = await writeClipboardText(taskText)
     if (!clipboardResult.ok) {
       setNotice(clipboardResult.message)
       return
     }
     if (targetKind === 'browser-plugin') {
       const result = await queueBrowserPluginTask({
-        text: executionPrompt,
+        text: taskText,
         workflowId: workflow?.id,
         workflowTitle: workflow?.title,
         stepTitle: currentStep?.title
@@ -1976,10 +2004,10 @@ function RunnerPanel({
     } else {
       setNotice('当前任务已复制到剪贴板')
     }
-    await markCurrentRunning()
+    await markCurrentRunning(taskText)
   }
 
-  async function markCurrentRunning(): Promise<void> {
+  async function markCurrentRunning(taskText = executionPrompt): Promise<void> {
     if (!activeRun || !currentStep) return
     const steps = activeRun.steps.map((step, index) => {
       if (index !== activeRun.currentStepIndex) return step
@@ -1987,7 +2015,7 @@ function RunnerPanel({
         ...step,
         status: 'running' as const,
         reviewedByHuman: true,
-        inputSnapshot: executionPrompt,
+        inputSnapshot: taskText,
         startedAt: step.startedAt || nowIso()
       }
     })
@@ -2180,6 +2208,42 @@ function RunnerPanel({
           <EmptyState title="没有可运行节点" detail="请先在工作流里添加节点。" />
         )}
       </div>
+      {taskFillDraft && (
+        <Modal title={taskFillDraft.title} close={() => setTaskFillDraft(null)}>
+          <div className="prompt-fill-layout">
+            <div className="prompt-fill-fields">
+              {taskFillSlots.map((slot) => (
+                <label key={slot.label}>
+                  {slot.label}
+                  <textarea
+                    autoFocus={slot === taskFillSlots[0]}
+                    value={taskFillDraft.values[slot.label] || ''}
+                    placeholder={`请输入${slot.label}...`}
+                    onChange={(event) =>
+                      setTaskFillDraft({
+                        ...taskFillDraft,
+                        values: { ...taskFillDraft.values, [slot.label]: event.target.value }
+                      })
+                    }
+                  />
+                </label>
+              ))}
+            </div>
+            <label className="prompt-fill-preview">
+              填充预览
+              <textarea className="content-editor readonly" readOnly value={taskFillPreview} />
+            </label>
+            <div className="inline-actions">
+              <button className="primary-action" type="button" disabled={!taskFillReady} onClick={() => taskFillDraft.submit(taskFillPreview)}>
+                {taskFillDraft.submitLabel}
+              </button>
+              <button type="button" onClick={() => setTaskFillDraft(null)}>
+                {taskFillDraft.cancelLabel || '返回'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </section>
   )
 }
@@ -3467,8 +3531,8 @@ function LauncherModal({
   const workflowItems = store.workflows.filter((workflow) =>
     matchesQuickCallFilters({ title: workflow.title, summary: workflow.description, tags: workflow.tags }, query, selectedQuickTagSet, selectedGroup)
   )
-  const fillSlots = fillDraft ? extractPromptFillSlots(fillDraft.prompt.content) : []
-  const filledPromptContent = fillDraft ? fillPromptPlaceholders(fillDraft.prompt.content, fillDraft.values) : ''
+  const fillSlots = fillDraft ? extractPromptFillSlots(fillDraft.content) : []
+  const filledPromptContent = fillDraft ? fillPromptPlaceholders(fillDraft.content, fillDraft.values) : ''
   const fillReady = fillDraft ? fillSlots.every((slot) => fillDraft.values[slot.label]?.trim()) : false
 
   useEffect(() => {
@@ -3490,14 +3554,71 @@ function LauncherModal({
     const slots = extractPromptFillSlots(prompt.content)
     if (slots.length > 0) {
       setFillDraft({
-        prompt,
-        values: Object.fromEntries(slots.map((slot) => [slot.label, '']))
+        title: `填写提示词：${prompt.title}`,
+        content: prompt.content,
+        submitLabel: '复制填充后内容',
+        values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
+        submit: (filledContent) => {
+          void pasteQuickCall(filledContent, `已复制提示词：${prompt.title}`)
+            .then(close)
+            .catch(() => undefined)
+        }
       })
       return
     }
     void pasteQuickCall(prompt.content, `已复制提示词：${prompt.title}`)
       .then(close)
       .catch(() => undefined)
+  }
+
+  function callSkill(skill: SkillItem): void {
+    const content = skill.contentPreview || `使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`
+    const slots = extractPromptFillSlots(content)
+    const copySkill = (filledContent: string) =>
+      pasteQuickCall(filledContent, `已复制 Skill 调用信息：${skill.title}`)
+        .then(close)
+        .catch(() => undefined)
+    if (slots.length > 0) {
+      setFillDraft({
+        title: `填写 Skill：${skill.title || skill.name}`,
+        content,
+        submitLabel: '复制填充后 Skill',
+        values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
+        submit: (filledContent) => {
+          void copySkill(filledContent)
+        }
+      })
+      return
+    }
+    void copySkill(content)
+  }
+
+  function callWorkflow(workflow: Workflow): void {
+    const firstNode = workflow.nodes[0]
+    const task = firstNode
+      ? buildExecutionPrompt(firstNode, store.prompts, skills, '', store.mcpServers)
+      : `调用工作流：${workflow.title}\n${workflow.description}`
+    const slots = extractPromptFillSlots(task)
+    const copyWorkflowTask = (filledTask: string) =>
+      pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务：${workflow.title}`)
+        .then(() => {
+          setActiveTab('runner')
+          close()
+        })
+        .catch(() => undefined)
+    if (slots.length > 0) {
+      setFillDraft({
+        title: `填写工作流节点：${workflow.title}`,
+        content: task,
+        submitLabel: '复制填充后任务',
+        values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
+        submit: (filledTask) => {
+          void copyWorkflowTask(filledTask)
+        }
+      })
+      return
+    }
+    void copyWorkflowTask(task)
   }
 
   function quickGroupCount(group: GroupItem): number {
@@ -3513,7 +3634,7 @@ function LauncherModal({
 
   if (fillDraft) {
     return (
-      <Modal title={`填写提示词：${fillDraft.prompt.title}`} close={close}>
+      <Modal title={fillDraft.title} close={close}>
         <div className="prompt-fill-layout">
           <div className="prompt-fill-fields">
             {fillSlots.map((slot) => (
@@ -3542,16 +3663,12 @@ function LauncherModal({
               className="primary-action"
               type="button"
               disabled={!fillReady}
-              onClick={() =>
-                void pasteQuickCall(filledPromptContent, `已复制提示词：${fillDraft.prompt.title}`)
-                  .then(close)
-                  .catch(() => undefined)
-              }
+              onClick={() => fillDraft.submit(filledPromptContent)}
             >
-              复制填充后内容
+              {fillDraft.submitLabel}
             </button>
             <button type="button" onClick={() => setFillDraft(null)}>
-              返回列表
+              {fillDraft.cancelLabel || '返回列表'}
             </button>
           </div>
         </div>
@@ -3646,11 +3763,7 @@ function LauncherModal({
             <button
               key={skill.id}
               type="button"
-              onClick={() =>
-                void pasteQuickCall(`使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`, `已复制 Skill 调用信息：${skill.title}`)
-                  .then(close)
-                  .catch(() => undefined)
-              }
+              onClick={() => callSkill(skill)}
             >
               <strong>{skill.title}</strong>
               <span>{skill.summary}</span>
@@ -3661,18 +3774,7 @@ function LauncherModal({
             <button
               key={workflow.id}
               type="button"
-              onClick={() => {
-                const firstNode = workflow.nodes[0]
-                const task = firstNode
-                  ? buildExecutionPrompt(firstNode, store.prompts, skills, '', store.mcpServers)
-                  : `调用工作流：${workflow.title}\n${workflow.description}`
-                void pasteQuickCall(task, `已复制工作流首个顺序运行任务：${workflow.title}`)
-                  .then(() => {
-                    setActiveTab('runner')
-                    close()
-                  })
-                  .catch(() => undefined)
-              }}
+              onClick={() => callWorkflow(workflow)}
             >
               <strong>{workflow.title}</strong>
               <span>{workflow.description}</span>

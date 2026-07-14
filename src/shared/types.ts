@@ -1,4 +1,4 @@
-export type NodeKind = 'prompt' | 'skill' | 'approval'
+export type NodeKind = 'prompt' | 'skill' | 'mcp' | 'approval'
 
 export type PromptItem = {
   id: string

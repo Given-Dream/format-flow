@@ -448,6 +448,21 @@ export function nodeFromSkill(skill: SkillItem, index: number): WorkflowNode {
   }
 }
 
+export function nodeFromMcp(mcp: McpServer, index: number): WorkflowNode {
+  return {
+    id: `node_${hashText(mcp.id)}_${Date.now()}_${index}`,
+    type: 'mcp',
+    refId: mcp.id,
+    title: mcp.name,
+    summary: `${mcp.transport.toUpperCase()} MCP${mcp.enabled ? '' : '（未启用）'}`,
+    tags: mcp.tags,
+    inputs: {},
+    outputs: ['mcp_output'],
+    requiresReview: true,
+    position: { x: index * 280, y: 80 }
+  }
+}
+
 export function approvalNode(index: number): WorkflowNode {
   return {
     id: newId('approval'),
@@ -548,11 +563,12 @@ export function buildExecutionPrompt(
   previousOutput: string,
   mcps: McpServer[] = []
 ): string {
-  const prompt = node.refId ? prompts.find((item) => item.id === node.refId) : undefined
-  const directSkill = node.refId ? skills.find((item) => item.id === node.refId) : undefined
+  const prompt = node.type === 'prompt' && node.refId ? prompts.find((item) => item.id === node.refId) : undefined
+  const directSkill = node.type === 'skill' && node.refId ? skills.find((item) => item.id === node.refId) : undefined
   const calledSkill = node.skillRefId ? skills.find((item) => item.id === node.skillRefId) : undefined
   const skill = calledSkill || directSkill
-  const mcp = node.mcpRefId ? mcps.find((item) => item.id === node.mcpRefId) : undefined
+  const mcpRefId = node.type === 'mcp' ? node.refId : node.mcpRefId
+  const mcp = mcpRefId ? mcps.find((item) => item.id === mcpRefId) : undefined
 
   if (node.type === 'approval') {
     return [
@@ -562,6 +578,81 @@ export function buildExecutionPrompt(
       '',
       '上一节点输出：',
       previousOutput || '(无)'
+    ].join('\n')
+  }
+
+  if (node.type === 'skill') {
+    return [
+      `工作流节点：${node.title}`,
+      '节点类型：Skill',
+      `摘要：${node.summary}`,
+      `标签：${node.tags.join(', ') || '(无)'}`,
+      '',
+      '任务目标：',
+      node.inputs.goal || `按此 Skill 的说明完成当前步骤：${skill?.title || node.title}`,
+      '',
+      skill
+        ? [
+            'Skill 信息：',
+            `- 名称：${skill.name}`,
+            `- 路径：${skill.path}`,
+            `- 摘要：${skill.summary}`,
+            '',
+            'Skill 内容预览：',
+            skill.contentPreview || '(无)'
+          ].join('\n')
+        : 'Skill 信息：未找到引用的 Skill',
+      '',
+      '上一步输出：',
+      previousOutput || '(无)',
+      '',
+      '输出要求：',
+      '- 给出可审查的结果。',
+      '- 如果需要修改文件，说明修改范围和验证方式。',
+      '- 如果发现风险或信息不足，先说明风险并停止在该节点。',
+      '',
+      '约束：',
+      '- 不要修改无关文件。',
+      '- 不要覆盖用户未要求修改的内容。',
+      '- 每一步完成后等待人工审查。'
+    ].join('\n')
+  }
+
+  if (node.type === 'mcp') {
+    return [
+      `工作流节点：${node.title}`,
+      '节点类型：MCP',
+      `摘要：${node.summary}`,
+      `标签：${node.tags.join(', ') || '(无)'}`,
+      '',
+      '任务目标：',
+      node.inputs.goal || `使用此 MCP 服务完成当前步骤：${mcp?.name || node.title}`,
+      '',
+      mcp
+        ? [
+            'MCP 信息：',
+            `- 名称：${mcp.name}`,
+            `- 启用：${mcp.enabled ? '是' : '否'}`,
+            `- Transport：${mcp.transport}`,
+            `- Command：${[mcp.command, ...mcp.args].filter(Boolean).join(' ') || '(无)'}`,
+            `- CWD：${mcp.cwd || '(无)'}`,
+            `- URL：${mcp.url || '(无)'}`,
+            `- Env：${Object.keys(mcp.env).length ? Object.keys(mcp.env).join(', ') : '(无)'}`
+          ].join('\n')
+        : 'MCP 信息：未找到引用的 MCP 服务',
+      '',
+      '上一步输出：',
+      previousOutput || '(无)',
+      '',
+      '输出要求：',
+      '- 给出可审查的结果。',
+      '- 如果需要调用工具，说明调用意图和结果。',
+      '- 如果发现风险或信息不足，先说明风险并停止在该节点。',
+      '',
+      '约束：',
+      '- 不要修改无关文件。',
+      '- 不要覆盖用户未要求修改的内容。',
+      '- 每一步完成后等待人工审查。'
     ].join('\n')
   }
 

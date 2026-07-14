@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest'
 import {
   approvalNode,
   buildExecutionPrompt,
+  createMcpServer,
   clonePromptToGroup,
   createPrompt,
   createRunSteps,
   createWorkflow,
   matchesTextAndTags,
+  nodeFromMcp,
   nodeFromPrompt,
+  nodeFromSkill,
   normalizeStore,
   parseSkillMarkdown,
   parseMcpConfig,
@@ -273,5 +276,48 @@ describe('workflow execution planning', () => {
     expect(task).toContain('请实现功能。')
     expect(task).toContain('上一节点输出')
     expect(task).toContain('每一步完成后等待人工审查')
+  })
+
+  it('builds an auditable Codex task for a skill node', () => {
+    const skill = parseSkillMarkdown(
+      [
+        '---',
+        'name: planner',
+        'description: 规划下一步',
+        '---',
+        '# Planner',
+        '',
+        '请根据上下文拆解任务。'
+      ].join('\n'),
+      'D:/skills/planner/SKILL.md'
+    )
+    const node = nodeFromSkill(skill, 0)
+    const task = buildExecutionPrompt(node, [], [skill], '需求背景')
+
+    expect(node.type).toBe('skill')
+    expect(task).toContain('节点类型：Skill')
+    expect(task).toContain('Skill 信息')
+    expect(task).toContain('请根据上下文拆解任务。')
+    expect(task).toContain('需求背景')
+  })
+
+  it('builds an auditable Codex task for an MCP node', () => {
+    const mcp = createMcpServer({
+      id: 'mcp_files',
+      name: 'filesystem',
+      transport: 'stdio',
+      command: 'npx',
+      args: ['@modelcontextprotocol/server-filesystem', 'D:/workspace'],
+      env: { NODE_ENV: 'production' },
+      tags: ['files']
+    })
+    const node = nodeFromMcp(mcp, 0)
+    const task = buildExecutionPrompt(node, [], [], '上一节点结果', [mcp])
+
+    expect(node.type).toBe('mcp')
+    expect(task).toContain('节点类型：MCP')
+    expect(task).toContain('MCP 信息')
+    expect(task).toContain('@modelcontextprotocol/server-filesystem')
+    expect(task).toContain('上一节点结果')
   })
 })

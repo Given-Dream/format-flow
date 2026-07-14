@@ -25,7 +25,9 @@ import {
   matchesTextAndTags,
   mergeSkillMetadata,
   newId,
+  nodeFromMcp,
   nodeFromPrompt,
+  nodeFromSkill,
   normalizeStore,
   normalizeTag,
   nowIso,
@@ -1319,8 +1321,8 @@ function WorkflowPanel({
   const workflow = editingWorkflowId ? store.workflows.find((item) => item.id === editingWorkflowId) : undefined
   const [selectedNodeId, setSelectedNodeId] = useState(workflow?.nodes[0]?.id || '')
   const [promptToAdd, setPromptToAdd] = useState(store.prompts[0]?.id || '')
-  const [skillToCall, setSkillToCall] = useState('')
-  const [mcpToCall, setMcpToCall] = useState('')
+  const [skillToAdd, setSkillToAdd] = useState(skills[0]?.id || '')
+  const [mcpToAdd, setMcpToAdd] = useState(store.mcpServers[0]?.id || '')
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const selectedNode = workflow?.nodes.find((node) => node.id === selectedNodeId)
   const workflowGroups = mergeGroupsWithTags(store.groups.workflows || [], allTags(store.workflows))
@@ -1328,8 +1330,8 @@ function WorkflowPanel({
   const visibleWorkflows = store.workflows.filter((item) => matchesTextAndTags(item, query, effectiveTags))
   const activeWorkflowGroupTag = selectedGroup === 'all' ? '' : selectedGroup
   const selectedPrompt = store.prompts.find((item) => item.id === promptToAdd)
-  const selectedSkill = skills.find((item) => item.id === skillToCall)
-  const selectedMcp = store.mcpServers.find((item) => item.id === mcpToCall)
+  const selectedSkill = skills.find((item) => item.id === skillToAdd)
+  const selectedMcp = store.mcpServers.find((item) => item.id === mcpToAdd)
 
   useEffect(() => {
     if (!workflowId && store.workflows[0]) setWorkflowId(store.workflows[0].id)
@@ -1339,6 +1341,16 @@ function WorkflowPanel({
     if (promptToAdd && store.prompts.some((prompt) => prompt.id === promptToAdd)) return
     setPromptToAdd(store.prompts[0]?.id || '')
   }, [promptToAdd, store.prompts])
+
+  useEffect(() => {
+    if (skillToAdd && skills.some((skill) => skill.id === skillToAdd)) return
+    setSkillToAdd(skills[0]?.id || '')
+  }, [skillToAdd, skills])
+
+  useEffect(() => {
+    if (mcpToAdd && store.mcpServers.some((mcp) => mcp.id === mcpToAdd)) return
+    setMcpToAdd(store.mcpServers[0]?.id || '')
+  }, [mcpToAdd, store.mcpServers])
 
   async function updateWorkflow(nextWorkflow: Workflow): Promise<void> {
     const exists = store.workflows.some((item) => item.id === nextWorkflow.id)
@@ -1441,10 +1453,28 @@ function WorkflowPanel({
   async function appendPromptNode(): Promise<void> {
     if (!workflow) return
     const prompt = store.prompts.find((item) => item.id === promptToAdd)
-    const skill = skills.find((item) => item.id === skillToCall)
-    const mcp = store.mcpServers.find((item) => item.id === mcpToCall)
     if (!prompt) return
-    const nextNode = nodeFromPrompt(prompt, workflow.nodes.length, skill, mcp)
+    const nextNode = nodeFromPrompt(prompt, workflow.nodes.length)
+    const nodes = [...workflow.nodes, nextNode]
+    await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
+    setSelectedNodeId(nextNode.id)
+  }
+
+  async function appendSkillNode(): Promise<void> {
+    if (!workflow) return
+    const skill = skills.find((item) => item.id === skillToAdd)
+    if (!skill) return
+    const nextNode = nodeFromSkill(skill, workflow.nodes.length)
+    const nodes = [...workflow.nodes, nextNode]
+    await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
+    setSelectedNodeId(nextNode.id)
+  }
+
+  async function appendMcpNode(): Promise<void> {
+    if (!workflow) return
+    const mcp = store.mcpServers.find((item) => item.id === mcpToAdd)
+    if (!mcp) return
+    const nextNode = nodeFromMcp(mcp, workflow.nodes.length)
     const nodes = [...workflow.nodes, nextNode]
     await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
     setSelectedNodeId(nextNode.id)
@@ -1662,8 +1692,8 @@ function WorkflowPanel({
       label: (
         <FlowNodeCard
           node={node}
-          skill={skills.find((skill) => skill.id === node.skillRefId)}
-          mcp={store.mcpServers.find((mcp) => mcp.id === node.mcpRefId)}
+          skill={skills.find((skill) => skill.id === (node.type === 'skill' ? node.refId : node.skillRefId))}
+          mcp={store.mcpServers.find((mcp) => mcp.id === (node.type === 'mcp' ? node.refId : node.mcpRefId))}
         />
       )
     },
@@ -1686,7 +1716,7 @@ function WorkflowPanel({
     <section className="panel workflow-layout">
       <div className="workflow-toolbar">
         <div>
-          <PanelHeader title="工作流编排" detail="提示词节点可选择调用哪个 Skill" />
+          <PanelHeader title="工作流编排" detail="把提示词、Skill、MCP 作为节点串联，按顺序运行" />
           <div className="inline-actions">
             <button className="picker-trigger wide" type="button" onClick={() => setPickerOpen('workflow')}>
               <span>{workflow?.title || '选择工作流'}</span>
@@ -1718,13 +1748,19 @@ function WorkflowPanel({
             <span>{selectedPrompt?.title || '选择提示词'}</span>
           </button>
           <button className="picker-trigger" type="button" onClick={() => setPickerOpen('skill')}>
-            <span>{selectedSkill ? `调用：${selectedSkill.title}` : '不调用 Skill'}</span>
+            <span>{selectedSkill ? selectedSkill.title : '选择 Skill'}</span>
           </button>
           <button className="picker-trigger" type="button" onClick={() => setPickerOpen('mcp')}>
-            <span>{selectedMcp ? `MCP：${selectedMcp.name}` : '不使用 MCP'}</span>
+            <span>{selectedMcp ? selectedMcp.name : '选择 MCP'}</span>
           </button>
           <button className="primary-action" type="button" disabled={!selectedPrompt} onClick={() => void appendPromptNode()}>
-            添加提示词步骤
+            添加提示词节点
+          </button>
+          <button className="primary-action" type="button" disabled={!selectedSkill} onClick={() => void appendSkillNode()}>
+            添加 Skill 节点
+          </button>
+          <button className="primary-action" type="button" disabled={!selectedMcp} onClick={() => void appendMcpNode()}>
+            添加 MCP 节点
           </button>
           <button type="button" onClick={() => void appendApprovalNode()}>
             添加审查节点
@@ -1762,15 +1798,14 @@ function WorkflowPanel({
       )}
       {pickerOpen === 'skill' && (
         <ResourcePickerModal
-          title="选择调用 Skill"
+          title="选择 Skill 节点"
           groups={mergeGroupsWithTags(store.groups.skills, allTags(skills))}
           allLabel="全部 Skill"
           items={skills.map(skillToPickerItem)}
-          selectedId={skillToCall}
-          noneLabel="不调用 Skill"
+          selectedId={skillToAdd}
           close={() => setPickerOpen(null)}
           select={(id) => {
-            setSkillToCall(id)
+            setSkillToAdd(id)
             setPickerOpen(null)
           }}
         />
@@ -1781,11 +1816,10 @@ function WorkflowPanel({
           groups={mergeGroupsWithTags(store.groups.mcps, allTags(store.mcpServers))}
           allLabel="全部 MCP"
           items={store.mcpServers.map(mcpToPickerItem)}
-          selectedId={mcpToCall}
-          noneLabel="不使用 MCP"
+          selectedId={mcpToAdd}
           close={() => setPickerOpen(null)}
           select={(id) => {
-            setMcpToCall(id)
+            setMcpToAdd(id)
             setPickerOpen(null)
           }}
         />
@@ -1828,6 +1862,8 @@ function WorkflowPanel({
             <NodeInspector
               node={selectedNode}
               prompt={store.prompts.find((prompt) => prompt.id === selectedNode.refId)}
+              skill={skills.find((skill) => skill.id === (selectedNode.type === 'skill' ? selectedNode.refId : selectedNode.skillRefId))}
+              mcp={store.mcpServers.find((mcp) => mcp.id === (selectedNode.type === 'mcp' ? selectedNode.refId : selectedNode.mcpRefId))}
               skills={skills}
               mcps={store.mcpServers}
               updateNode={updateSelectedNode}
@@ -3310,6 +3346,8 @@ function ResourcePickerModal({
 function NodeInspector({
   node,
   prompt,
+  skill,
+  mcp,
   skills,
   mcps,
   updateNode,
@@ -3318,6 +3356,8 @@ function NodeInspector({
 }: {
   node: WorkflowNode
   prompt?: PromptItem
+  skill?: SkillItem
+  mcp?: McpServer
   skills: SkillItem[]
   mcps: McpServer[]
   updateNode: (patch: Partial<WorkflowNode>) => Promise<void>
@@ -3325,7 +3365,22 @@ function NodeInspector({
   moveNode: (nodeId: string, direction: -1 | 1) => Promise<void>
 }): JSX.Element {
   const [tagText, setTagText] = useState(tagsToText(node.tags))
-  const fullContent = prompt?.content || node.summary
+  const fullContent =
+    node.type === 'prompt'
+      ? prompt?.content || node.summary
+      : node.type === 'skill'
+        ? skill?.contentPreview || node.summary
+        : node.type === 'mcp'
+          ? [
+              `名称：${mcp?.name || node.title}`,
+              `启用：${mcp?.enabled ? '是' : '否'}`,
+              `Transport：${mcp?.transport || '(未知)'}`,
+              `Command：${mcp ? [mcp.command, ...mcp.args].filter(Boolean).join(' ') || '(无)' : '(无)'}`,
+              `CWD：${mcp?.cwd || '(无)'}`,
+              `URL：${mcp?.url || '(无)'}`,
+              `Env：${mcp && Object.keys(mcp.env).length ? Object.keys(mcp.env).join(', ') : '(无)'}`
+            ].join('\n')
+          : node.summary
 
   useEffect(() => {
     setTagText(tagsToText(node.tags))
@@ -3338,32 +3393,15 @@ function NodeInspector({
         标题
         <input value={node.title} onChange={(event) => void updateNode({ title: event.target.value })} />
       </label>
-      {node.type === 'prompt' && (
-        <>
-          <label>
-            调用 Skill
-            <select value={node.skillRefId || ''} onChange={(event) => void updateNode({ skillRefId: event.target.value || undefined })}>
-              <option value="">不调用 Skill</option>
-              {skills.map((skill) => (
-                <option key={skill.id} value={skill.id}>
-                  {skill.title}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            使用 MCP
-            <select value={node.mcpRefId || ''} onChange={(event) => void updateNode({ mcpRefId: event.target.value || undefined })}>
-              <option value="">不使用 MCP</option>
-              {mcps.map((mcp) => (
-                <option key={mcp.id} value={mcp.id}>
-                  {mcp.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </>
-      )}
+      <div className="node-resource-summary">
+        <strong>{nodeTypeLabel(node.type)}</strong>
+        {node.type === 'prompt' && <span>{prompt ? `引用提示词：${prompt.title}` : '未找到引用的提示词'}</span>}
+        {node.type === 'skill' && <span>{skill ? `引用 Skill：${skill.title || skill.name}` : '未找到引用的 Skill'}</span>}
+        {node.type === 'mcp' && <span>{mcp ? `引用 MCP：${mcp.name}` : '未找到引用的 MCP'}</span>}
+        {node.type === 'prompt' && (node.skillRefId || node.mcpRefId) && (
+          <span>旧版附加资源：{skills.find((item) => item.id === node.skillRefId)?.title || ''} {mcps.find((item) => item.id === node.mcpRefId)?.name || ''}</span>
+        )}
+      </div>
       <label>
         摘要
         <textarea value={node.summary} onChange={(event) => void updateNode({ summary: event.target.value })} />
@@ -3648,11 +3686,13 @@ function LauncherModal({
 function FlowNodeCard({ node, skill, mcp }: { node: WorkflowNode; skill?: SkillItem; mcp?: McpServer }): JSX.Element {
   return (
     <div className="flow-node-card">
-      <div className="node-kind">{node.type === 'prompt' ? 'prompt step' : node.type}</div>
+      <div className="node-kind">{nodeTypeLabel(node.type)}</div>
       <strong>{node.title}</strong>
       <span>{node.summary}</span>
-      {skill && <small>调用 Skill：{skill.title}</small>}
-      {mcp && <small>使用 MCP：{mcp.name}</small>}
+      {node.type === 'skill' && skill && <small>Skill：{skill.title || skill.name}</small>}
+      {node.type === 'mcp' && mcp && <small>MCP：{mcp.name}</small>}
+      {node.type === 'prompt' && skill && <small>旧版附加 Skill：{skill.title}</small>}
+      {node.type === 'prompt' && mcp && <small>旧版附加 MCP：{mcp.name}</small>}
       <TagRow tags={node.tags.slice(0, 3)} />
     </div>
   )
@@ -4772,9 +4812,13 @@ function formatSkillsExport(skills: SkillItem[], format: ExportFormat): string {
 function formatWorkflowsExport(workflows: Workflow[], store: AppStore, skills: SkillItem[], format: ExportFormat): string {
   if (workflows.length === 0) return ''
   if (format === 'json') {
-    const promptIds = new Set(workflows.flatMap((workflow) => workflow.nodes.map((node) => node.refId).filter(Boolean)))
-    const skillIds = new Set(workflows.flatMap((workflow) => workflow.nodes.flatMap((node) => [node.refId, node.skillRefId]).filter(Boolean)))
-    const mcpIds = new Set(workflows.flatMap((workflow) => workflow.nodes.map((node) => node.mcpRefId).filter(Boolean)))
+    const promptIds = new Set(workflows.flatMap((workflow) => workflow.nodes.map((node) => (node.type === 'prompt' ? node.refId : undefined)).filter(Boolean)))
+    const skillIds = new Set(
+      workflows.flatMap((workflow) => workflow.nodes.flatMap((node) => [node.type === 'skill' ? node.refId : undefined, node.skillRefId]).filter(Boolean))
+    )
+    const mcpIds = new Set(
+      workflows.flatMap((workflow) => workflow.nodes.map((node) => (node.type === 'mcp' ? node.refId : node.mcpRefId)).filter(Boolean))
+    )
     return `${JSON.stringify(
       {
         format: 'format-flow-workflows',
@@ -4801,10 +4845,10 @@ function formatWorkflowsExport(workflows: Workflow[], store: AppStore, skills: S
       ''
     ]
     for (const [nodeIndex, node] of workflow.nodes.entries()) {
-      const prompt = store.prompts.find((item) => item.id === node.refId)
-      const directSkill = skills.find((item) => item.id === node.refId)
+      const prompt = node.type === 'prompt' ? store.prompts.find((item) => item.id === node.refId) : undefined
+      const directSkill = node.type === 'skill' ? skills.find((item) => item.id === node.refId) : undefined
       const callSkill = skills.find((item) => item.id === node.skillRefId)
-      const mcp = store.mcpServers.find((item) => item.id === node.mcpRefId)
+      const mcp = store.mcpServers.find((item) => item.id === (node.type === 'mcp' ? node.refId : node.mcpRefId))
       lines.push(...formatWorkflowNodeExport(node, nodeIndex, prompt, directSkill, callSkill, mcp, format), '')
     }
     return [...lines, format === 'markdown' ? '' : '---', '']
@@ -4879,6 +4923,7 @@ function formatTags(tags: string[]): string {
 function nodeTypeLabel(type: NodeKind): string {
   if (type === 'prompt') return '提示词'
   if (type === 'skill') return 'Skill'
+  if (type === 'mcp') return 'MCP'
   return '人工审查'
 }
 

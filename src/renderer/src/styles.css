@@ -911,7 +911,12 @@ label {
 }
 
 .workflow-adders {
-  grid-template-columns: 1fr 1fr 1fr auto auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-content: start;
+}
+
+.workflow-adders button {
+  min-width: 0;
 }
 
 .picker-trigger {
@@ -1177,6 +1182,24 @@ label {
 .node-inspector h3,
 .inspector h3 {
   margin: 8px 0 0;
+}
+
+.node-resource-summary {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.node-resource-summary strong {
+  color: var(--text);
+  font-size: 13px;
 }
 
 .node-preview {

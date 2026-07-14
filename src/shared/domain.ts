@@ -59,6 +59,7 @@ export function defaultGroups(prompts: PromptItem[] = []): ResourceGroups {
   return {
     prompts: groupsFromTags(allTags(prompts)),
     skills: [],
+    workflows: [],
     mcps: [],
     quickCalls: groupsFromTags(allTags(prompts)),
     learning: groupsFromTags(['hermes', '对话审查', '钱学森工程控制论'])
@@ -282,6 +283,8 @@ export function createWorkflow(overrides: Partial<Workflow> = {}): Workflow {
     title: '新的工作流',
     description: '把提示词、Skill 和人工审查节点排成可执行工作流。',
     tags: [],
+    variables: [],
+    favorite: false,
     nodes: [],
     edges: [],
     createdAt: timestamp,
@@ -505,6 +508,8 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
     title: heading || name,
     summary,
     tags: inferSkillTags(name, filePath),
+    variables: extractPromptVariables(content),
+    favorite: false,
     path: filePath,
     source: /[\\/]\.codex[\\/]skills[\\/]/.test(filePath) ? 'codex' : 'custom',
     contentPreview: content.slice(0, 12000),
@@ -512,11 +517,13 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
   }
 }
 
-export function mergeSkillMetadata(skill: SkillItem, metadata?: { tags?: string[]; summaryOverride?: string; favorite?: boolean }): SkillItem {
+export function mergeSkillMetadata(skill: SkillItem, metadata?: { tags?: string[]; summaryOverride?: string; favorite?: boolean; variables?: string[] }): SkillItem {
   return {
     ...skill,
     summary: metadata?.summaryOverride?.trim() || skill.summary,
-    tags: metadata?.tags?.length ? metadata.tags.map(normalizeTag) : skill.tags
+    tags: metadata?.tags?.length ? metadata.tags.map(normalizeTag) : skill.tags,
+    variables: metadata?.variables?.length ? metadata.variables.map(String).filter(Boolean) : skill.variables,
+    favorite: Boolean(metadata?.favorite)
   }
 }
 
@@ -601,6 +608,7 @@ function normalizeGroups(value: unknown, prompts: PromptItem[]): ResourceGroups 
   return {
     prompts: normalizeGroupList(value.prompts, allTags(prompts)),
     skills: normalizeGroupList(value.skills, []),
+    workflows: normalizeGroupList(value.workflows, []),
     mcps: normalizeGroupList(value.mcps, []),
     quickCalls: normalizeGroupList(value.quickCalls, allTags(prompts)),
     learning: normalizeGroupList(value.learning, ['hermes', '对话审查', '钱学森工程控制论'])
@@ -622,6 +630,9 @@ function normalizeWorkflow(workflow: Workflow): Workflow {
     ...workflow,
     title: workflow.title?.replaceAll('流程图', '工作流').replaceAll('流程', '工作流') || '工作流',
     description: workflow.description?.replaceAll('流程图', '工作流').replaceAll('流程', '工作流') || '',
+    tags: Array.isArray(workflow.tags) ? workflow.tags.map(normalizeTag).filter(Boolean) : [],
+    variables: Array.isArray(workflow.variables) ? workflow.variables.map(String).filter(Boolean) : [],
+    favorite: Boolean(workflow.favorite),
     nodes: Array.isArray(workflow.nodes) ? workflow.nodes : [],
     edges: Array.isArray(workflow.edges) ? workflow.edges : []
   }

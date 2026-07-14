@@ -800,6 +800,34 @@ label {
   min-width: 64px;
 }
 
+.workflow-card {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  min-height: 210px;
+  overflow: hidden;
+}
+
+.workflow-card-main {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workflow-card-main p {
+  display: -webkit-box;
+  max-height: 78px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.workflow-card-actions {
+  align-self: end;
+  padding-top: 2px;
+}
+
+.workflow-card-actions button {
+  min-width: 64px;
+}
+
 .item-card {
   display: grid;
   gap: 8px;

@@ -30,6 +30,7 @@ const api = {
   installSkillZip: (): Promise<ImportResult<SkillItem>> => ipcRenderer.invoke('skills:installZip'),
   installGeneratedSkill: (name: string, content: string): Promise<ImportResult<SkillItem>> =>
     ipcRenderer.invoke('skills:installGenerated', name, content),
+  deleteSkill: (skill: SkillItem): Promise<ExportResult> => ipcRenderer.invoke('skills:delete', skill),
   searchGithubSkills: (query: string): Promise<GithubSearchResult[]> => ipcRenderer.invoke('github:searchSkills', query),
   installGithubSkill: (result: GithubSearchResult): Promise<ImportResult<SkillItem>> =>
     ipcRenderer.invoke('github:installSkill', result),

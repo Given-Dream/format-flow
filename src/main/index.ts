@@ -919,6 +919,22 @@ async function installGeneratedSkill(name: string, content: string): Promise<Imp
   }
 }
 
+async function deleteSkill(skill: SkillItem): Promise<ExportResult> {
+  const skillFile = path.resolve(skill.path)
+  if (path.basename(skillFile).toLowerCase() !== 'skill.md') {
+    return { ok: false, message: '只能删除 SKILL.md 对应的单个 Skill' }
+  }
+
+  try {
+    await fs.access(skillFile)
+    const skillDirectory = path.dirname(skillFile)
+    await shell.trashItem(skillDirectory)
+    return { ok: true, message: `已将 Skill 移到回收站：${skill.title || skill.name}`, path: skillDirectory }
+  } catch (error) {
+    return { ok: false, message: `删除 Skill 失败：${errorMessage(error)}` }
+  }
+}
+
 async function importSkillTargets(targets: string[]): Promise<ImportResult<SkillItem>> {
   const installed: SkillItem[] = []
   const installedPaths: string[] = []
@@ -1608,6 +1624,7 @@ function registerIpc(): void {
   ipcMain.handle('skills:restoreBackup', () => restoreSkillsFromBackup())
   ipcMain.handle('skills:installZip', () => installSkillZip())
   ipcMain.handle('skills:installGenerated', (_event, name: string, content: string) => installGeneratedSkill(name, content))
+  ipcMain.handle('skills:delete', (_event, skill: SkillItem) => deleteSkill(skill))
   ipcMain.handle('github:searchSkills', (_event, query: string) => searchGithub('skill', query))
   ipcMain.handle('github:installSkill', (_event, result: GithubSearchResult) => installGithubSkill(result))
   ipcMain.handle('prompts:importExisting', () => importPromptFiles())

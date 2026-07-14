@@ -46,6 +46,7 @@ describe('tag parsing and search', () => {
           }
         ],
         skills: [],
+        workflows: [],
         mcps: [],
         quickCalls: [],
         learning: []

@@ -979,6 +979,7 @@ function SkillPanel({
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
+  const [skillClipboard, setSkillClipboard] = useState<SkillItem | null>(null)
   const skillGroups = mergeGroupsWithTags(store.groups.skills, allTags(skills))
   const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
   const visibleSkills = skills.filter((skill) => matchesTextAndTags(skill, query, effectiveTags))
@@ -993,6 +994,34 @@ function SkillPanel({
       }
     })
     setEditing(null)
+  }
+
+  function copySkillItem(skill: SkillItem): void {
+    setSkillClipboard(skill)
+    setNotice(`已复制 Skill 条目：${skill.title}；可在目标分组菜单中粘贴`)
+  }
+
+  async function pasteSkillItemToGroup(group: GroupItem): Promise<void> {
+    if (!skillClipboard) {
+      setNotice('请先在 Skill 卡片中点击“复制条目”')
+      return
+    }
+    const copyName = uniqueSkillCopyName(skillClipboard.name, skills)
+    await applySkillImport(await formatFlow.installGeneratedSkill(copyName, skillClipboard.contentPreview || `# ${skillClipboard.title}`), [group.tag])
+    setSelectedGroup(group.tag)
+  }
+
+  async function deleteSkill(skill: SkillItem): Promise<void> {
+    if (!confirmDestructiveAction(`确认删除 Skill“${skill.title}”？`, ['此操作会将该 Skill 的目录移到回收站。'])) return
+    const result = await formatFlow.deleteSkill(skill)
+    setNotice(result.message)
+    if (!result.ok) return
+    const nextSkillIndex = { ...store.skillIndex }
+    delete nextSkillIndex[skill.id]
+    await commit({ ...store, skillIndex: nextSkillIndex })
+    if (skillClipboard?.id === skill.id) setSkillClipboard(null)
+    setEditing(null)
+    await scanSkills()
   }
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
@@ -1133,10 +1162,32 @@ function SkillPanel({
         onChange={updateGroups}
         onRename={renameGroup}
         onDelete={deleteGroup}
-        footer={
-          <button className="primary-action" type="button" onClick={() => void scanSkills()}>
-            重新扫描 Skill
+        renderGroupContextActions={(group, closeMenu) => (
+          <button
+            type="button"
+            disabled={!skillClipboard}
+            onClick={() => void pasteSkillItemToGroup(group).then(closeMenu)}
+          >
+            粘贴 Skill 条目
           </button>
+        )}
+        footer={
+          <>
+            <button className="primary-action" type="button" onClick={() => void scanSkills()}>
+              重新扫描 Skill
+            </button>
+            {skillClipboard && (
+              <div className="clipboard-note">
+                <strong>已复制条目</strong>
+                <span>{skillClipboard.title}</span>
+                {selectedGroup !== 'all' && (
+                  <button type="button" onClick={() => void pasteSkillItemToGroup(findGroupByTag(skillGroups, selectedGroup) || groupFromTag(selectedGroup))}>
+                    粘贴到当前分组
+                  </button>
+                )}
+              </div>
+            )}
+          </>
         }
       />
 
@@ -1199,6 +1250,19 @@ function SkillPanel({
                 <button type="button" onClick={() => setEditing(skill)}>
                   编辑
                 </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void writeClipboardText(skill.contentPreview).then((result) =>
+                      setNotice(result.ok ? `已复制 Skill 内容：${skill.title}` : result.message)
+                    )
+                  }
+                >
+                  复制内容
+                </button>
+                <button type="button" onClick={() => copySkillItem(skill)}>
+                  复制条目
+                </button>
                 <button type="button" onClick={() => void openPath(skill.path)}>
                   打开
                 </button>
@@ -1213,6 +1277,7 @@ function SkillPanel({
           skill={editing}
           close={() => setEditing(null)}
           save={saveMetadata}
+          deleteSkill={deleteSkill}
         />
       )}
       {manualSkillOpen && (
@@ -1237,14 +1302,23 @@ function WorkflowPanel({
   commit: (store: AppStore) => Promise<void>
   setNotice: (notice: string) => void
 }): JSX.Element {
+  const [query, setQuery] = useState('')
+  const [selectedGroup, setSelectedGroup] = useState('all')
+  const [metadataEditing, setMetadataEditing] = useState<Workflow | null>(null)
+  const [workflowClipboard, setWorkflowClipboard] = useState<Workflow | null>(null)
+  const [editingWorkflowId, setEditingWorkflowId] = useState('')
   const [workflowId, setWorkflowId] = useState(store.workflows[0]?.id || '')
-  const workflow = store.workflows.find((item) => item.id === workflowId) || store.workflows[0]
+  const workflow = editingWorkflowId ? store.workflows.find((item) => item.id === editingWorkflowId) : undefined
   const [selectedNodeId, setSelectedNodeId] = useState(workflow?.nodes[0]?.id || '')
   const [promptToAdd, setPromptToAdd] = useState(store.prompts[0]?.id || '')
   const [skillToCall, setSkillToCall] = useState('')
   const [mcpToCall, setMcpToCall] = useState('')
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const selectedNode = workflow?.nodes.find((node) => node.id === selectedNodeId)
+  const workflowGroups = mergeGroupsWithTags(store.groups.workflows || [], allTags(store.workflows))
+  const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
+  const visibleWorkflows = store.workflows.filter((item) => matchesTextAndTags(item, query, effectiveTags))
+  const activeWorkflowGroupTag = selectedGroup === 'all' ? '' : selectedGroup
 
   useEffect(() => {
     if (!workflowId && store.workflows[0]) setWorkflowId(store.workflows[0].id)
@@ -1261,9 +1335,91 @@ function WorkflowPanel({
   }
 
   async function createNewWorkflow(): Promise<void> {
-    const next = createWorkflow()
+    const next = createWorkflow({ tags: activeWorkflowGroupTag ? [activeWorkflowGroupTag] : [] })
     await commit({ ...store, workflows: [next, ...store.workflows] })
     setWorkflowId(next.id)
+    setEditingWorkflowId('')
+    setMetadataEditing(next)
+  }
+
+  async function saveWorkflowMetadata(nextWorkflow: Workflow): Promise<void> {
+    await updateWorkflow({
+      ...nextWorkflow,
+      variables: nextWorkflow.variables.length > 0 ? nextWorkflow.variables : extractVariables(nextWorkflow.description),
+      updatedAt: nowIso()
+    })
+    setMetadataEditing(null)
+  }
+
+  async function deleteWorkflow(target: Workflow): Promise<void> {
+    if (!confirmDestructiveAction(`确认删除工作流“${target.title}”？`, ['此操作会从工作流列表中移除该条目。'])) return
+    await commit({
+      ...store,
+      workflows: store.workflows.filter((item) => item.id !== target.id),
+      runs: store.runs.filter((run) => run.workflowId !== target.id)
+    })
+    if (workflowClipboard?.id === target.id) setWorkflowClipboard(null)
+    if (editingWorkflowId === target.id) setEditingWorkflowId('')
+    if (workflowId === target.id) setWorkflowId(store.workflows.find((item) => item.id !== target.id)?.id || '')
+    setMetadataEditing(null)
+    setNotice(`已删除工作流：${target.title}`)
+  }
+
+  function copyWorkflowItem(target: Workflow): void {
+    setWorkflowClipboard(target)
+    setNotice(`已复制工作流条目：${target.title}；可在目标分组菜单中粘贴`)
+  }
+
+  async function pasteWorkflowItemToGroup(group: GroupItem): Promise<void> {
+    if (!workflowClipboard) {
+      setNotice('请先在工作流卡片中点击“复制条目”')
+      return
+    }
+    const copiedWorkflow = cloneWorkflowToGroup(workflowClipboard, group.tag, uniqueWorkflowCopyTitle(workflowClipboard.title, store.workflows))
+    await commit({ ...store, workflows: [copiedWorkflow, ...store.workflows] })
+    setSelectedGroup(group.tag)
+    setNotice(`已将工作流条目“${workflowClipboard.title}”粘贴到“${group.name}”分组`)
+  }
+
+  async function updateGroups(groups: GroupItem[]): Promise<void> {
+    await commit({ ...store, groups: { ...store.groups, workflows: groups } })
+  }
+
+  async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
+    const nextTag = renamedGroup.tag
+    await commit({
+      ...store,
+      workflows: store.workflows.map((item) => ({
+        ...item,
+        tags: replaceTag(item.tags, group.tag, nextTag),
+        updatedAt: item.tags.includes(group.tag) ? nowIso() : item.updatedAt
+      })),
+      groups: { ...store.groups, workflows: groups }
+    })
+    if (selectedGroup === group.tag) setSelectedGroup(nextTag)
+  }
+
+  async function deleteGroup(group: GroupItem): Promise<void> {
+    const tags = collectGroupTags(group)
+    const affectedCount = store.workflows.filter((item) => item.tags.some((tag) => tags.includes(tag))).length
+    if (
+      !confirmDestructiveAction(`确认删除工作流分组“${group.name}”？`, [
+        group.children.length > 0 ? `会同时删除 ${group.children.length} 个下级分组。` : '',
+        `会从 ${affectedCount} 个工作流中移除该分组标签，但不会删除工作流。`
+      ])
+    ) {
+      return
+    }
+    await commit({
+      ...store,
+      workflows: store.workflows.map((item) => ({
+        ...item,
+        tags: item.tags.filter((tag) => !tags.includes(tag)),
+        updatedAt: nowIso()
+      })),
+      groups: { ...store.groups, workflows: removeGroupById(store.groups.workflows || [], group.id) }
+    })
+    if (tags.includes(selectedGroup)) setSelectedGroup('all')
   }
 
   async function appendPromptNode(): Promise<void> {
@@ -1342,6 +1498,124 @@ function WorkflowPanel({
     setNotice(result.message)
   }
 
+  if (!editingWorkflowId) {
+    return (
+      <section className="panel library-layout">
+        <ResourceGroupManager
+          title="工作流分组"
+          detail="工作流分组可排序，也可建立小类"
+          allLabel="全部工作流"
+          allCount={store.workflows.length}
+          groups={workflowGroups}
+          selectedTag={selectedGroup}
+          countForTag={(tag) => store.workflows.filter((item) => item.tags.includes(tag)).length}
+          countForTags={(tags) => store.workflows.filter((item) => item.tags.some((tag) => tags.includes(tag))).length}
+          onSelect={setSelectedGroup}
+          onChange={updateGroups}
+          onRename={renameGroup}
+          onDelete={deleteGroup}
+          renderGroupContextActions={(group, closeMenu) => (
+            <button
+              type="button"
+              disabled={!workflowClipboard}
+              onClick={() => void pasteWorkflowItemToGroup(group).then(closeMenu)}
+            >
+              粘贴工作流条目
+            </button>
+          )}
+          footer={
+            workflowClipboard ? (
+              <div className="clipboard-note">
+                <strong>已复制条目</strong>
+                <span>{workflowClipboard.title}</span>
+                {selectedGroup !== 'all' && (
+                  <button type="button" onClick={() => void pasteWorkflowItemToGroup(findGroupByTag(workflowGroups, selectedGroup) || groupFromTag(selectedGroup))}>
+                    粘贴到当前分组
+                  </button>
+                )}
+              </div>
+            ) : undefined
+          }
+        />
+        <div className="library-main">
+          <PanelHeader title="工作流管理" detail={`${visibleWorkflows.length} / ${store.workflows.length} 个工作流`} />
+          <div className="toolbar-grid">
+            <SearchBox query={query} setQuery={setQuery} placeholder="搜索工作流标题、说明或标签" />
+            <div className="group-selection-note">
+              当前分组：{selectedGroup === 'all' ? '全部工作流' : groupNameForTag(workflowGroups, selectedGroup)}
+            </div>
+            <button className="primary-action" type="button" onClick={() => void createNewWorkflow()}>
+              新建工作流
+            </button>
+          </div>
+          <div className="export-strip">
+            <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)} aria-label="工作流导出格式">
+              <option value="markdown">Markdown</option>
+              <option value="txt">TXT</option>
+              <option value="json">JSON</option>
+            </select>
+            <button type="button" onClick={() => void exportWorkflowItems(visibleWorkflows, selectedGroup === 'all' && !query.trim() ? 'all' : 'filtered')}>
+              导出当前列表
+            </button>
+            <button type="button" onClick={() => void exportWorkflowItems(store.workflows, 'all')}>
+              导出全部工作流
+            </button>
+          </div>
+          <div className="tile-grid">
+            {visibleWorkflows.map((item) => (
+              <article key={item.id} className="tile-card workflow-card">
+                <div className="workflow-card-main">
+                  <strong>{item.title}</strong>
+                  <p>{item.description}</p>
+                </div>
+                <TagRow tags={item.favorite ? ['收藏', ...item.tags] : item.tags} />
+                <div className="inline-actions workflow-card-actions">
+                  <button type="button" onClick={() => setMetadataEditing(item)}>
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWorkflowId(item.id)
+                      setEditingWorkflowId(item.id)
+                      setSelectedNodeId(item.nodes[0]?.id || '')
+                    }}
+                  >
+                    编排
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void writeClipboardText(formatWorkflowsExport([item], store, skills, 'markdown')).then((result) =>
+                        setNotice(result.ok ? `已复制工作流内容：${item.title}` : result.message)
+                      )
+                    }
+                  >
+                    复制内容
+                  </button>
+                  <button type="button" onClick={() => copyWorkflowItem(item)}>
+                    复制条目
+                  </button>
+                  <button className="danger" type="button" onClick={() => void deleteWorkflow(item)}>
+                    删除
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+        {metadataEditing && (
+          <WorkflowMetadataModal
+            workflow={metadataEditing}
+            close={() => setMetadataEditing(null)}
+            save={saveWorkflowMetadata}
+            deleteWorkflow={deleteWorkflow}
+          />
+        )}
+      </section>
+    )
+  }
+
   if (!workflow) {
     return (
       <section className="panel centered">
@@ -1395,6 +1669,9 @@ function WorkflowPanel({
             </select>
             <button type="button" onClick={() => void createNewWorkflow()}>
               新建工作流
+            </button>
+            <button type="button" onClick={() => setEditingWorkflowId('')}>
+              返回列表
             </button>
           </div>
           <div className="export-strip compact">
@@ -2598,14 +2875,18 @@ function PromptEditorModal({
 function SkillEditorModal({
   skill,
   close,
-  save
+  save,
+  deleteSkill
 }: {
   skill: SkillItem
   close: () => void
   save: (skill: SkillItem, metadata: SkillMetadata) => Promise<void>
+  deleteSkill: (skill: SkillItem) => Promise<void>
 }): JSX.Element {
   const [summaryOverride, setSummaryOverride] = useState(skill.summary)
   const [tagText, setTagText] = useState(tagsToText(skill.tags))
+  const [variableText, setVariableText] = useState(tagsToText(skill.variables))
+  const [favorite, setFavorite] = useState(skill.favorite)
 
   return (
     <Modal title={`编辑 Skill：${skill.title}`} close={close}>
@@ -2616,6 +2897,10 @@ function SkillEditorModal({
       <label>
         分类标签
         <input value={tagText} onChange={(event) => setTagText(event.target.value)} />
+      </label>
+      <label>
+        自定义变量
+        <input value={variableText} onChange={(event) => setVariableText(event.target.value)} placeholder="topic, audience" />
       </label>
       <div className="path-box">
         <span>{skill.path}</span>
@@ -2628,9 +2913,22 @@ function SkillEditorModal({
         <button
           className="primary-action"
           type="button"
-          onClick={() => void save(skill, { tags: parseTags(tagText), summaryOverride: summaryOverride.trim() })}
+          onClick={() =>
+            void save(skill, {
+              tags: parseTags(tagText),
+              summaryOverride: summaryOverride.trim(),
+              variables: parseTags(variableText),
+              favorite
+            })
+          }
         >
           保存
+        </button>
+        <button type="button" onClick={() => setFavorite(!favorite)}>
+          {favorite ? '取消收藏' : '收藏'}
+        </button>
+        <button className="danger" type="button" onClick={() => void deleteSkill(skill)}>
+          删除
         </button>
       </div>
     </Modal>
@@ -2792,6 +3090,58 @@ function McpEditorModal({
           {draft.enabled ? '禁用' : '启用'}
         </button>
         <button className="danger" type="button" onClick={() => void deleteServer(draft)}>
+          删除
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+function WorkflowMetadataModal({
+  workflow,
+  close,
+  save,
+  deleteWorkflow
+}: {
+  workflow: Workflow
+  close: () => void
+  save: (workflow: Workflow) => Promise<void>
+  deleteWorkflow: (workflow: Workflow) => Promise<void>
+}): JSX.Element {
+  const [draft, setDraft] = useState(workflow)
+  const [tagText, setTagText] = useState(tagsToText(workflow.tags))
+  const [variableText, setVariableText] = useState(tagsToText(workflow.variables))
+
+  return (
+    <Modal title="编辑工作流" close={close}>
+      <label>
+        标题
+        <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+      </label>
+      <label>
+        说明
+        <textarea value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
+      </label>
+      <label>
+        分类标签
+        <input value={tagText} onChange={(event) => setTagText(event.target.value)} />
+      </label>
+      <label>
+        自定义变量
+        <input value={variableText} onChange={(event) => setVariableText(event.target.value)} placeholder="topic, audience" />
+      </label>
+      <div className="inline-actions">
+        <button
+          className="primary-action"
+          type="button"
+          onClick={() => void save({ ...draft, tags: parseTags(tagText), variables: parseTags(variableText) })}
+        >
+          保存
+        </button>
+        <button type="button" onClick={() => setDraft({ ...draft, favorite: !draft.favorite })}>
+          {draft.favorite ? '取消收藏' : '收藏'}
+        </button>
+        <button className="danger" type="button" onClick={() => void deleteWorkflow(draft)}>
           删除
         </button>
       </div>
@@ -4042,6 +4392,44 @@ function uniquePromptCopyTitle(title: string, prompts: PromptItem[]): string {
   return `${baseTitle} ${index}`
 }
 
+function uniqueSkillCopyName(name: string, skills: SkillItem[]): string {
+  const baseName = `${slugifySkillName(name)}-copy`
+  const existingNames = new Set(skills.map((skill) => slugifySkillName(skill.name)))
+  if (!existingNames.has(baseName)) return baseName
+
+  let index = 2
+  while (existingNames.has(`${baseName}-${index}`)) {
+    index += 1
+  }
+  return `${baseName}-${index}`
+}
+
+function uniqueWorkflowCopyTitle(title: string, workflows: Workflow[]): string {
+  const baseTitle = `${title} 副本`
+  const existingTitles = new Set(workflows.map((workflow) => workflow.title))
+  if (!existingTitles.has(baseTitle)) return baseTitle
+
+  let index = 2
+  while (existingTitles.has(`${baseTitle} ${index}`)) {
+    index += 1
+  }
+  return `${baseTitle} ${index}`
+}
+
+function cloneWorkflowToGroup(workflow: Workflow, targetTag: string, title = `${workflow.title} 副本`): Workflow {
+  const timestamp = nowIso()
+  const normalizedTag = normalizeTag(targetTag)
+  return {
+    ...workflow,
+    id: newId('workflow'),
+    title,
+    tags: normalizedTag ? [normalizedTag] : [],
+    favorite: false,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  }
+}
+
 function addTagToSkillIndex(skillIndex: Record<string, SkillMetadata>, skills: SkillItem[], tag: string): Record<string, SkillMetadata> {
   const normalizedTag = normalizeTag(tag)
   if (!normalizedTag || skills.length === 0) return skillIndex
@@ -5035,6 +5423,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     restoreSkillsFromBackup: async () => desktopOnly('浏览器审查模式不能恢复本地 Skill 备份'),
     installSkillZip: async () => desktopOnly('浏览器审查模式不能安装本地 ZIP'),
     installGeneratedSkill: async () => desktopOnly('浏览器审查模式不能保存生成的 Skill，请在桌面版中保存'),
+    deleteSkill: async () => ({ ok: false, message: '浏览器审查模式不能删除本地 Skill' }),
     searchGithubSkills: (query: string) => searchGithubFallback('skill', query),
     installGithubSkill: async (result: GithubSearchResult) => {
       const content = await fetchText(result.rawUrl)
@@ -5044,6 +5433,8 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
         title: result.name,
         summary: result.description,
         tags: ['github', 'skill'],
+        variables: extractVariables(content),
+        favorite: false,
         path: result.htmlUrl,
         source: 'custom',
         contentPreview: content.slice(0, 12000),

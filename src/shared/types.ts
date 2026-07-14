@@ -19,6 +19,8 @@ export type SkillItem = {
   title: string
   summary: string
   tags: string[]
+  variables: string[]
+  favorite: boolean
   path: string
   source: 'codex' | 'custom'
   contentPreview: string
@@ -39,9 +41,10 @@ export type SkillMetadata = {
   tags: string[]
   summaryOverride?: string
   favorite?: boolean
+  variables?: string[]
 }
 
-export type ResourceKind = 'prompts' | 'skills' | 'mcps' | 'quickCalls' | 'learning'
+export type ResourceKind = 'prompts' | 'skills' | 'workflows' | 'mcps' | 'quickCalls' | 'learning'
 
 export type GroupItem = {
   id: string
@@ -97,6 +100,8 @@ export type Workflow = {
   title: string
   description: string
   tags: string[]
+  variables: string[]
+  favorite: boolean
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
   createdAt: string

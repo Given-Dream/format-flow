@@ -36,6 +36,7 @@ let mouseShortcutProcess: ChildProcess | null = null
 let mouseShortcutAccelerator = ''
 let shortcutCaptureActive = false
 let captureAltSpaceRegistered = false
+let lastLauncherOpenAt = 0
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 
 function getDataDirectoryPreferencePath(): string {
@@ -1498,10 +1499,21 @@ function createWindow(): void {
 
 async function toggleMainWindow(): Promise<void> {
   if (!mainWindow) return
+  const now = Date.now()
+  if (now - lastLauncherOpenAt < 500) return
+  lastLauncherOpenAt = now
   await rememberExternalForegroundWindow()
   mainWindow.show()
+  if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.focus()
   mainWindow.webContents.send('launcher:open')
+}
+
+function focusExistingWindow(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
 }
 
 async function registerStoredShortcut(): Promise<ShortcutResult> {
@@ -1669,7 +1681,18 @@ function registerIpc(): void {
   ipcMain.handle('shell:openPath', (_event, targetPath: string) => shell.openPath(targetPath))
 }
 
+const singleInstanceLock = app.requestSingleInstanceLock()
+
+if (!singleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    focusExistingWindow()
+  })
+}
+
 app.whenReady().then(async () => {
+  if (!singleInstanceLock) return
   if (process.platform === 'win32') app.setAppUserModelId('com.songyu.formatflow')
   Menu.setApplicationMenu(null)
   registerIpc()

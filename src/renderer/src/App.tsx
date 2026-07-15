@@ -268,11 +268,19 @@ export function App(): JSX.Element {
   const [notice, setNotice] = useState('正在加载本地数据...')
   const [isBusy, setIsBusy] = useState(true)
   const [launcherOpen, setLauncherOpen] = useState(false)
+  const lastLauncherOpenRef = useRef(0)
   const [pluginStatus, setPluginStatus] = useState<AiPluginStatus>({
     connected: false,
     message: '浏览器插件未连接'
   })
   const [pluginOutput, setPluginOutput] = useState<AiPluginOutput | null>(null)
+
+  function openLauncher(): void {
+    const now = Date.now()
+    if (now - lastLauncherOpenRef.current < 500) return
+    lastLauncherOpenRef.current = now
+    setLauncherOpen(true)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -318,7 +326,7 @@ export function App(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    return formatFlow.onOpenLauncher?.(() => setLauncherOpen(true))
+    return formatFlow.onOpenLauncher?.(() => openLauncher())
   }, [])
 
   useEffect(() => {
@@ -326,7 +334,7 @@ export function App(): JSX.Element {
       if (!store) return
       if (eventMatchesShortcut(event, store.settings.shortcut)) {
         event.preventDefault()
-        setLauncherOpen(true)
+        openLauncher()
       }
     }
 

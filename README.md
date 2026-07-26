@@ -6,7 +6,7 @@ Format Flow 是一个本地 Prompt 与 Codex Skill 工作流管理器。它把�
 
 Windows 安装包见 [GitHub Releases](https://github.com/Given-Dream/format-flow/releases)：
 
-- `Format-Flow-Setup-0.1.31.exe`
+- `Format-Flow-Setup-0.1.32.exe`
 - 安装器会随安装包复制 `browser-extension`，并在安装引导中打开插件目录和 Chrome/Edge 扩展管理页，按提示加载本地插件即可。
 - 下载后直接运行安装即可。
 

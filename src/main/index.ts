@@ -19,8 +19,34 @@ import type {
   McpServer,
   PromptItem,
   ShortcutResult,
+  SkillEntryCreateRequest,
+  SkillFileWriteRequest,
+  SkillDirectoryNode,
+  SkillDirectorySnapshot,
   SkillItem
 } from '../shared/types'
+
+const SKILL_TEXT_EXTENSIONS = new Set([
+  '.md',
+  '.markdown',
+  '.txt',
+  '.yaml',
+  '.yml',
+  '.json',
+  '.toml',
+  '.ini',
+  '.ts',
+  '.js',
+  '.tsx',
+  '.jsx',
+  '.css',
+  '.scss',
+  '.less',
+  '.py',
+  '.sh',
+  '.bat',
+  '.cmd'
+])
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
@@ -1260,6 +1286,180 @@ function errorMessage(error: unknown): string {
   return String(error)
 }
 
+function noneSkillNode(name: string): SkillDirectoryNode {
+  return { name, kind: 'none' }
+}
+
+function fileSkillNode(name: string, filePath: string, content?: string): SkillDirectoryNode {
+  return { name, kind: 'file', path: filePath, content, isText: isTextSkillFile(filePath) }
+}
+
+function directorySkillNode(name: string, directoryPath: string, children: SkillDirectoryNode[]): SkillDirectoryNode {
+  return { name, kind: 'directory', path: directoryPath, children }
+}
+
+function isLocalSkillPath(targetPath: string): boolean {
+  const trimmed = targetPath.trim()
+  return Boolean(trimmed) && (/^[A-Za-z]:[\/]/.test(trimmed) || trimmed.startsWith('\\') || path.isAbsolute(trimmed))
+}
+
+function skillRootDirectory(skillPath: string): string {
+  const resolved = path.resolve(skillPath)
+  return path.basename(resolved).toLowerCase() === 'skill.md' ? path.dirname(resolved) : resolved
+}
+
+function isTextSkillFile(filePath: string): boolean {
+  const normalized = path.basename(filePath).toLowerCase()
+  return normalized === 'skill.md' || SKILL_TEXT_EXTENSIONS.has(path.extname(normalized))
+}
+
+async function readSkillFileNode(filePath: string, name: string): Promise<SkillDirectoryNode> {
+  if (!(await pathExists(filePath))) return noneSkillNode(name)
+
+  try {
+    const stat = await fs.stat(filePath)
+    if (!stat.isFile()) return noneSkillNode(name)
+    const content = isTextSkillFile(filePath) && stat.size <= 512000 ? await fs.readFile(filePath, 'utf8') : undefined
+    return fileSkillNode(name, filePath, content)
+  } catch {
+    return noneSkillNode(name)
+  }
+}
+
+async function readSkillDirectoryNode(directoryPath: string, name: string): Promise<SkillDirectoryNode> {
+  if (!(await pathExists(directoryPath))) return noneSkillNode(name)
+
+  try {
+    const stat = await fs.stat(directoryPath)
+    if (!stat.isDirectory()) return noneSkillNode(name)
+    const entries = await fs.readdir(directoryPath, { withFileTypes: true })
+    const children: SkillDirectoryNode[] = []
+    for (const entry of entries.filter((entry) => !['.git', 'node_modules', 'dist', 'out'].includes(entry.name)).sort((left, right) => left.name.localeCompare(right.name))) {
+      const targetPath = path.join(directoryPath, entry.name)
+      children.push(entry.isDirectory() ? await readSkillDirectoryNode(targetPath, entry.name) : await readSkillFileNode(targetPath, entry.name))
+    }
+    return directorySkillNode(name, directoryPath, children)
+  } catch {
+    return noneSkillNode(name)
+  }
+}
+
+async function readSkillDirectorySnapshot(skillPath: string): Promise<SkillDirectorySnapshot> {
+  const root = skillRootDirectory(skillPath)
+  if (!isLocalSkillPath(root) || !(await pathExists(root))) {
+    return {
+      root: root || skillPath,
+      skillMd: noneSkillNode('SKILL.md'),
+      agentOpenAiYaml: noneSkillNode('agent/openai.yaml'),
+      scripts: noneSkillNode('scripts'),
+      references: noneSkillNode('references'),
+      assets: noneSkillNode('assets'),
+      extras: []
+    }
+  }
+
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
+  const skillMd = await readSkillFileNode(path.join(root, 'SKILL.md'), 'SKILL.md')
+  const agentCandidates = ['agent/openai.yaml', 'agent/openai.yml', 'openai.yaml', 'openai.yml']
+  let agentOpenAiYaml = noneSkillNode('agent/openai.yaml')
+  for (const candidate of agentCandidates) {
+    const candidatePath = path.join(root, candidate)
+    if (await pathExists(candidatePath)) {
+      agentOpenAiYaml = await readSkillFileNode(candidatePath, 'agent/openai.yaml')
+      break
+    }
+  }
+
+  const scripts = await readSkillDirectoryNode(path.join(root, 'scripts'), 'scripts')
+  const references = await readSkillDirectoryNode(path.join(root, 'references'), 'references')
+  const assets = await readSkillDirectoryNode(path.join(root, 'assets'), 'assets')
+  const extras: SkillDirectoryNode[] = []
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const lower = entry.name.toLowerCase()
+    if (['skill.md', 'agent', 'scripts', 'references', 'assets'].includes(lower)) continue
+    const targetPath = path.join(root, entry.name)
+    extras.push(entry.isDirectory() ? await readSkillDirectoryNode(targetPath, entry.name) : await readSkillFileNode(targetPath, entry.name))
+  }
+
+  return { root, skillMd, agentOpenAiYaml, scripts, references, assets, extras }
+}
+
+function skillRelativePath(root: string, targetPath: string): string {
+  const relative = path.relative(root, targetPath).replace(/\\/g, '/')
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : ''
+}
+
+function resolveSkillChildPath(skillPath: string, relativePath = ''): { root: string; target: string; relative: string } {
+  const root = skillRootDirectory(skillPath)
+  const cleanRelative = relativePath.replace(/\\/g, '/').replace(/^\/+/, '')
+  const target = path.resolve(root, cleanRelative || '.')
+  const actualRelative = path.relative(root, target)
+  if (actualRelative.startsWith('..') || path.isAbsolute(actualRelative)) {
+    throw new Error('Path is outside the Skill directory')
+  }
+  return { root, target, relative: cleanRelative }
+}
+
+function safeSkillEntryName(name: string): string {
+  const cleanName = name.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/^\.+$/, '').slice(0, 120)
+  if (!cleanName) throw new Error('Please enter a valid file or folder name')
+  return cleanName
+}
+
+async function openSkillPath(skillPath: string, targetRelativePath = ''): Promise<ExportResult> {
+  try {
+    const { root, target } = resolveSkillChildPath(skillPath, targetRelativePath)
+    const candidate = (await pathExists(target)) ? target : path.dirname(target)
+    const opened = (await pathExists(candidate)) ? candidate : root
+    const message = await shell.openPath(opened)
+    return message ? { ok: false, message, path: opened } : { ok: true, message: 'Opened local Skill location', path: opened }
+  } catch (error) {
+    return { ok: false, message: errorMessage(error) }
+  }
+}
+
+async function writeSkillTextFile(request: SkillFileWriteRequest): Promise<ExportResult> {
+  try {
+    const { target, relative } = resolveSkillChildPath(request.skillPath, request.relativePath)
+    const normalized = relative.toLowerCase()
+    if (!normalized || !isTextSkillFile(target)) {
+      return { ok: false, message: 'Only text files in the Skill directory can be edited here', path: target }
+    }
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, request.content, 'utf8')
+    return { ok: true, message: 'Saved Skill file', path: target }
+  } catch (error) {
+    return { ok: false, message: errorMessage(error) }
+  }
+}
+
+async function createSkillEntry(request: SkillEntryCreateRequest): Promise<ExportResult> {
+  try {
+    const parent = resolveSkillChildPath(request.skillPath, request.parentRelativePath)
+    const name = safeSkillEntryName(request.name)
+    const target = path.resolve(parent.target, name)
+    const relative = path.relative(parent.root, target)
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error('Path is outside the Skill directory')
+    }
+    if (await pathExists(target)) return { ok: false, message: 'File or folder already exists', path: target }
+    if (request.kind === 'directory') {
+      await fs.mkdir(target, { recursive: true })
+      return { ok: true, message: 'Created Skill folder', path: target }
+    }
+    if (!isTextSkillFile(target)) {
+      await fs.mkdir(path.dirname(target), { recursive: true })
+      await shell.openPath(path.dirname(target))
+      return { ok: false, message: 'For non-text files, the folder has been opened. Add the appropriate asset or binary file there.', path: path.dirname(target) }
+    }
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, request.content || '', 'utf8')
+    return { ok: true, message: 'Created Skill file', path: target }
+  } catch (error) {
+    return { ok: false, message: errorMessage(error) }
+  }
+}
+
 async function collectSkillBackups(directories: string[]): Promise<Array<{ name: string; title: string; path: string; content: string; updatedAt: string }>> {
   const skillFiles = Array.from(new Set((await Promise.all(directories.filter(Boolean).map((directory) => findSkillFiles(directory, 0)))).flat()))
   const backups: Array<{ name: string; title: string; path: string; content: string; updatedAt: string }> = []
@@ -1637,6 +1837,10 @@ function registerIpc(): void {
   ipcMain.handle('skills:installZip', () => installSkillZip())
   ipcMain.handle('skills:installGenerated', (_event, name: string, content: string) => installGeneratedSkill(name, content))
   ipcMain.handle('skills:delete', (_event, skill: SkillItem) => deleteSkill(skill))
+  ipcMain.handle('skills:getDirectorySnapshot', (_event, skillPath: string) => readSkillDirectorySnapshot(skillPath))
+  ipcMain.handle('skills:openPath', (_event, skillPath: string, targetRelativePath?: string) => openSkillPath(skillPath, targetRelativePath))
+  ipcMain.handle('skills:writeTextFile', (_event, request: SkillFileWriteRequest) => writeSkillTextFile(request))
+  ipcMain.handle('skills:createEntry', (_event, request: SkillEntryCreateRequest) => createSkillEntry(request))
   ipcMain.handle('github:searchSkills', (_event, query: string) => searchGithub('skill', query))
   ipcMain.handle('github:installSkill', (_event, result: GithubSearchResult) => installGithubSkill(result))
   ipcMain.handle('prompts:importExisting', () => importPromptFiles())

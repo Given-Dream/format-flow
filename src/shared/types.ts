@@ -27,6 +27,25 @@ export type SkillItem = {
   updatedAt: string
 }
 
+export type SkillDirectoryNode = {
+  name: string
+  kind: 'file' | 'directory' | 'none'
+  path?: string
+  content?: string
+  isText?: boolean
+  children?: SkillDirectoryNode[]
+}
+
+export type SkillDirectorySnapshot = {
+  root: string
+  skillMd: SkillDirectoryNode
+  agentOpenAiYaml: SkillDirectoryNode
+  scripts: SkillDirectoryNode
+  references: SkillDirectoryNode
+  assets: SkillDirectoryNode
+  extras: SkillDirectoryNode[]
+}
+
 export type GithubSearchResult = {
   id: string
   name: string
@@ -206,4 +225,18 @@ export type ExportResult = {
   ok: boolean
   message: string
   path?: string
+}
+
+export type SkillFileWriteRequest = {
+  skillPath: string
+  relativePath: string
+  content: string
+}
+
+export type SkillEntryCreateRequest = {
+  skillPath: string
+  parentRelativePath: string
+  name: string
+  kind: 'file' | 'directory'
+  content?: string
 }

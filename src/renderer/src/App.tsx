@@ -47,6 +47,8 @@ import type {
   NodeKind,
   PromptItem,
   RunStep,
+  SkillDirectoryNode,
+  SkillDirectorySnapshot,
   SkillItem,
   SkillMetadata,
   Workflow,
@@ -3049,6 +3051,200 @@ function PromptEditorModal({
   )
 }
 
+const skillEditorLabels = {
+  editTitle: '\u7f16\u8f91 Skill',
+  summary: '\u6458\u8981',
+  tags: '\u6807\u7b7e',
+  variables: '\u81ea\u5b9a\u4e49\u53d8\u91cf',
+  save: '\u4fdd\u5b58',
+  favorite: '\u6536\u85cf',
+  unfavorite: '\u53d6\u6d88\u6536\u85cf',
+  delete: '\u5220\u9664',
+  openRoot: '\u6253\u5f00 Skill \u672c\u5730\u4f4d\u7f6e',
+  openFile: '\u6253\u5f00\u6587\u4ef6',
+  openFolder: '\u6253\u5f00\u6587\u4ef6\u5939',
+  editFile: '\u7f16\u8f91',
+  saveFile: '\u4fdd\u5b58\u6587\u4ef6',
+  cancel: '\u53d6\u6d88',
+  createFile: '\u65b0\u589e\u6587\u672c\u6587\u4ef6',
+  createFolder: '\u65b0\u589e\u6587\u4ef6\u5939',
+  createMissing: '\u65b0\u5efa',
+  directoryContent: '\u76ee\u5f55\u5185\u5bb9',
+  loading: '\u8bfb\u53d6\u4e2d',
+  loaded: '\u5df2\u52a0\u8f7d',
+  unsupportedSnapshot: '\u5f53\u524d\u73af\u5883\u4e0d\u652f\u6301 Skill \u76ee\u5f55\u5feb\u7167',
+  loadFailed: '\u8bfb\u53d6 Skill \u76ee\u5f55\u5931\u8d25',
+  unsupportedOpen: '\u5f53\u524d\u73af\u5883\u4e0d\u652f\u6301\u6253\u5f00\u672c\u5730\u4f4d\u7f6e',
+  unsupportedWrite: '\u5f53\u524d\u73af\u5883\u4e0d\u652f\u6301\u7f16\u8f91 Skill \u6587\u4ef6',
+  fileNamePrompt: '\u8f93\u5165\u6587\u4ef6\u540d\uff08\u4f8b\u5982 note.md\u3001helper.py\u3001config.yaml\uff09',
+  folderNamePrompt: '\u8f93\u5165\u6587\u4ef6\u5939\u540d',
+  created: '\u5df2\u65b0\u5efa',
+  saved: '\u5df2\u4fdd\u5b58',
+  none: 'none',
+  nonText: '\u975e\u6587\u672c\u6587\u4ef6\uff0c\u8bf7\u6253\u5f00\u6240\u5728\u6587\u4ef6\u5939\u540e\u65b0\u589e\u6216\u66ff\u6362\u5bf9\u5e94\u7c7b\u578b\u7684\u6587\u4ef6\u3002',
+  addAssetHint: '\u5df2\u6253\u5f00\u6587\u4ef6\u5939\uff1b\u8bf7\u5728\u8fd9\u91cc\u65b0\u589e\u56fe\u7247\u3001\u97f3\u9891\u3001\u538b\u7f29\u5305\u6216\u5176\u4ed6\u8d44\u6e90\u6587\u4ef6\u3002',
+  addScriptHint: '\u5df2\u6253\u5f00\u6587\u4ef6\u5939\uff1b\u8bf7\u5728\u8fd9\u91cc\u65b0\u589e .py\u3001.sh\u3001.js\u3001.ts \u7b49\u811a\u672c\u6587\u4ef6\u3002',
+  addReferenceHint: '\u5df2\u6253\u5f00\u6587\u4ef6\u5939\uff1b\u8bf7\u5728\u8fd9\u91cc\u65b0\u589e .md\u3001.txt\u3001.pdf\u3001json \u7b49\u53c2\u8003\u6750\u6599\u3002',
+  addExtraHint: '\u5df2\u6253\u5f00\u6587\u4ef6\u5939\uff1b\u8bf7\u6839\u636e extras \u7528\u9014\u65b0\u589e\u6587\u4ef6\u6216\u5b50\u76ee\u5f55\u3002'
+}
+
+type SkillEditorSection = {
+  title: string
+  node: SkillDirectoryNode
+  note?: string
+  relativePath: string
+  expectedKind: 'file' | 'directory'
+  defaultContent?: string
+}
+
+type SkillNodeActions = {
+  root: string
+  editingPath: string
+  draftContent: string
+  onDraftContentChange: (content: string) => void
+  onEditFile: (node: SkillDirectoryNode) => void
+  onSaveFile: (node: SkillDirectoryNode) => void
+  onCancelEdit: () => void
+  onOpen: (relativePath?: string, hint?: string) => void
+  onCreateEntry: (parentRelativePath: string, kind: 'file' | 'directory', defaultName?: string, content?: string) => void
+}
+
+function normalizeDisplayPath(root: string, targetPath?: string): string {
+  if (!targetPath) return ''
+  const cleanRoot = root.replace(/\\/g, '/').replace(/\/+$/, '')
+  const cleanTarget = targetPath.replace(/\\/g, '/')
+  return cleanTarget === cleanRoot ? '' : cleanTarget.startsWith(`${cleanRoot}/`) ? cleanTarget.slice(cleanRoot.length + 1) : cleanTarget
+}
+
+function skillDirectoryHint(relativePath: string): string {
+  const section = relativePath.split('/').filter(Boolean)[0]?.toLowerCase() || 'extras'
+  if (section === 'assets') return skillEditorLabels.addAssetHint
+  if (section === 'scripts') return skillEditorLabels.addScriptHint
+  if (section === 'references') return skillEditorLabels.addReferenceHint
+  return skillEditorLabels.addExtraHint
+}
+
+function defaultSkillFileContent(relativePath: string): string {
+  const lower = relativePath.toLowerCase()
+  if (lower === 'skill.md') {
+    return ['---', 'name: new-skill', 'description: Use when this Skill should guide a task.', '---', '', '# New Skill', '', '## When to Use', '- Use this Skill when...', '', '## Instructions', '- Step 1:', ''].join('\n')
+  }
+  if (lower === 'agent/openai.yaml') return 'model: gpt-5\nreasoning:\n  effort: medium\n'
+  if (lower.endsWith('.py')) return '# Add script logic here.\n'
+  if (lower.endsWith('.json')) return '{}\n'
+  if (lower.endsWith('.yaml') || lower.endsWith('.yml')) return '# Add YAML configuration here.\n'
+  return ''
+}
+
+function SkillNodeView({ node, depth = 0, actions }: { node: SkillDirectoryNode; depth?: number; actions: SkillNodeActions }): JSX.Element {
+  const relativePath = normalizeDisplayPath(actions.root, node.path)
+  const indent = Math.min(depth * 10, 24)
+
+  if (node.kind === 'none') {
+    return (
+      <div className="skill-node skill-node-none" style={{ marginLeft: indent }}>
+        <div className="skill-node-head">
+          <strong>{node.name}</strong>
+          <span>{skillEditorLabels.none}</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (node.kind === 'file') {
+    const canEdit = Boolean(node.isText)
+    const preview = node.content?.trim() || skillEditorLabels.none
+    const isEditing = Boolean(relativePath) && actions.editingPath === relativePath
+    return (
+      <div className="skill-node skill-node-file" style={{ marginLeft: indent }}>
+        <div className="skill-node-head">
+          <div>
+            <strong>{node.name}</strong>
+            <span>{relativePath || node.path || skillEditorLabels.none}</span>
+          </div>
+          <div className="skill-node-actions">
+            <button type="button" onClick={() => actions.onOpen(relativePath)}>{skillEditorLabels.openFile}</button>
+            {canEdit && <button type="button" onClick={() => actions.onEditFile(node)}>{skillEditorLabels.editFile}</button>}
+          </div>
+        </div>
+        {isEditing ? (
+          <div className="skill-file-editor">
+            <textarea value={actions.draftContent} onChange={(event) => actions.onDraftContentChange(event.target.value)} />
+            <div className="inline-actions compact">
+              <button className="primary-action" type="button" onClick={() => actions.onSaveFile(node)}>{skillEditorLabels.saveFile}</button>
+              <button type="button" onClick={actions.onCancelEdit}>{skillEditorLabels.cancel}</button>
+            </div>
+          </div>
+        ) : canEdit ? (
+          <div className="skill-file-preview">
+            <span>{'\u9884\u89c8'}</span>
+            <pre>{preview.length > 640 ? `${preview.slice(0, 640).trim()}...` : preview}</pre>
+          </div>
+        ) : (
+          <div className="skill-node-note">
+            <span>{skillEditorLabels.nonText}</span>
+            <button type="button" onClick={() => actions.onOpen(relativePath, skillDirectoryHint(relativePath))}>{skillEditorLabels.openFolder}</button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="skill-node skill-node-directory" style={{ marginLeft: indent }}>
+      <div className="skill-node-head">
+        <div>
+          <strong>{node.name}</strong>
+          <span>{relativePath || node.path || skillEditorLabels.none}</span>
+        </div>
+        <div className="skill-node-actions">
+          <button type="button" onClick={() => actions.onOpen(relativePath)}>{skillEditorLabels.openFolder}</button>
+          <button type="button" onClick={() => actions.onCreateEntry(relativePath, 'file')}>{skillEditorLabels.createFile}</button>
+          <button type="button" onClick={() => actions.onCreateEntry(relativePath, 'directory')}>{skillEditorLabels.createFolder}</button>
+        </div>
+      </div>
+      <div className="skill-node-children">
+        <div className="skill-directory-preview">
+          <span>{'\u9884\u89c8'}</span>
+          <p>{node.children && node.children.length > 0 ? `${node.children.length} \u9879: ${node.children.map((child) => child.name).join(', ')}` : skillEditorLabels.none}</p>
+        </div>
+        {node.children && node.children.length > 0 ? (
+          node.children.map((child, index) => <SkillNodeView key={`${node.name}-${child.name}-${index}`} node={child} depth={depth + 1} actions={actions} />)
+        ) : (
+          <div className="skill-node skill-node-none">
+            <strong>{node.name}</strong>
+            <span>{skillEditorLabels.none}</span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SkillSection({ section, actions }: { section: SkillEditorSection; actions: SkillNodeActions }): JSX.Element {
+  const createMissing = (): void => {
+    const parts = section.relativePath.split('/').filter(Boolean)
+    const name = parts.pop() || section.title
+    const parentRelativePath = parts.join('/')
+    actions.onCreateEntry(parentRelativePath, section.expectedKind, name, section.defaultContent || defaultSkillFileContent(section.relativePath))
+  }
+
+  return (
+    <section className="skill-section">
+      <header>
+        <div>
+          <strong>{section.title}</strong>
+          <span>{section.note || section.node.path || section.node.kind}</span>
+        </div>
+        <div className="skill-node-actions">
+          {section.node.kind === 'none' && <button type="button" onClick={createMissing}>{skillEditorLabels.createMissing}</button>}
+        </div>
+      </header>
+      <SkillNodeView node={section.node} actions={actions} />
+    </section>
+  )
+}
+
 function SkillEditorModal({
   skill,
   close,
@@ -3064,55 +3260,195 @@ function SkillEditorModal({
   const [tagText, setTagText] = useState(tagsToText(skill.tags))
   const [variableText, setVariableText] = useState(tagsToText(skill.variables))
   const [favorite, setFavorite] = useState(skill.favorite)
+  const [snapshot, setSnapshot] = useState<SkillDirectorySnapshot | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [status, setStatus] = useState('')
+  const [editingPath, setEditingPath] = useState('')
+  const [draftContent, setDraftContent] = useState('')
+
+  async function loadSnapshot(): Promise<void> {
+    try {
+      setLoading(true)
+      setError('')
+      if (!formatFlow.getSkillDirectorySnapshot) {
+        throw new Error(skillEditorLabels.unsupportedSnapshot)
+      }
+      const next = await formatFlow.getSkillDirectorySnapshot(skill.path)
+      setSnapshot(next)
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : skillEditorLabels.loadFailed)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    void loadSnapshot()
+  }, [skill.path])
+
+  const sections: SkillEditorSection[] = snapshot
+    ? [
+        { title: 'SKILL.md', node: snapshot.skillMd, note: snapshot.root, relativePath: 'SKILL.md', expectedKind: 'file', defaultContent: defaultSkillFileContent('SKILL.md') },
+        { title: 'agent/openai.yaml', node: snapshot.agentOpenAiYaml, relativePath: 'agent/openai.yaml', expectedKind: 'file', defaultContent: defaultSkillFileContent('agent/openai.yaml') },
+        { title: 'scripts', node: snapshot.scripts, relativePath: 'scripts', expectedKind: 'directory' },
+        { title: 'references', node: snapshot.references, relativePath: 'references', expectedKind: 'directory' },
+        { title: 'assets', node: snapshot.assets, relativePath: 'assets', expectedKind: 'directory' }
+      ]
+    : []
+
+  async function openSkillLocation(relativePath = '', hint = ''): Promise<void> {
+    if (!formatFlow.openSkillPath) {
+      setStatus(skillEditorLabels.unsupportedOpen)
+      return
+    }
+    const result = await formatFlow.openSkillPath(skill.path, relativePath)
+    setStatus(hint || result.message)
+  }
+
+  function editSkillFile(node: SkillDirectoryNode): void {
+    const relativePath = normalizeDisplayPath(snapshot?.root || '', node.path)
+    setEditingPath(relativePath)
+    setDraftContent(node.content || '')
+    setStatus('')
+  }
+
+  async function saveSkillFile(node: SkillDirectoryNode): Promise<void> {
+    if (!formatFlow.writeSkillTextFile || !snapshot) {
+      setStatus(skillEditorLabels.unsupportedWrite)
+      return
+    }
+    const relativePath = normalizeDisplayPath(snapshot.root, node.path)
+    const result = await formatFlow.writeSkillTextFile({ skillPath: skill.path, relativePath, content: draftContent })
+    setStatus(result.ok ? skillEditorLabels.saved : result.message)
+    if (result.ok) {
+      setEditingPath('')
+      await loadSnapshot()
+    }
+  }
+
+  async function createEntry(parentRelativePath: string, kind: 'file' | 'directory', defaultName = '', content = ''): Promise<void> {
+    if (!formatFlow.createSkillEntry) {
+      setStatus(skillEditorLabels.unsupportedWrite)
+      return
+    }
+    const promptText = kind === 'file' ? skillEditorLabels.fileNamePrompt : skillEditorLabels.folderNamePrompt
+    const rawName = defaultName || window.prompt(promptText, kind === 'file' ? 'note.md' : 'extras') || ''
+    const name = rawName.trim()
+    if (!name) return
+    const result = await formatFlow.createSkillEntry({ skillPath: skill.path, parentRelativePath, name, kind, content: content || defaultSkillFileContent(`${parentRelativePath}/${name}`) })
+    setStatus(result.ok ? skillEditorLabels.created : result.message)
+    if (result.ok) await loadSnapshot()
+  }
+
+  const actions: SkillNodeActions = {
+    root: snapshot?.root || '',
+    editingPath,
+    draftContent,
+    onDraftContentChange: setDraftContent,
+    onEditFile: editSkillFile,
+    onSaveFile: (node) => void saveSkillFile(node),
+    onCancelEdit: () => setEditingPath(''),
+    onOpen: (relativePath, hint) => void openSkillLocation(relativePath, hint),
+    onCreateEntry: (parentRelativePath, kind, defaultName, content) => void createEntry(parentRelativePath, kind, defaultName, content)
+  }
 
   return (
-    <Modal title={`编辑 Skill：${skill.title}`} close={close}>
-      <label>
-        摘要覆盖
-        <input value={summaryOverride} onChange={(event) => setSummaryOverride(event.target.value)} />
-      </label>
-      <label>
-        分类标签
-        <input value={tagText} onChange={(event) => setTagText(event.target.value)} />
-      </label>
-      <label>
-        自定义变量
-        <input value={variableText} onChange={(event) => setVariableText(event.target.value)} placeholder="topic, audience" />
-      </label>
-      <div className="path-box">
-        <span>{skill.path}</span>
-      </div>
-      <label className="grow">
-        SKILL.md 预览
-        <textarea className="content-editor readonly" readOnly value={skill.contentPreview} />
-      </label>
-      <div className="inline-actions">
-        <button
-          className="primary-action"
-          type="button"
-          onClick={() =>
-            void save(skill, {
-              tags: parseTags(tagText),
-              summaryOverride: summaryOverride.trim(),
-              variables: parseTags(variableText),
-              favorite
-            })
-          }
-        >
-          保存
-        </button>
-        <button type="button" onClick={() => setFavorite(!favorite)}>
-          {favorite ? '取消收藏' : '收藏'}
-        </button>
-        <button className="danger" type="button" onClick={() => void deleteSkill(skill)}>
-          删除
-        </button>
+    <Modal title={`${skillEditorLabels.editTitle}: ${skill.title}`} close={close} className="skill-editor-modal">
+      <div className="skill-editor-layout">
+        <div className="skill-editor-form">
+          <label>
+            {skillEditorLabels.summary}
+            <input value={summaryOverride} onChange={(event) => setSummaryOverride(event.target.value)} />
+          </label>
+          <label>
+            {skillEditorLabels.tags}
+            <input value={tagText} onChange={(event) => setTagText(event.target.value)} />
+          </label>
+          <label>
+            {skillEditorLabels.variables}
+            <input value={variableText} onChange={(event) => setVariableText(event.target.value)} placeholder="topic, audience" />
+          </label>
+          <div className="path-box">
+            <span>{skill.path}</span>
+            <button type="button" onClick={() => void openSkillLocation('')}>{skillEditorLabels.openRoot}</button>
+          </div>
+          <div className="inline-actions">
+            <button
+              className="primary-action"
+              type="button"
+              onClick={() =>
+                void save(skill, {
+                  tags: parseTags(tagText),
+                  summaryOverride: summaryOverride.trim(),
+                  variables: parseTags(variableText),
+                  favorite
+                })
+              }
+            >
+              {skillEditorLabels.save}
+            </button>
+            <button type="button" onClick={() => setFavorite(!favorite)}>
+              {favorite ? skillEditorLabels.unfavorite : skillEditorLabels.favorite}
+            </button>
+            <button className="danger" type="button" onClick={() => void deleteSkill(skill)}>
+              {skillEditorLabels.delete}
+            </button>
+          </div>
+        </div>
+
+        <div className="skill-editor-tree">
+          <div className="skill-tree-header">
+            <div>
+              <strong>{skillEditorLabels.directoryContent}</strong>
+              <span>{status || (loading ? skillEditorLabels.loading : error || skillEditorLabels.loaded)}</span>
+            </div>
+            <div className="skill-node-actions">
+              <button type="button" onClick={() => void openSkillLocation('')}>{skillEditorLabels.openRoot}</button>
+              <button type="button" onClick={() => void createEntry('', 'file')}>{skillEditorLabels.createFile}</button>
+              <button type="button" onClick={() => void createEntry('', 'directory')}>{skillEditorLabels.createFolder}</button>
+            </div>
+          </div>
+          {error && <div className="skill-tree-empty">{error}</div>}
+          {loading && <div className="skill-tree-empty">{skillEditorLabels.loading}...</div>}
+          {!loading && snapshot && (
+            <div className="skill-tree-list">
+              {sections.map((section) => (
+                <SkillSection key={section.title} section={section} actions={actions} />
+              ))}
+              <section className="skill-section">
+                <header>
+                  <div>
+                    <strong>extras</strong>
+                    <span>{snapshot.extras.length > 0 ? `${snapshot.extras.length} items` : skillEditorLabels.none}</span>
+                  </div>
+                  <div className="skill-node-actions">
+                    <button type="button" onClick={() => void openSkillLocation('', skillEditorLabels.addExtraHint)}>{skillEditorLabels.openFolder}</button>
+                    <button type="button" onClick={() => void createEntry('', 'file')}>{skillEditorLabels.createFile}</button>
+                    <button type="button" onClick={() => void createEntry('', 'directory')}>{skillEditorLabels.createFolder}</button>
+                  </div>
+                </header>
+                {snapshot.extras.length > 0 ? (
+                  <div className="skill-tree-list nested">
+                    {snapshot.extras.map((node, index) => (
+                      <SkillNodeView key={`${node.name}-${index}`} node={node} actions={actions} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="skill-tree-empty">{skillEditorLabels.none}</div>
+                )}
+              </section>
+            </div>
+          )}
+        </div>
       </div>
     </Modal>
   )
 }
 
-function ManualSkillModal({
+function ManualSkillModal(
+
+{
   initialTag,
   close,
   save
@@ -3836,10 +4172,10 @@ function RecommendedShortcutModal({
   )
 }
 
-function Modal({ title, close, children }: { title: string; close: () => void; children: ReactNode }): JSX.Element {
+function Modal({ title, close, children, className = '' }: { title: string; close: () => void; children: ReactNode; className?: string }): JSX.Element {
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal-card" role="dialog" aria-modal="true" aria-label={title}>
+      <section className={className ? `modal-card ${className}` : 'modal-card'} role="dialog" aria-modal="true" aria-label={title}>
         <header className="modal-header">
           <h2>{title}</h2>
           <button type="button" onClick={close}>

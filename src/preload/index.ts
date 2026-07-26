@@ -10,6 +10,9 @@ import type {
   McpServer,
   PromptItem,
   ShortcutResult,
+  SkillDirectorySnapshot,
+  SkillEntryCreateRequest,
+  SkillFileWriteRequest,
   SkillItem
 } from '../shared/types'
 
@@ -30,6 +33,14 @@ const api = {
   installSkillZip: (): Promise<ImportResult<SkillItem>> => ipcRenderer.invoke('skills:installZip'),
   installGeneratedSkill: (name: string, content: string): Promise<ImportResult<SkillItem>> =>
     ipcRenderer.invoke('skills:installGenerated', name, content),
+  getSkillDirectorySnapshot: (skillPath: string): Promise<SkillDirectorySnapshot> =>
+    ipcRenderer.invoke('skills:getDirectorySnapshot', skillPath),
+  openSkillPath: (skillPath: string, targetRelativePath?: string): Promise<ExportResult> =>
+    ipcRenderer.invoke('skills:openPath', skillPath, targetRelativePath),
+  writeSkillTextFile: (request: SkillFileWriteRequest): Promise<ExportResult> =>
+    ipcRenderer.invoke('skills:writeTextFile', request),
+  createSkillEntry: (request: SkillEntryCreateRequest): Promise<ExportResult> =>
+    ipcRenderer.invoke('skills:createEntry', request),
   deleteSkill: (skill: SkillItem): Promise<ExportResult> => ipcRenderer.invoke('skills:delete', skill),
   searchGithubSkills: (query: string): Promise<GithubSearchResult[]> => ipcRenderer.invoke('github:searchSkills', query),
   installGithubSkill: (result: GithubSearchResult): Promise<ImportResult<SkillItem>> =>

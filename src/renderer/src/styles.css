@@ -1461,6 +1461,238 @@ label {
   padding: 20px;
 }
 
+.skill-editor-modal {
+  width: min(1320px, calc(100vw - 48px));
+}
+
+.skill-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 400px) minmax(0, 1fr);
+  gap: 18px;
+  min-height: 0;
+}
+
+.skill-editor-form,
+.skill-editor-tree {
+  min-height: 0;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.skill-editor-form label {
+  gap: 8px;
+}
+
+.skill-editor-form input,
+.skill-file-editor textarea {
+  padding: 12px 14px;
+}
+
+.skill-editor-tree {
+  max-height: calc(100vh - 160px);
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+  overflow: auto;
+}
+
+.skill-tree-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 4px;
+}
+
+.skill-tree-header > div:first-child,
+.skill-section > header > div:first-child,
+.skill-node-head > div:first-child {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.skill-tree-header strong {
+  font-size: 14px;
+}
+
+.skill-tree-header span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.skill-tree-list {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
+}
+
+.skill-tree-list.nested {
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.skill-section {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.skill-section > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.skill-section > header strong {
+  font-size: 13px;
+}
+
+.skill-section > header span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.skill-node {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.skill-node-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.skill-node-head strong,
+.skill-node-none strong {
+  font-size: 12px;
+}
+
+.skill-node-head span,
+.skill-node-none span {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.skill-node-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.skill-node-actions button,
+.inline-actions.compact button {
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.skill-file-preview,
+.skill-directory-preview {
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+}
+
+.skill-file-preview > span,
+.skill-directory-preview > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.skill-directory-preview p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.skill-node-file pre {
+  margin: 0;
+  min-height: 52px;
+  max-height: 360px;
+  padding: 12px 14px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.skill-file-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.skill-file-editor textarea {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.skill-node-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.skill-node-directory {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.skill-node-children {
+  display: grid;
+  gap: 10px;
+}
+
+.skill-node-none {
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.skill-tree-empty {
+  padding: 12px 14px;
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
 .launcher-tabs {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

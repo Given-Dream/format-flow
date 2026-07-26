@@ -1360,7 +1360,7 @@ async function readSkillDirectorySnapshot(skillPath: string): Promise<SkillDirec
 
   const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
   const skillMd = await readSkillFileNode(path.join(root, 'SKILL.md'), 'SKILL.md')
-  const agentCandidates = ['agent/openai.yaml', 'agent/openai.yml', 'openai.yaml', 'openai.yml']
+  const agentCandidates = ['agent/openai.yaml', 'agent/openai.yml', 'agents/openai.yaml', 'agents/openai.yml', 'openai.yaml', 'openai.yml']
   let agentOpenAiYaml = noneSkillNode('agent/openai.yaml')
   for (const candidate of agentCandidates) {
     const candidatePath = path.join(root, candidate)
@@ -1376,7 +1376,7 @@ async function readSkillDirectorySnapshot(skillPath: string): Promise<SkillDirec
   const extras: SkillDirectoryNode[] = []
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     const lower = entry.name.toLowerCase()
-    if (['skill.md', 'agent', 'scripts', 'references', 'assets'].includes(lower)) continue
+    if (['skill.md', 'agent', 'agents', 'scripts', 'references', 'assets'].includes(lower)) continue
     const targetPath = path.join(root, entry.name)
     extras.push(entry.isDirectory() ? await readSkillDirectoryNode(targetPath, entry.name) : await readSkillFileNode(targetPath, entry.name))
   }

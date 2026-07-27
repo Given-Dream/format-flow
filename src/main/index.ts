@@ -7,6 +7,7 @@ import os from 'node:os'
 import { execFile as execFileCallback, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
+import { migrateTemplateDirectory, syncTemplateDirectory } from './builtin-skills'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
 import type {
   AppPaths,
@@ -47,6 +48,29 @@ const SKILL_TEXT_EXTENSIONS = new Set([
   '.bat',
   '.cmd'
 ])
+
+const BUILT_IN_LEARNING_SKILLS = [
+  {
+    name: 'conversation-review',
+    title: '对话审查',
+    description: 'Use when a conversation result needs structured review, error signals, corrective rules, and human approval.',
+    instructions: [
+      'Separate satisfied examples from error examples.',
+      'Convert feedback into explicit rules, privacy-safe summaries, and a human-review checkpoint.'
+    ]
+  },
+  {
+    name: 'engineering-cybernetics-user-habit-learning',
+    title: '工程控制论学习用户习惯',
+    legacyNames: ['qian-xuesen-engineering-cybernetics'],
+    description: '从工程控制论角度分析对话，识别稳定的用户习惯并形成可审查的候选 Skill。',
+    instructions: [
+      '明确目标、状态、反馈、控制动作、约束、扰动和退出条件。',
+      '执行能够产生清晰反馈的最小动作，根据结果修正下一步。'
+    ],
+    templateDirectory: 'engineering-cybernetics-user-habit-learning'
+  }
+] as const
 
 let mainWindow: BrowserWindow | null = null
 let isQuitting = false
@@ -119,6 +143,10 @@ function getDefaultBackupDirectory(): string {
 
 function getBrowserExtensionDirectory(): string {
   return app.isPackaged ? path.join(process.resourcesPath, 'browser-extension') : path.join(__dirname, '../../browser-extension')
+}
+
+function getBuiltInSkillTemplateDirectory(): string {
+  return app.isPackaged ? path.join(process.resourcesPath, 'built-in-skills') : path.join(__dirname, '../../resources/built-in-skills')
 }
 
 function browserExecutableCandidates(): string[] {
@@ -837,8 +865,72 @@ async function chooseBackupDirectory(): Promise<{ ok: boolean; path: string; mes
   return { ok: true, path: selectedPath, message: 'Backup directory selected' }
 }
 
+async function ensureBuiltInLearningSkills(): Promise<void> {
+  const managedDirectory = getManagedSkillDirectory()
+  await fs.mkdir(managedDirectory, { recursive: true })
+
+  for (const definition of BUILT_IN_LEARNING_SKILLS) {
+    const destination = path.join(managedDirectory, definition.name)
+    const legacyNames = 'legacyNames' in definition ? definition.legacyNames : []
+    for (const legacyName of legacyNames) {
+      try {
+        await migrateTemplateDirectory(path.join(managedDirectory, legacyName), destination)
+      } catch (error) {
+        console.error('Failed to migrate built-in Skill directory: ' + legacyName, error)
+      }
+    }
+    const skillFile = path.join(destination, 'SKILL.md')
+    const agentFile = path.join(destination, 'agent', 'openai.yaml')
+    const iconFile = path.join(destination, 'assets', 'icon.txt')
+    const templateDirectory = 'templateDirectory' in definition ? definition.templateDirectory : ''
+    let templateSynced = false
+
+    if (templateDirectory) {
+      try {
+        await syncTemplateDirectory(path.join(getBuiltInSkillTemplateDirectory(), templateDirectory), destination)
+        templateSynced = true
+      } catch (error) {
+        console.error('Failed to synchronize built-in Skill template: ' + definition.name, error)
+      }
+    }
+
+    await fs.mkdir(path.join(destination, 'agent'), { recursive: true })
+    await Promise.all(['scripts', 'references', 'assets', 'extras'].map((directory) => fs.mkdir(path.join(destination, directory), { recursive: true })))
+
+    if (!templateSynced && !(await pathExists(skillFile))) {
+      const content = [
+        '---',
+        `name: ${definition.name}`,
+        `description: ${definition.description}`,
+        '---',
+        '',
+        `# ${definition.title}`,
+        '',
+        '## When to Use',
+        `- ${definition.description}`,
+        '',
+        '## Instructions',
+        ...definition.instructions.map((instruction) => `- ${instruction}`),
+        '',
+        '## Directory Layout',
+        '- SKILL.md: reusable method instructions.',
+        '- agent/openai.yaml: OpenAI model configuration.',
+        '- scripts, references, assets, extras: method-specific extensions.',
+        ''
+      ].join('\n')
+      await fs.writeFile(skillFile, content, 'utf8')
+    }
+    if (!templateSynced && !(await pathExists(agentFile))) {
+      await fs.writeFile(agentFile, ['model: gpt-5', 'reasoning:', '  effort: medium', ''].join('\n'), 'utf8')
+    }
+    if (!templateSynced && !(await pathExists(iconFile))) {
+      await fs.writeFile(iconFile, `Format Flow Skill: ${definition.name}\n`, 'utf8')
+    }
+  }
+}
 async function scanSkills(directories: string[]): Promise<SkillItem[]> {
-  const uniqueDirectories = Array.from(new Set(directories.filter(Boolean)))
+  await ensureBuiltInLearningSkills()
+  const uniqueDirectories = Array.from(new Set([...directories, getManagedSkillDirectory()].filter(Boolean)))
   const files = (
     await Promise.all(uniqueDirectories.map((directory) => findSkillFiles(directory, 0)))
   ).flat()
@@ -933,7 +1025,11 @@ async function installGeneratedSkill(name: string, content: string): Promise<Imp
   await fs.mkdir(managedDirectory, { recursive: true })
   const destination = await uniqueDirectory(path.join(managedDirectory, cleanName))
   const skillFile = path.join(destination, 'SKILL.md')
+  await fs.mkdir(path.join(destination, 'agent'), { recursive: true })
+  await Promise.all(['scripts', 'references', 'assets', 'extras'].map((directory) => fs.mkdir(path.join(destination, directory), { recursive: true })))
   await fs.writeFile(skillFile, content.trimEnd() + '\n', 'utf8')
+  await fs.writeFile(path.join(destination, 'agent', 'openai.yaml'), ['model: gpt-5', 'reasoning:', '  effort: medium', ''].join('\n'), 'utf8')
+  await fs.writeFile(path.join(destination, 'assets', 'icon.txt'), `Format Flow Skill: ${cleanName}\n`, 'utf8')
   const stat = await fs.stat(skillFile)
   const skill = { ...parseSkillMarkdown(content, skillFile), updatedAt: stat.mtime.toISOString() }
 

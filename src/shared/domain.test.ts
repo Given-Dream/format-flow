@@ -8,6 +8,7 @@ import {
   createRunSteps,
   createWorkflow,
   matchesTextAndTags,
+  mergeSkillMetadata,
   nodeFromMcp,
   nodeFromPrompt,
   nodeFromSkill,
@@ -91,6 +92,25 @@ describe('skill parsing', () => {
     expect(skill.title).toBe('Test Skill')
     expect(skill.summary).toBe('Use when testing skill parsing.')
     expect(skill.source).toBe('codex')
+  })
+
+  it('classifies generated learning Skills and preserves the category after metadata is merged', () => {
+    const skill = parseSkillMarkdown(
+      [
+        '---',
+        'name: learned-review',
+        'description: Learned review behavior.',
+        'generate by: conversation-review',
+        '---',
+        '',
+        '# Learned Review'
+      ].join('\n'),
+      'D:/skills/learned-review/SKILL.md'
+    )
+    const merged = mergeSkillMetadata(skill, { tags: ['custom'] })
+
+    expect(skill.tags).toContain('对话审查')
+    expect(merged.tags).toEqual(expect.arrayContaining(['custom', '对话审查']))
   })
 })
 

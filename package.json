@@ -1,6 +1,6 @@
 {
   "name": "format-flow",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "description": "Local prompt and Codex Skill workflow manager",
   "main": "./out/main/index.js",
   "private": true,
@@ -38,6 +38,7 @@
   "build": {
     "appId": "com.songyu.formatflow",
     "productName": "Format Flow",
+    "artifactName": "Format-Flow-Setup-${version}.${ext}",
     "directories": {
       "output": "release"
     },
@@ -53,6 +54,13 @@
         "filter": [
           "**/*",
           "!tests/**"
+        ]
+      },
+      {
+        "from": "resources/built-in-skills",
+        "to": "built-in-skills",
+        "filter": [
+          "**/*"
         ]
       }
     ],

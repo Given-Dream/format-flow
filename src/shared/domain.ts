@@ -62,7 +62,7 @@ export function defaultGroups(prompts: PromptItem[] = []): ResourceGroups {
     workflows: [],
     mcps: [],
     quickCalls: groupsFromTags(allTags(prompts)),
-    learning: groupsFromTags(['hermes', '对话审查', '钱学森工程控制论'])
+    learning: groupsFromTags(['hermes', '对话审查', '工程控制论学习用户习惯'])
   }
 }
 
@@ -509,6 +509,12 @@ export function skillIdFromPath(filePath: string): string {
   return `skill:${filePath.replace(/\\/g, '/')}`
 }
 
+const LEARNING_GENERATOR_TAG_LABELS: Record<string, string> = {
+  'conversation-review': '对话审查',
+  'engineering-cybernetics': '工程控制论学习用户习惯'
+}
+const LEARNING_GENERATOR_TAGS = new Set(Object.values(LEARNING_GENERATOR_TAG_LABELS).map(normalizeTag))
+const TEMPLATE_MANAGED_SKILL_NAMES = new Set(['engineering-cybernetics-user-habit-learning'])
 export function parseSkillMarkdown(content: string, filePath: string): SkillItem {
   const frontmatter = parseFrontmatter(content)
   const fallbackName = filePath.split(/[\\/]/).slice(-2, -1)[0] || 'skill'
@@ -516,13 +522,20 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
   const heading = content.match(/^#\s+(.+)$/m)?.[1]?.trim()
   const summary = frontmatter.description || firstParagraph(content) || 'Codex Skill'
   const timestamp = nowIso()
+  const generatedBy = frontmatter['generate by'] || frontmatter.generate_by || ''
+  const generatedByTags = generatedBy
+    .split(',')
+    .map(normalizeTag)
+    .filter(Boolean)
+    .map((tag) => LEARNING_GENERATOR_TAG_LABELS[tag] || tag)
+  const tags = Array.from(new Set([...inferSkillTags(name, filePath), ...generatedByTags]))
 
   return {
     id: skillIdFromPath(filePath),
     name,
     title: heading || name,
     summary,
-    tags: inferSkillTags(name, filePath),
+    tags,
     variables: extractPromptVariables(content),
     favorite: false,
     path: filePath,
@@ -533,10 +546,13 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
 }
 
 export function mergeSkillMetadata(skill: SkillItem, metadata?: { tags?: string[]; summaryOverride?: string; favorite?: boolean; variables?: string[] }): SkillItem {
+  const metadataTags = metadata?.tags?.map(normalizeTag).filter(Boolean) || []
+  const learningGeneratorTags = skill.tags.map(normalizeTag).filter((tag) => LEARNING_GENERATOR_TAGS.has(tag))
+  const summaryOverride = TEMPLATE_MANAGED_SKILL_NAMES.has(skill.name) ? '' : metadata?.summaryOverride?.trim()
   return {
     ...skill,
-    summary: metadata?.summaryOverride?.trim() || skill.summary,
-    tags: metadata?.tags?.length ? metadata.tags.map(normalizeTag) : skill.tags,
+    summary: summaryOverride || skill.summary,
+    tags: metadataTags.length ? Array.from(new Set([...metadataTags, ...learningGeneratorTags])) : skill.tags,
     variables: metadata?.variables?.length ? metadata.variables.map(String).filter(Boolean) : skill.variables,
     favorite: Boolean(metadata?.favorite)
   }
@@ -702,7 +718,7 @@ function normalizeGroups(value: unknown, prompts: PromptItem[]): ResourceGroups 
     workflows: normalizeGroupList(value.workflows, []),
     mcps: normalizeGroupList(value.mcps, []),
     quickCalls: normalizeGroupList(value.quickCalls, allTags(prompts)),
-    learning: normalizeGroupList(value.learning, ['hermes', '对话审查', '钱学森工程控制论'])
+    learning: normalizeGroupList(value.learning, ['hermes', '对话审查', '工程控制论学习用户习惯'])
   }
 }
 
@@ -863,8 +879,8 @@ function parseFrontmatter(content: string): Record<string, string> {
   const result: Record<string, string> = {}
 
   for (const line of block) {
-    const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/)
-    if (match) result[match[1]] = match[2].replace(/^['"]|['"]$/g, '').trim()
+    const match = line.match(/^([A-Za-z0-9_-]+(?:\s+[A-Za-z0-9_-]+)*):\s*(.*)$/)
+    if (match) result[match[1].trim()] = match[2].replace(/^['"]|['"]$/g, '').trim()
   }
 
   return result

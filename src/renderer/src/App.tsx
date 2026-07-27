@@ -103,6 +103,14 @@ type LearningDraft = {
   description: string
   content: string
 }
+const LEARNING_SKILL_METHODS: ReadonlyArray<{ method: LearningMethod; name: string; title: string }> = [
+  { method: 'conversation-review', name: 'conversation-review', title: '对话审查' },
+  {
+    method: 'engineering-cybernetics',
+    name: 'engineering-cybernetics-user-habit-learning',
+    title: '工程控制论学习用户习惯'
+  }
+]
 type ManualSkillDraft = {
   name: string
   title: string
@@ -253,7 +261,7 @@ const tabs: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'workflows', label: '工作流', description: '提示词节点选择调用哪个 Skill' },
   { id: 'runner', label: '顺序运行', description: '审查后自动发送下一步任务' },
   { id: 'mcps', label: 'MCP', description: '导入和添加 MCP 服务配置' },
-  { id: 'learning', label: '学习', description: '从满意对话生成 Skill' },
+  { id: 'learning', label: '学习', description: '管理学习方法和生成的 Skill' },
   { id: 'settings', label: '设置', description: '快捷键、Skill 路径和数据位置' }
 ]
 
@@ -555,7 +563,7 @@ export function App(): JSX.Element {
           )}
           {activeTab === 'mcps' && <McpPanel store={store} commit={commit} setNotice={setNotice} />}
           {activeTab === 'learning' && (
-            <LearningPanel store={store} commit={commit} scanSkills={scanSkills} setNotice={setNotice} />
+            <LearningPanel store={store} skills={skills} commit={commit} scanSkills={scanSkills} setNotice={setNotice} />
           )}
           {activeTab === 'settings' && (
             <SettingsPanel
@@ -2419,128 +2427,116 @@ function McpPanel({
 
 function LearningPanel({
   store,
+  skills,
   commit,
   scanSkills,
   setNotice
 }: {
   store: AppStore
+  skills: SkillItem[]
   commit: (store: AppStore) => Promise<void>
   scanSkills: (directories?: string[]) => Promise<void>
   setNotice: (notice: string) => void
 }): JSX.Element {
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const [sources, setSources] = useState<LearningSource[]>([])
-  const [draft, setDraft] = useState<LearningDraft | null>(null)
-  const [method, setMethod] = useState<LearningMethod>('conversation-review')
   const [selectedGroup, setSelectedGroup] = useState('all')
-  const learningGroups = mergeGroupsWithTags(store.groups.learning || [], allTags(sources))
-  const visibleSources = selectedGroup === 'all' ? sources : sources.filter((source) => source.tags.includes(selectedGroup))
-  const satisfiedSources = visibleSources.filter((source) => source.satisfied)
-  const errorSources = visibleSources.filter((source) => !source.satisfied)
-  const redactionCount = visibleSources.reduce((total, source) => total + source.redactions.length, 0)
+  const [editing, setEditing] = useState<SkillItem | null>(null)
+  const [manualSkillNames, setManualSkillNames] = useState<Record<LearningMethod, string>>({
+    'conversation-review': '',
+    'engineering-cybernetics': ''
+  })
+  const learningSkills = skills.filter((skill) => learningMethodForSkill(skill) !== null)
+  const learningGroups = mergeGroupsWithTags(
+    (store.groups.learning || []).filter((group) => !['hermes', '用户使用习惯学习'].includes(normalizeTag(group.tag))),
+    LEARNING_SKILL_METHODS.map((definition) => definition.title)
+  )
+  const selectedMethod = LEARNING_SKILL_METHODS.find((definition) => definition.title === selectedGroup)
+  const visibleMethods = selectedGroup === 'all' ? LEARNING_SKILL_METHODS : selectedMethod ? [selectedMethod] : []
+  const selectableSkills = skills.filter((skill) => !isLearningCoreSkill(skill))
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
     await commit({ ...store, groups: { ...store.groups, learning: groups } })
   }
 
   async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
-    const nextTag = renamedGroup.tag
-    setSources((current) =>
-      current.map((source) => ({
-        ...source,
-        tags: replaceTag(source.tags, group.tag, nextTag)
-      }))
-    )
-    await commit({ ...store, groups: { ...store.groups, learning: groups } })
-    if (selectedGroup === group.tag) setSelectedGroup(nextTag)
+    if (LEARNING_SKILL_METHODS.some((definition) => definition.title === group.tag)) {
+      setNotice('内置学习类别不能重命名。')
+      return
+    }
+    await updateGroups(groups)
+    if (selectedGroup === group.tag) setSelectedGroup(renamedGroup.tag)
   }
 
   async function deleteGroup(group: GroupItem): Promise<void> {
-    const tags = collectGroupTags(group)
-    const affectedCount = sources.filter((source) => source.tags.some((tag) => tags.includes(tag))).length
-    if (
-      !confirmDestructiveAction(`确认删除学习分组“${group.name}”？`, [
-        group.children.length > 0 ? `会同时删除 ${group.children.length} 个下级分组。` : '',
-        `会从 ${affectedCount} 条学习样本中移除该分组标签，但不会删除样本内容。`
-      ])
-    ) {
+    if (LEARNING_SKILL_METHODS.some((definition) => definition.title === group.tag)) {
+      setNotice('内置学习类别不能删除。')
       return
     }
-    setSources((current) =>
-      current.map((source) => ({
-        ...source,
-        tags: source.tags.filter((tag) => !tags.includes(tag))
-      }))
-    )
-    await commit({ ...store, groups: { ...store.groups, learning: removeGroupById(store.groups.learning || [], group.id) } })
-    if (tags.includes(selectedGroup)) setSelectedGroup('all')
+    if (!confirmDestructiveAction(`确认删除学习分组“${group.name}”？`, ['只删除分组结构，不会删除本地 Skill。'])) return
+    const nextGroups = removeGroupById(store.groups.learning || [], group.id)
+    await updateGroups(nextGroups)
+    if (selectedGroup === group.tag) setSelectedGroup('all')
   }
 
-  function sourceTags(): string[] {
-    return Array.from(new Set(['hermes', learningMethodTag(method), selectedGroup !== 'all' ? selectedGroup : ''].filter(Boolean)))
+  async function saveMetadata(skill: SkillItem, metadata: SkillMetadata): Promise<void> {
+    await commit({
+      ...store,
+      skillIndex: {
+        ...store.skillIndex,
+        [skill.id]: metadata
+      }
+    })
+    setEditing(null)
+    await scanSkills()
   }
 
-  async function importLearningFiles(files: FileList | null): Promise<void> {
-    if (!files?.length) return
-    const imported: LearningSource[] = []
-    for (const file of Array.from(files)) {
-      const content = await file.text()
-      imported.push(...extractLearningSources(content, file.name, method, sourceTags()))
-    }
-    setSources((current) => [...imported, ...current])
-    setNotice(`已导入 ${imported.length} 条学习样本；默认只学习勾选“满意”的样本。`)
+  async function deleteSkill(skill: SkillItem): Promise<void> {
+    if (!confirmDestructiveAction(`确认删除 Skill“${skill.title}”？`, ['此操作会将该 Skill 的目录移到回收站。'])) return
+    const result = await formatFlow.deleteSkill(skill)
+    setNotice(result.message)
+    if (!result.ok) return
+    const nextSkillIndex = { ...store.skillIndex }
+    delete nextSkillIndex[skill.id]
+    await commit({ ...store, skillIndex: nextSkillIndex })
+    setEditing(null)
+    await scanSkills()
   }
 
-  function importCompletedRuns(): void {
-    const runSources = store.runs
-      .filter((run) => run.status === 'completed' || run.steps.some((step) => step.output.trim()))
-      .map((run) => createLearningSource(run.workflowTitle, '顺序运行记录', runToLearningText(run), run.status === 'completed', method, sourceTags()))
-    setSources((current) => [...runSources, ...current])
-    setNotice(`已导入 ${runSources.length} 条顺序运行记录；已完成记录默认标记为满意。`)
+  function generatedSkillsFor(method: LearningMethod): SkillItem[] {
+    return learningSkills
+      .filter((skill) => learningMethodForSkill(skill) === method && !isLearningCoreSkill(skill))
+      .sort((left, right) => left.title.localeCompare(right.title))
   }
 
-  function toggleSatisfied(id: string): void {
-    setSources((current) => current.map((source) => (source.id === id ? { ...source, satisfied: !source.satisfied } : source)))
-  }
-
-  function removeSource(id: string): void {
-    const source = sources.find((item) => item.id === id)
-    if (!confirmDestructiveAction(`确认移除学习样本“${source?.title || '未命名样本'}”？`, ['此操作会从当前学习样本列表中移除该条记录。'])) return
-    setSources((current) => current.filter((source) => source.id !== id))
-  }
-
-  function toggleCurrentGroup(id: string): void {
-    if (selectedGroup === 'all') return
-    setSources((current) =>
-      current.map((source) =>
-        source.id === id ? { ...source, tags: toggleLearningTag(source.tags, selectedGroup, !source.tags.includes(selectedGroup)) } : source
-      )
-    )
-  }
-
-  function generateDraft(): void {
-    if (satisfiedSources.length === 0 && errorSources.length === 0) {
-      setNotice('请先导入对话样本，并标记满意或保留误差样本。')
+  async function addExistingSkill(method: LearningMethod): Promise<void> {
+    const enteredName = manualSkillNames[method].trim()
+    const lookup = normalizeLearningSkillLookup(enteredName)
+    const skill = selectableSkills.find((item) => [item.name, item.title].some((value) => normalizeLearningSkillLookup(value) === lookup))
+    if (!lookup || !skill) {
+      setNotice('本地没有这个skill，无法添加')
       return
     }
-    const nextDraft = buildLearningSkillDraft(satisfiedSources, method, errorSources)
-    setDraft(nextDraft)
-    setNotice(`Hermes 已基于 ${satisfiedSources.length} 条满意样本和 ${errorSources.length} 条误差样本生成 Skill 草稿，请审查后保存。`)
-  }
+    if (!formatFlow.getSkillDirectorySnapshot || !formatFlow.writeSkillTextFile) {
+      setNotice('当前版本无法更新本地 Skill 的生成来源。')
+      return
+    }
 
-  async function installDraft(): Promise<void> {
-    if (!draft) return
     try {
-      const result = await formatFlow.installGeneratedSkill(draft.skillName, draft.content)
-      setNotice(result.message)
-      if (!result.ok) return
-      const directories = Array.from(
-        new Set([...store.settings.skillDirectories, result.managedDirectory || '', ...(result.installedPaths || [])].filter(Boolean))
-      )
-      await commit({ ...store, settings: { ...store.settings, skillDirectories: directories } })
-      await scanSkills(directories)
+      const snapshot = await formatFlow.getSkillDirectorySnapshot(skill.path)
+      if (snapshot.skillMd.kind !== 'file' || !snapshot.skillMd.content) {
+        setNotice('本地没有这个skill，无法添加')
+        return
+      }
+      const nextContent = setLearningSkillGenerator(snapshot.skillMd.content, method)
+      const result = await formatFlow.writeSkillTextFile({ skillPath: skill.path, relativePath: 'SKILL.md', content: nextContent })
+      if (!result.ok) {
+        setNotice(result.message)
+        return
+      }
+      setManualSkillNames((current) => ({ ...current, [method]: '' }))
+      setNotice(`已将“${skill.title}”加入${learningMethodLabel(method)}生成的 Skill。`)
+      await scanSkills()
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '保存学习 Skill 失败')
+      setNotice(error instanceof Error ? error.message : '关联本地 Skill 失败')
     }
   }
 
@@ -2548,140 +2544,123 @@ function LearningPanel({
     <section className="panel learning-layout">
       <ResourceGroupManager
         title="学习分组"
-        detail="Hermes 学习样本可按分组和小类管理"
-        allLabel="全部学习样本"
-        allCount={sources.length}
+        detail="按学习方法查看基础 Skill 和生成结果"
+        allLabel="全部学习 Skill"
+        allCount={learningSkills.length}
         groups={learningGroups}
         selectedTag={selectedGroup}
-        countForTag={(tag) => sources.filter((source) => source.tags.includes(tag)).length}
-        countForTags={(tags) => sources.filter((source) => source.tags.some((tag) => tags.includes(tag))).length}
+        countForTag={(tag) => learningSkills.filter((skill) => learningSkillTags(skill).includes(tag)).length}
+        countForTags={(tags) => learningSkills.filter((skill) => learningSkillTags(skill).some((tag) => tags.includes(tag))).length}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
         onRename={renameGroup}
         onDelete={deleteGroup}
       />
-      <div className="learning-left">
-        <PanelHeader
-          title="Hermes 学习"
-          detail="从满意对话中提炼你的使用习惯，先隐私清理，再生成可审查的 Skill。"
-        />
-        <div className="import-tools">
-          <label>
-            学习方式
-            <select value={method} onChange={(event) => setMethod(event.target.value as LearningMethod)}>
-              <option value="conversation-review">对话审查：学习标记为“满意”的对话</option>
-              <option value="engineering-cybernetics">钱学森工程控制论：抽象底层逻辑和场景逻辑</option>
-            </select>
-          </label>
-          <input
-            ref={fileInputRef}
-            className="hidden-file-input"
-            type="file"
-            accept=".json,.md,.txt"
-            multiple
-            onChange={(event) => {
-              void importLearningFiles(event.currentTarget.files)
-              event.currentTarget.value = ''
-            }}
-          />
-          <button className="primary-action" type="button" onClick={() => fileInputRef.current?.click()}>
-            导入 JSON / MD 对话
-          </button>
-          <button type="button" onClick={importCompletedRuns}>
-            导入顺序运行记录
-          </button>
-          <div className="learning-stats">
-            <span>当前分组样本：{visibleSources.length}</span>
-            <span>满意：{satisfiedSources.length}</span>
-            <span>误差：{errorSources.length}</span>
-            <span>隐私替换：{redactionCount}</span>
-          </div>
-        </div>
 
-        <div className="card-list">
-          {visibleSources.length === 0 && <EmptyState title="暂无学习样本" detail="导入 JSON / MD 对话，或从顺序运行记录导入。" />}
-          {visibleSources.map((source) => (
-            <article key={source.id} className={source.satisfied ? 'learning-card satisfied' : 'learning-card'}>
-              <div>
-                <strong>{source.title}</strong>
-                <span>{source.sourceName} · {learningMethodLabel(source.method)}</span>
-              </div>
-              <p>{source.sanitizedText.slice(0, 260) || '空样本'}</p>
-              {source.method === 'engineering-cybernetics' && <p>{source.scenarioLogic}</p>}
-              <TagRow tags={[source.satisfied ? '满意' : '未学习', ...source.tags.slice(0, 3), ...source.redactions.slice(0, 2)]} />
-              <div className="inline-actions">
-                <button type="button" onClick={() => toggleSatisfied(source.id)}>
-                  {source.satisfied ? '取消满意' : '标记满意'}
-                </button>
-                {selectedGroup !== 'all' && (
-                  <button type="button" onClick={() => toggleCurrentGroup(source.id)}>
-                    {source.tags.includes(selectedGroup) ? '移出当前分组' : '加入当前分组'}
+      <div className="learning-center">
+        <PanelHeader title="学习方法 Skill" detail="两个内置学习 Skill 与 Skills 管理使用相同的编辑器。" />
+        <div className="learning-method-skills">
+          {visibleMethods.map((definition) => {
+            const skill = skills.find((item) => item.name === definition.name)
+            if (!skill) {
+              return (
+                <article key={definition.method} className="tile-card skill-card learning-method-skill-empty">
+                  <div className="skill-card-main">
+                    <strong>{definition.title}</strong>
+                    <p>本地尚未扫描到此内置学习 Skill。</p>
+                  </div>
+                  <div className="inline-actions skill-card-actions">
+                    <button type="button" onClick={() => void scanSkills()}>
+                      重新扫描
+                    </button>
+                  </div>
+                </article>
+              )
+            }
+            return (
+              <article key={skill.id} className="tile-card skill-card">
+                <div className="skill-card-main">
+                  <strong>{skill.title}</strong>
+                  <p>{skill.summary}</p>
+                </div>
+                <TagRow tags={learningSkillTags(skill)} />
+                <div className="inline-actions skill-card-actions">
+                  <button type="button" onClick={() => setEditing(skill)}>
+                    编辑
                   </button>
-                )}
-                <button className="danger" type="button" onClick={() => removeSource(source.id)}>
-                  移除
-                </button>
-              </div>
-            </article>
-          ))}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void writeClipboardText(skill.contentPreview).then((result) =>
+                        setNotice(result.ok ? `已复制 Skill 内容：${skill.title}` : result.message)
+                      )
+                    }
+                  >
+                    复制内容
+                  </button>
+                </div>
+              </article>
+            )
+          })}
+          {visibleMethods.length === 0 && <EmptyState title="未选择学习方法" detail="请选择“对话审查”或“工程控制论学习用户习惯”。" />}
         </div>
       </div>
 
       <div className="learning-right">
-        <PanelHeader title="Skill 草稿" detail="只使用当前分组中的满意样本；保存前可手动修改 Skill 内容。" />
-        <div className="learning-rules">
-          <strong>{learningMethodLabel(method)}</strong>
-          <span>
-            {method === 'conversation-review'
-              ? '满意对话形成正向策略；不满意对话作为误差样本，形成不要做什么和纠偏规则。'
-              : '先内置工程控制论核心思想，再把每次对话压缩为目标、状态、反馈、控制、约束和场景核心逻辑。'}
-          </span>
-          <span>邮箱、API key/token、密码/密钥字段、本地路径、账号/手机号会被替换为占位符。</span>
+        <PanelHeader title="生成的 Skill" detail="仅显示名称；可把 Skills 管理中已有的本地 Skill 手动加入。" />
+        <div className="learning-generated-sections">
+          {visibleMethods.map((definition) => {
+            const generatedSkills = generatedSkillsFor(definition.method)
+            return (
+              <section key={definition.method} className="learning-generated-section">
+                <header>
+                  <strong>{definition.title}</strong>
+                  <span>{generatedSkills.length} 个</span>
+                </header>
+                <div className="learning-generated-add">
+                  <input
+                    list="learning-skill-options"
+                    value={manualSkillNames[definition.method]}
+                    onChange={(event) => setManualSkillNames((current) => ({ ...current, [definition.method]: event.target.value }))}
+                    placeholder="输入已有本地 Skill 名称"
+                    aria-label={`${definition.title}生成的 Skill 名称`}
+                  />
+                  <button type="button" onClick={() => void addExistingSkill(definition.method)}>
+                    添加
+                  </button>
+                </div>
+                <div className="learning-generated-list">
+                  {generatedSkills.length > 0 ? (
+                    generatedSkills.map((skill) => <span key={skill.id}>{skill.title}</span>)
+                  ) : (
+                    <span className="muted">暂无生成的 Skill</span>
+                  )}
+                </div>
+              </section>
+            )
+          })}
         </div>
-        <button className="primary-action" type="button" disabled={visibleSources.length === 0} onClick={generateDraft}>
-          生成 Skill 草稿
-        </button>
-        {draft ? (
-          <>
-            <div className="two-field-grid">
-              <label>
-                Skill 目录名
-                <input value={draft.skillName} onChange={(event) => setDraft({ ...draft, skillName: event.target.value })} />
-              </label>
-              <label>
-                标题
-                <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
-              </label>
-            </div>
-            <label>
-              描述
-              <input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} />
-            </label>
-            <label className="grow">
-              SKILL.md 草稿
-              <textarea
-                className="content-editor"
-                value={draft.content}
-                onChange={(event) => setDraft({ ...draft, content: event.target.value })}
-              />
-            </label>
-            <div className="inline-actions">
-              <button className="primary-action" type="button" onClick={() => void installDraft()}>
-                保存为 Skill
-              </button>
-              <button type="button" onClick={() => setDraft(null)}>
-                丢弃草稿
-              </button>
-            </div>
-          </>
-        ) : (
-          <EmptyState title="尚未生成草稿" detail="标记满意样本后点击“生成 Skill 草稿”。" />
-        )}
+        <datalist id="learning-skill-options">
+          {selectableSkills.map((skill) => (
+            <option key={skill.id} value={skill.name} label={skill.title} />
+          ))}
+        </datalist>
       </div>
+
+      {editing && (
+        <SkillEditorModal
+          skill={editing}
+          close={() => {
+            setEditing(null)
+            void scanSkills()
+          }}
+          save={saveMetadata}
+          deleteSkill={deleteSkill}
+        />
+      )}
     </section>
   )
 }
-
 function SettingsPanel({
   store,
   paths,
@@ -5713,13 +5692,63 @@ function sanitizeLearningText(value: string): { text: string; redactions: string
 }
 
 function learningMethodLabel(method: LearningMethod): string {
-  return method === 'engineering-cybernetics' ? '钱学森工程控制论' : '对话审查'
+  return method === 'engineering-cybernetics' ? '工程控制论学习用户习惯' : '对话审查'
 }
 
 function learningMethodTag(method: LearningMethod): string {
-  return method === 'engineering-cybernetics' ? '钱学森工程控制论' : '对话审查'
+  return method === 'engineering-cybernetics' ? '工程控制论学习用户习惯' : '对话审查'
 }
 
+function isLearningCoreSkill(skill: SkillItem): boolean {
+  return LEARNING_SKILL_METHODS.some((definition) => normalizeLearningSkillLookup(skill.name) === normalizeLearningSkillLookup(definition.name))
+}
+
+function learningMethodForSkill(skill: SkillItem): LearningMethod | null {
+  const coreDefinition = LEARNING_SKILL_METHODS.find(
+    (definition) => normalizeLearningSkillLookup(skill.name) === normalizeLearningSkillLookup(definition.name)
+  )
+  if (coreDefinition) return coreDefinition.method
+
+  const generatedBy = skill.contentPreview.match(/^\s*(?:generate by|generate_by)\s*:\s*([^\r\n]+)\s*$/im)?.[1] || ''
+  const generatedDefinition = generatedBy
+    .split(',')
+    .map((value) => normalizeLearningSkillLookup(value.replace(/^['"]|['"]$/g, '')))
+    .map((value) => LEARNING_SKILL_METHODS.find((definition) => definition.method === value))
+    .find(Boolean)
+  if (generatedDefinition) return generatedDefinition.method
+
+  return LEARNING_SKILL_METHODS.find((definition) => skill.tags.includes(definition.title))?.method || null
+}
+
+function learningSkillTags(skill: SkillItem): string[] {
+  const method = learningMethodForSkill(skill)
+  return method ? mergeTags(skill.tags, [learningMethodTag(method)]) : skill.tags
+}
+
+function normalizeLearningSkillLookup(value: string): string {
+  return value.trim().toLocaleLowerCase()
+}
+
+function setLearningSkillGenerator(content: string, method: LearningMethod): string {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+  if (!normalized.startsWith('---\n')) {
+    return `---\ngenerate by: ${method}\n---\n\n${normalized.trimStart()}`
+  }
+
+  const closingMarkerIndex = normalized.indexOf('\n---', 4)
+  if (closingMarkerIndex < 0) {
+    return `---\ngenerate by: ${method}\n---\n\n${normalized}`
+  }
+  const frontmatter = normalized.slice(4, closingMarkerIndex)
+  const lines = frontmatter.trim() ? frontmatter.split('\n') : []
+  const generatorIndex = lines.findIndex((line) => /^\s*(?:generate by|generate_by)\s*:/i.test(line))
+  if (generatorIndex >= 0) {
+    lines[generatorIndex] = `generate by: ${method}`
+  } else {
+    lines.push(`generate by: ${method}`)
+  }
+  return `---\n${lines.join('\n')}\n---${normalized.slice(closingMarkerIndex + 4)}`
+}
 function toggleLearningTag(tags: string[], tag: string, enabled: boolean): string[] {
   const normalizedTag = normalizeTag(tag)
   const normalizedTags = Array.from(new Set(tags.map(normalizeTag).filter(Boolean)))
@@ -5831,7 +5860,7 @@ function buildLearningSkillDraft(sources: LearningSource[], method: LearningMeth
     method === 'engineering-cybernetics'
       ? [
           '',
-          '## 钱学森工程控制论核心思想',
+          '## 工程控制论学习用户习惯核心思想',
           '- 把任务看成受目标、状态、反馈、控制动作、约束和扰动共同作用的工程系统。',
           '- 先建立可观察状态，再通过反馈闭环持续修正控制动作，而不是一次性给出静态答案。',
           '- 优先识别系统边界、输入输出、稳定性条件、误差来源和停止条件。',
@@ -5856,6 +5885,7 @@ function buildLearningSkillDraft(sources: LearningSource[], method: LearningMeth
     '---',
     `name: ${skillName}`,
     `description: ${description}`,
+    `generate by: ${method}`,
     '---',
     '',
     `# ${title}`,

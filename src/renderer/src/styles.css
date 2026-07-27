@@ -1020,28 +1020,93 @@ label {
 
 .learning-layout {
   display: grid;
-  grid-template-columns: 300px minmax(340px, 460px) 1fr;
+  grid-template-columns: 280px minmax(320px, 460px) minmax(360px, 1fr);
+  min-height: 0;
 }
 
-.learning-left,
+.learning-center,
 .learning-right {
+  min-width: 0;
   min-height: 0;
   padding: 18px;
+  overflow-y: auto;
 }
 
-.learning-left {
+.learning-center {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  align-content: start;
   gap: 14px;
   border-right: 1px solid var(--line);
 }
 
 .learning-right {
   display: grid;
-  grid-template-rows: auto auto auto auto auto 1fr auto;
+  align-content: start;
   gap: 14px;
 }
 
+.learning-method-skills,
+.learning-generated-sections {
+  display: grid;
+  gap: 12px;
+}
+
+.learning-method-skills .skill-card {
+  min-height: 210px;
+}
+
+.learning-method-skill-empty {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.learning-generated-section {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.learning-generated-section > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.learning-generated-section > header span,
+.learning-generated-list .muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.learning-generated-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.learning-generated-add input {
+  min-width: 0;
+}
+
+.learning-generated-list {
+  display: grid;
+  gap: 6px;
+}
+
+.learning-generated-list > span:not(.muted) {
+  min-width: 0;
+  padding: 8px 10px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-strong);
+}
 .learning-stats,
 .learning-rules {
   display: flex;

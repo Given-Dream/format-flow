@@ -52,5 +52,22 @@ jobs:
             }
           }
 
+          gh release view $env:RELEASE_TAG --repo $env:GH_REPO *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:RELEASE_TAG --repo $env:GH_REPO --verify-tag --draft `
+              --title "Format Flow $env:RELEASE_TAG" `
+              --notes "Windows installer and update metadata for Format Flow $env:RELEASE_TAG."
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to create release for $env:RELEASE_TAG"
+            }
+          }
+
           gh release upload $env:RELEASE_TAG $installer $blockmap $metadata --repo $env:GH_REPO --clobber
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to upload release assets for $env:RELEASE_TAG"
+          }
+
           gh release edit $env:RELEASE_TAG --repo $env:GH_REPO --draft=false --latest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to publish release $env:RELEASE_TAG"
+          }

@@ -21,6 +21,7 @@ import {
   createRunSteps,
   createWorkflow,
   defaultStore,
+  deduplicateSkillGroupTags,
   groupFromTag,
   matchesTextAndTags,
   mergeSkillMetadata,
@@ -438,7 +439,8 @@ export function App(): JSX.Element {
 
   const skills = useMemo(() => {
     if (!store) return []
-    return rawSkills.map((skill) => mergeSkillMetadata(skill, store.skillIndex[skill.id]))
+    const manualGroupTags = flattenGroups(store.groups.skills).map((group) => group.tag)
+    return rawSkills.map((skill) => mergeSkillMetadata(skill, store.skillIndex[skill.id], manualGroupTags))
   }, [rawSkills, store])
   const activeTabMeta = tabs.find((tab) => tab.id === activeTab) || tabs[0]
 
@@ -1011,7 +1013,7 @@ function SkillPanel({
   const [githubBusy, setGithubBusy] = useState(false)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const [skillClipboard, setSkillClipboard] = useState<SkillItem | null>(null)
-  const skillGroups = mergeGroupsWithTags(store.groups.skills, allTags(skills))
+  const skillGroups = mergeSkillGroups(store.groups.skills, skills)
   const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
   const visibleSkills = skills.filter((skill) => matchesTextAndTags(skill, query, effectiveTags))
   const activeSkillGroupTag = selectedGroup === 'all' ? '' : selectedGroup
@@ -1021,7 +1023,7 @@ function SkillPanel({
       ...store,
       skillIndex: {
         ...store.skillIndex,
-        [skill.id]: metadata
+        [skill.id]: { ...metadata, assignedTags: metadata.tags }
       }
     })
     setEditing(null)
@@ -1068,7 +1070,8 @@ function SkillPanel({
       if (!tags.includes(group.tag)) continue
       nextSkillIndex[skill.id] = {
         ...metadata,
-        tags: replaceTag(tags, group.tag, nextTag)
+        tags: replaceTag(tags, group.tag, nextTag),
+        assignedTags: replaceTag(metadata.assignedTags || [], group.tag, nextTag)
       }
     }
     await commit({
@@ -1095,7 +1098,8 @@ function SkillPanel({
       const metadata = nextSkillIndex[skill.id] || { tags: skill.tags }
       nextSkillIndex[skill.id] = {
         ...metadata,
-        tags: (metadata.tags || skill.tags).filter((tag) => !tags.includes(tag))
+        tags: (metadata.tags || skill.tags).filter((tag) => !tags.includes(tag)),
+        assignedTags: (metadata.assignedTags || []).filter((tag) => !tags.includes(tag))
       }
     }
     await commit({
@@ -1821,7 +1825,7 @@ function WorkflowPanel({
       {pickerOpen === 'skill' && (
         <ResourcePickerModal
           title="选择 Skill 节点"
-          groups={mergeGroupsWithTags(store.groups.skills, allTags(skills))}
+          groups={mergeSkillGroups(store.groups.skills, skills)}
           allLabel="全部 Skill"
           items={skills.map(skillToPickerItem)}
           selectedId={skillToAdd}
@@ -2482,7 +2486,7 @@ function LearningPanel({
       ...store,
       skillIndex: {
         ...store.skillIndex,
-        [skill.id]: metadata
+        [skill.id]: { ...metadata, assignedTags: metadata.tags }
       }
     })
     setEditing(null)
@@ -3842,7 +3846,8 @@ function LauncherModal({
         : allTags(store.workflows)
   const quickGroupSource =
     mode === 'prompt' ? store.groups.prompts : mode === 'skill' ? store.groups.skills : store.groups.quickCalls || []
-  const quickGroups = filterGroupsWithTags(mergeGroupsWithTags(quickGroupSource, quickGroupTags), quickGroupTags)
+  const mergedQuickGroups = mode === 'skill' ? mergeSkillGroups(quickGroupSource, skills) : mergeGroupsWithTags(quickGroupSource, quickGroupTags)
+  const quickGroups = filterGroupsWithTags(mergedQuickGroups, quickGroupTags)
   const groupOptions = flattenGroups(quickGroups)
   const selectedQuickGroup = selectedGroup === 'all' ? undefined : findGroupByTag(quickGroups, selectedGroup)
   const selectedQuickTags = selectedQuickGroup ? collectGroupTags(selectedQuickGroup) : selectedGroup === 'all' ? [] : [selectedGroup]
@@ -4795,6 +4800,10 @@ function mergeGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {
   return [...uniqueGroups, ...missing]
 }
 
+function mergeSkillGroups(groups: GroupItem[], skills: SkillItem[]): GroupItem[] {
+  return mergeGroupsWithTags(groups, deduplicateSkillGroupTags(skills, groups))
+}
+
 function filterGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {
   const allowedTags = new Set(tags)
   return groups
@@ -5097,7 +5106,8 @@ function addTagToSkillIndex(skillIndex: Record<string, SkillMetadata>, skills: S
     const metadata = nextSkillIndex[skill.id]
     nextSkillIndex[skill.id] = {
       ...metadata,
-      tags: mergeTags(metadata?.tags || skill.tags, [normalizedTag])
+      tags: mergeTags(metadata?.tags || skill.tags, [normalizedTag]),
+      assignedTags: mergeTags(metadata?.assignedTags || [], [normalizedTag])
     }
   }
   return nextSkillIndex

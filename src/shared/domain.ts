@@ -6,6 +6,7 @@ import type {
   ResourceGroups,
   RunStep,
   SkillItem,
+  SkillMetadata,
   Workflow,
   WorkflowEdge,
   WorkflowNode
@@ -528,7 +529,7 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
     .map(normalizeTag)
     .filter(Boolean)
     .map((tag) => LEARNING_GENERATOR_TAG_LABELS[tag] || tag)
-  const tags = Array.from(new Set([...inferSkillTags(name, filePath), ...generatedByTags]))
+  const tags = Array.from(new Set(generatedByTags))
 
   return {
     id: skillIdFromPath(filePath),
@@ -545,8 +546,19 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
   }
 }
 
-export function mergeSkillMetadata(skill: SkillItem, metadata?: { tags?: string[]; summaryOverride?: string; favorite?: boolean; variables?: string[] }): SkillItem {
-  const metadataTags = metadata?.tags?.map(normalizeTag).filter(Boolean) || []
+export function mergeSkillMetadata(
+  skill: SkillItem,
+  metadata?: Partial<SkillMetadata>,
+  manualGroupTags: string[] = []
+): SkillItem {
+  const manualTags = new Set(manualGroupTags.map(normalizeTag).filter(Boolean))
+  const assignedTags = new Set(metadata?.assignedTags?.map(normalizeTag).filter(Boolean) || [])
+  const legacyInferredTags = new Set(inferLegacySkillTags(skill.name, skill.path))
+  const metadataTags =
+    metadata?.tags
+      ?.map(normalizeTag)
+      .filter(Boolean)
+      .filter((tag) => manualTags.has(tag) || assignedTags.has(tag) || !legacyInferredTags.has(tag)) || []
   const learningGeneratorTags = skill.tags.map(normalizeTag).filter((tag) => LEARNING_GENERATOR_TAGS.has(tag))
   const summaryOverride = TEMPLATE_MANAGED_SKILL_NAMES.has(skill.name) ? '' : metadata?.summaryOverride?.trim()
   return {
@@ -558,6 +570,39 @@ export function mergeSkillMetadata(skill: SkillItem, metadata?: { tags?: string[
   }
 }
 
+export function deduplicateSkillGroupTags(skills: SkillItem[], manualGroups: GroupItem[] = []): string[] {
+  const manualTags = new Set(flattenGroupItems(manualGroups).map((group) => normalizeTag(group.tag)).filter(Boolean))
+  const membersByTag = new Map<string, Set<string>>()
+
+  for (const skill of skills) {
+    for (const tag of new Set(skill.tags.map(normalizeTag).filter(Boolean))) {
+      const members = membersByTag.get(tag) || new Set<string>()
+      members.add(skill.id)
+      membersByTag.set(tag, members)
+    }
+  }
+
+  const membershipSignature = (members: Set<string>): string => JSON.stringify(Array.from(members).sort())
+  const claimedSignatures = new Set(
+    Array.from(manualTags)
+      .map((tag) => membersByTag.get(tag))
+      .filter((members): members is Set<string> => Boolean(members?.size))
+      .map(membershipSignature)
+  )
+  const uniqueAutomaticTags: string[] = []
+
+  const preferredAutomaticTags = Array.from(membersByTag.keys())
+    .filter((tag) => !manualTags.has(tag))
+    .sort((left, right) => skillGroupTagPriority(left) - skillGroupTagPriority(right) || left.localeCompare(right))
+
+  for (const tag of preferredAutomaticTags) {
+    const signature = membershipSignature(membersByTag.get(tag)!)
+    if (claimedSignatures.has(signature)) continue
+    claimedSignatures.add(signature)
+    uniqueAutomaticTags.push(tag)
+  }
+  return uniqueAutomaticTags
+}
 export function createRunSteps(workflow: Workflow): RunStep[] {
   return workflow.nodes.map((node) => ({
     id: newId('step'),
@@ -911,7 +956,12 @@ function trimSummary(value: string): string {
   return singleLine.length > 180 ? `${singleLine.slice(0, 177)}...` : singleLine
 }
 
-function inferSkillTags(name: string, filePath: string): string[] {
+function skillGroupTagPriority(tag: string): number {
+  if (LEARNING_GENERATOR_TAGS.has(tag)) return 0
+  return /[\u3400-\u9fff]/.test(tag) ? 1 : 2
+}
+
+function inferLegacySkillTags(name: string, filePath: string): string[] {
   const raw = `${name} ${filePath}`
   const tags = new Set<string>()
   for (const token of raw.split(/[^A-Za-z0-9\u4e00-\u9fa5]+/)) {

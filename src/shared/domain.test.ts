@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   approvalNode,
   buildExecutionPrompt,
+  deduplicateSkillGroupTags,
   createMcpServer,
   clonePromptToGroup,
   createPrompt,
@@ -94,6 +95,67 @@ describe('skill parsing', () => {
     expect(skill.source).toBe('codex')
   })
 
+  it('does not create Skill tags from the installation path or Skill name', () => {
+    const skill = parseSkillMarkdown(
+      ['---', 'name: chapter-agent', 'description: Path noise test.', '---', '# Chapter Agent'].join('\n'),
+      'C:/Users/admin/AppData/Roaming/format-flow/managed-skills/chapter/agent/SKILL.md'
+    )
+
+    expect(skill.tags).toEqual([])
+  })
+
+  it('removes legacy path tags while preserving tags backed by manual groups', () => {
+    const skill = parseSkillMarkdown(
+      ['---', 'name: chapter-agent', 'description: Path noise test.', '---', '# Chapter Agent'].join('\n'),
+      'C:/Users/admin/AppData/Roaming/format-flow/managed-skills/chapter/agent/SKILL.md'
+    )
+    const merged = mergeSkillMetadata(skill, { tags: ['chapter', 'agent', 'users', '论文写作'] }, ['论文写作'])
+
+    expect(merged.tags).toEqual(['论文写作'])
+  })
+
+  it('preserves an explicitly assigned tag even when it matches a path token', () => {
+    const skill = parseSkillMarkdown('# Agent', 'C:/Users/admin/skills/agent/SKILL.md')
+    const merged = mergeSkillMetadata(skill, { tags: ['agent'], assignedTags: ['agent'] })
+
+    expect(merged.tags).toEqual(['agent'])
+  })
+
+  it('prefers a learning source label when duplicate automatic groups contain the same Skill', () => {
+    const skill = {
+      ...parseSkillMarkdown('# Review', 'D:/skills/review/SKILL.md'),
+      id: 'skill:review',
+      tags: ['learning', '对话审查']
+    }
+
+    expect(deduplicateSkillGroupTags([skill])).toEqual(['对话审查'])
+  })
+
+  it('deduplicates automatic groups with identical Skill membership', () => {
+    const first = {
+      ...parseSkillMarkdown('# First', 'D:/skills/first/SKILL.md'),
+      id: 'skill:first',
+      tags: ['alpha', 'alias']
+    }
+    const second = {
+      ...parseSkillMarkdown('# Second', 'D:/skills/second/SKILL.md'),
+      id: 'skill:second',
+      tags: ['alpha', 'alias']
+    }
+
+    expect(deduplicateSkillGroupTags([first, second])).toEqual(['alias'])
+  })
+
+  it('keeps a manual group when an automatic tag has the same Skill membership', () => {
+    const skill = {
+      ...parseSkillMarkdown('# First', 'D:/skills/first/SKILL.md'),
+      id: 'skill:first',
+      tags: ['alpha', 'alias']
+    }
+    const manualGroups = [{ id: 'group_alias', name: 'Alias', tag: 'alias', children: [] }]
+
+    expect(deduplicateSkillGroupTags([skill], manualGroups)).toEqual([])
+  })
   it('classifies generated learning Skills and preserves the category after metadata is merged', () => {
     const skill = parseSkillMarkdown(
       [

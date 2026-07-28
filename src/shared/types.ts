@@ -58,6 +58,7 @@ export type GithubSearchResult = {
 
 export type SkillMetadata = {
   tags: string[]
+  assignedTags?: string[]
   summaryOverride?: string
   favorite?: boolean
   variables?: string[]

@@ -1290,8 +1290,40 @@ label {
 }
 
 .runner-right {
-  overflow: auto;
-  grid-template-rows: auto minmax(180px, 1fr) auto minmax(150px, 0.8fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.runner-content-scroll {
+  display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
+  gap: 18px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.runner-field {
+  min-height: max-content;
+}
+
+.runner-task-field .content-editor {
+  height: 220px;
+  min-height: 180px;
+}
+
+.runner-output-field textarea {
+  height: 160px;
+  min-height: 140px;
+}
+
+.runner-actions {
+  flex-shrink: 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
 }
 
 .run-card {
@@ -1353,7 +1385,7 @@ label {
 .review-dialog-panel {
   display: grid;
   gap: 10px;
-  min-height: 0;
+  min-height: max-content;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1373,13 +1405,23 @@ label {
 .review-thread {
   display: grid;
   gap: 8px;
-  max-height: 180px;
+  min-height: 56px;
+  max-height: 140px;
   overflow: auto;
   padding: 10px;
   color: var(--muted);
   background: var(--panel-strong);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+}
+
+.review-dialog-panel > textarea {
+  height: 100px;
+  min-height: 96px;
+}
+
+.review-dialog-actions {
+  justify-content: flex-end;
 }
 
 .review-message {

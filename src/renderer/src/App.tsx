@@ -2180,47 +2180,49 @@ function RunnerPanel({
         {currentStep && currentNode ? (
           <>
             <PanelHeader title={currentStep.title} detail={currentStep.summary} />
-            <label className="grow">
-              待执行任务
-              <textarea className="content-editor readonly" readOnly value={executionPrompt} />
-            </label>
-            <div className="review-dialog-panel">
-              <div className="review-dialog-header">
-                <strong>人工审查意见</strong>
-                <span>第一次结果不满意时，在这里继续给已连接 AI 发修改意见。</span>
+            <div className="runner-content-scroll">
+              <label className="runner-field runner-task-field">
+                待执行任务
+                <textarea className="content-editor readonly" readOnly value={executionPrompt} />
+              </label>
+              <div className="review-dialog-panel">
+                <div className="review-dialog-header">
+                  <strong>人工审查意见</strong>
+                  <span>第一次结果不满意时，在这里继续给已连接 AI 发修改意见。</span>
+                </div>
+                <div className="review-thread">
+                  {reviewDialog.length > 0 ? (
+                    reviewDialog.map((message) => (
+                      <div key={message.id} className={`review-message ${message.role}`}>
+                        <strong>{message.role === 'human' ? '人工审查' : '系统'}</strong>
+                        <p>{message.text}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <span>暂无审查对话。节点输出会由插件同步到下方文本框，也可手动编辑。</span>
+                  )}
+                </div>
+                <textarea
+                  value={reviewDraft}
+                  onChange={(event) => setReviewDraft(event.target.value)}
+                  placeholder="输入给 AI 的追加审查意见，例如：结果不够具体，请补充可执行步骤和风险说明。"
+                />
+                <div className="inline-actions review-dialog-actions">
+                  <button type="button" onClick={() => void sendReviewMessage()}>
+                    发送审查意见
+                  </button>
+                </div>
               </div>
-              <div className="review-thread">
-                {reviewDialog.length > 0 ? (
-                  reviewDialog.map((message) => (
-                    <div key={message.id} className={`review-message ${message.role}`}>
-                      <strong>{message.role === 'human' ? '人工审查' : '系统'}</strong>
-                      <p>{message.text}</p>
-                    </div>
-                  ))
-                ) : (
-                  <span>暂无审查对话。节点输出会由插件同步到下方文本框，也可手动编辑。</span>
-                )}
-              </div>
-              <textarea
-                value={reviewDraft}
-                onChange={(event) => setReviewDraft(event.target.value)}
-                placeholder="输入给 AI 的追加审查意见，例如：结果不够具体，请补充可执行步骤和风险说明。"
-              />
-              <div className="inline-actions">
-                <button type="button" onClick={() => void sendReviewMessage()}>
-                  发送审查意见
-                </button>
-              </div>
+              <label className="runner-field runner-output-field">
+                节点输出
+                <textarea
+                  value={outputDraft}
+                  onChange={(event) => setOutputDraft(event.target.value)}
+                  placeholder="浏览器插件同步的 AI 输出会写入这里；也可以人工修订后再标记完成。"
+                />
+              </label>
             </div>
-            <label className="grow">
-              节点输出
-              <textarea
-                value={outputDraft}
-                onChange={(event) => setOutputDraft(event.target.value)}
-                placeholder="浏览器插件同步的 AI 输出会写入这里；也可以人工修订后再标记完成。"
-              />
-            </label>
-            <div className="inline-actions">
+            <div className="inline-actions runner-actions">
               <button type="button" onClick={() => void sendCurrentTask()}>
                 发送当前任务
               </button>

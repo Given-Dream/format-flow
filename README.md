@@ -6,7 +6,7 @@ Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工�
 
 ## 下载与安装
 
-- [下载 Format Flow v0.1.35 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.35/Format-Flow-Setup-0.1.35.exe)
+- [下载 Format Flow v0.1.36 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.35/Format-Flow-Setup-0.1.36.exe)
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
 - Release 同时提供 `.blockmap` 和 `latest.yml`，便于分发安装包及其版本元数据。
@@ -23,13 +23,13 @@ Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工�
 5. 遇到 `【请填写：xx】` 或 `{{variable}}` 时，先完成变量表单再复制或运行。
 6. 使用剪贴板或浏览器插件连接 AI 网页，并通过本地/Git 备份长期保存数据。
 
-## 从 v0.1.4 到当前版本
+## 从 v0.1.1 到当前版本
 
 README 已按当前代码重写，不再沿用 `v0.1.4` 时仅覆盖基础功能的说明。后续版本的主要演进如下：
 
 | 版本阶段 | 主要变化 |
 | --- | --- |
-| `v0.1.5` - `v0.1.12` | 在安装器和界面展示版本号；加入分组重命名、同名隔离、子级归类、空分组过滤、条目复制粘贴、父级汇总、折叠和拖拽层级。 |
+| `v0.1.1` - `v0.1.12` | 在安装器和界面展示版本号；加入分组重命名、同名隔离、子级归类、空分组过滤、条目复制粘贴、父级汇总、折叠和拖拽层级。 |
 | `v0.1.13` - `v0.1.20` | 加入鼠标侧键快捷调用、手动创建 Skill、响应式操作布局、带标签导出、快捷窗口定位修复和自定义变量填充。 |
 | `v0.1.21` - `v0.1.26` | 快捷调用支持多级分组和记忆上次位置；改为安全的剪贴板复制；Markdown 可按条目恢复；删除操作增加确认；Skill 与工作流补齐复制、收藏、编辑和导出。 |
 | `v0.1.27` - `v0.1.32` | 工作流改用可检索的分层资源选择器，Prompt、Skill、MCP 成为真实节点；节点变量会在运行前填充；修复重复弹窗；Skill 编辑器支持完整目录预览与维护。 |

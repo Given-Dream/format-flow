@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   approvalNode,
   buildExecutionPrompt,
+  buildSmartSkillGroups,
   deduplicateSkillGroupTags,
   createMcpServer,
   clonePromptToGroup,
@@ -101,17 +102,87 @@ describe('skill parsing', () => {
       'C:/Users/admin/AppData/Roaming/format-flow/managed-skills/chapter/agent/SKILL.md'
     )
 
-    expect(skill.tags).toEqual([])
+    expect(skill.tags).toEqual(['其他 skill'])
+    expect(skill.tags).not.toEqual(expect.arrayContaining(['chapter', 'agent', 'users', 'appdata']))
   })
 
-  it('removes legacy path tags while preserving tags backed by manual groups', () => {
+  it.each([
+    ['run-experiment', 'Deploy and run ML experiments on a remote GPU server.', '实验运行'],
+    ['paper-write', 'Draft a LaTeX paper section by section from an outline.', '论文写作'],
+    ['formula-derivation', 'Structure and derive research formulas from assumptions.', '公式证明'],
+    ['imagegen', 'Generate or edit raster images and illustrations.', '图像设计'],
+    ['skill-installer', 'Install Codex skills from a curated list or GitHub repository.', 'skill 与插件'],
+    ['fiscaliste', 'Fiscalité des particuliers au Luxembourg.', '财务合规'],
+    ['ablation-planner', "Design ablations from a reviewer's perspective.", '结果分析'],
+    ['grant-proposal', 'Draft a funding application from research ideas and literature.', '基金申请'],
+    ['research-review', 'Get a critical reviewer assessment of research ideas.', '学术审查'],
+    ['research-refine-pipeline', 'Run an end-to-end research planning pipeline.', '工作流自动化'],
+    ['paper-writing', 'Orchestrate paper figures and drafting into a submission-ready PDF.', '论文写作']
+  ])('classifies %s from Skill semantics', (name, description, expectedTag) => {
+    const skill = parseSkillMarkdown(
+      ['---', `name: ${name}`, `description: ${description}`, '---', '', `# ${name}`].join('\n'),
+      `C:/unrelated/location/${name}/SKILL.md`
+    )
+
+    expect(skill.tags).toContain(expectedTag)
+  })
+
+  it('uses explicit frontmatter categories and ignores generic Skill tags', () => {
+    const skill = parseSkillMarkdown(
+      [
+        '---',
+        'name: custom-tool',
+        'description: A reusable custom tool.',
+        'category: 团队工具',
+        'tags: [GitHub, codex, skill]',
+        '---',
+        '',
+        '# Custom Tool'
+      ].join('\n'),
+      'D:/skills/custom-tool/SKILL.md'
+    )
+
+    expect(skill.tags).toEqual(['团队工具', 'github'])
+  })
+
+  it('builds stable parent and child groups for semantic Skill categories', () => {
+    const skills = [
+      parseSkillMarkdown(
+        ['---', 'name: format-flow-development', 'description: Develop an Electron software application.', '---'].join('\n'),
+        'D:/skills/format-flow-development/SKILL.md'
+      ),
+      parseSkillMarkdown(
+        ['---', 'name: arxiv', 'description: Search academic literature and related work.', '---'].join('\n'),
+        'D:/skills/arxiv/SKILL.md'
+      )
+    ]
+    const groups = buildSmartSkillGroups(skills)
+    const codeGroup = groups.find((group) => group.tag === '代码工程')
+    const writingGroup = groups.find((group) => group.tag === '科研写作')
+
+    expect(codeGroup?.children.map((group) => group.tag)).toContain('代码实现')
+    expect(writingGroup?.children.map((group) => group.tag)).toContain('文献选题')
+    expect(buildSmartSkillGroups(skills)).toEqual(groups)
+  })
+
+  it('removes legacy path tags while preserving custom manual groups', () => {
     const skill = parseSkillMarkdown(
       ['---', 'name: chapter-agent', 'description: Path noise test.', '---', '# Chapter Agent'].join('\n'),
       'C:/Users/admin/AppData/Roaming/format-flow/managed-skills/chapter/agent/SKILL.md'
     )
-    const merged = mergeSkillMetadata(skill, { tags: ['chapter', 'agent', 'users', '论文写作'] }, ['论文写作'])
+    const merged = mergeSkillMetadata(skill, { tags: ['chapter', 'agent', 'users', '团队规范'] }, ['团队规范'])
 
-    expect(merged.tags).toEqual(['论文写作'])
+    expect(merged.tags).toEqual(['其他 skill', '团队规范'])
+  })
+
+  it('replaces legacy automatic categories with a fresh semantic category', () => {
+    const skill = parseSkillMarkdown(
+      ['---', 'name: arxiv', 'description: Search academic literature and related work.', '---', '# arXiv'].join('\n'),
+      'D:/skills/arxiv/SKILL.md'
+    )
+    const merged = mergeSkillMetadata(skill, { tags: ['论文写作'] }, ['论文写作'])
+
+    expect(merged.tags).toEqual(['文献选题'])
   })
 
   it('preserves an explicitly assigned tag even when it matches a path token', () => {

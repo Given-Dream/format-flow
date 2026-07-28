@@ -516,6 +516,177 @@ const LEARNING_GENERATOR_TAG_LABELS: Record<string, string> = {
 }
 const LEARNING_GENERATOR_TAGS = new Set(Object.values(LEARNING_GENERATOR_TAG_LABELS).map(normalizeTag))
 const TEMPLATE_MANAGED_SKILL_NAMES = new Set(['engineering-cybernetics-user-habit-learning'])
+
+type SmartSkillGroupDefinition = {
+  name: string
+  tag: string
+  children: Array<{ name: string; tag: string }>
+}
+
+const SMART_SKILL_GROUP_DEFINITIONS: SmartSkillGroupDefinition[] = [
+  {
+    name: '代码工程',
+    tag: '代码工程',
+    children: [
+      { name: '代码实现', tag: '代码实现' },
+      { name: '审查测试', tag: '审查测试' },
+      { name: 'Skill 与插件', tag: 'skill 与插件' },
+      { name: '文档处理', tag: '文档处理' }
+    ]
+  },
+  {
+    name: '科研实验',
+    tag: '科研实验',
+    children: [
+      { name: '实验运行', tag: '实验运行' },
+      { name: '结果分析', tag: '结果分析' }
+    ]
+  },
+  {
+    name: '科研写作',
+    tag: '科研写作',
+    children: [
+      { name: '文献选题', tag: '文献选题' },
+      { name: '公式证明', tag: '公式证明' },
+      { name: '基金申请', tag: '基金申请' },
+      { name: '论文写作', tag: '论文写作' },
+      { name: '学术审查', tag: '学术审查' }
+    ]
+  },
+  {
+    name: '内容创作',
+    tag: '内容创作',
+    children: [
+      { name: '图像设计', tag: '图像设计' },
+      { name: '图表可视化', tag: '图表可视化' },
+      { name: '演示发布', tag: '演示发布' },
+      { name: '内容运营', tag: '内容运营' }
+    ]
+  },
+  {
+    name: '自动化集成',
+    tag: '自动化集成',
+    children: [
+      { name: '工作流自动化', tag: '工作流自动化' },
+      { name: '通知采集', tag: '通知采集' }
+    ]
+  },
+  {
+    name: '学习分析',
+    tag: '学习分析',
+    children: [
+      { name: '对话审查', tag: '对话审查' },
+      { name: '用户习惯学习', tag: '用户习惯学习' },
+      { name: '思维方法', tag: '思维方法' }
+    ]
+  },
+  {
+    name: '行业专业',
+    tag: '行业专业',
+    children: [{ name: '财务合规', tag: '财务合规' }]
+  },
+  { name: '其他 Skill', tag: '其他 skill', children: [] }
+]
+const SMART_SKILL_CATEGORY_TAGS = new Set(
+  SMART_SKILL_GROUP_DEFINITIONS.flatMap((group) => [group.tag, ...group.children.map((child) => child.tag)]).map(normalizeTag)
+)
+
+const SMART_SKILL_NAME_RULES: Array<{ tag: string; patterns: RegExp[] }> = [
+  { tag: '结果分析', patterns: [/^(analyze-results|ablation-planner|result-to-claim)$/] },
+  { tag: '基金申请', patterns: [/^grant-proposal$/] },
+  { tag: '学术审查', patterns: [/^(auto-review-loop(?:-llm|-minimax)?|auto-paper-improvement-loop|research-review|rebuttal)$/] },
+  { tag: '论文写作', patterns: [/^(paper-(?:plan|write|writing|compile)|research-writing-five-steps)$/] },
+  { tag: '工作流自动化', patterns: [/^(research-pipeline|research-refine-pipeline)$/] },
+  { tag: 'skill 与插件', patterns: [/nuwa-skill|skill造人术/] }
+]
+
+const SMART_SKILL_RULES: Array<{ tag: string; patterns: RegExp[] }> = [
+  {
+    tag: '财务合规',
+    patterns: [/\b(fiscal|fiscaliste|tax|taxation|comptable|accounting)\b/, /audit l[eé]gal/, /luxembourg/, /税务|税收|会计|审计|财务合规/]
+  },
+  {
+    tag: '用户习惯学习',
+    patterns: [/engineering-cybernetics/, /user habit/, /用户习惯|工程控制论|控制论学习/]
+  },
+  {
+    tag: '对话审查',
+    patterns: [/conversation-review/, /review camp/, /conversation result/, /对话审查|对话复盘/]
+  },
+  {
+    tag: '思维方法',
+    patterns: [/-perspective\b/, /\bmentor\b/, /thinking framework/, /思维框架|思维操作系统|表达方式|行为逻辑/]
+  },
+  {
+    tag: 'skill 与插件',
+    patterns: [/^(plugin-creator|skill-creator|skill-installer)\b/, /resource-duplicate-merge/, /create (?:a |new )?(?:codex )?skill/, /install codex skills/, /plugin directories/]
+  },
+  {
+    tag: '审查测试',
+    patterns: [/^review-agent\b/, /michelle-diagnose/, /harden-ready/, /code review|code change/, /debug|diagnos|root-cause/, /代码审查|代码测试|故障诊断|安全审查/]
+  },
+  {
+    tag: '文档处理',
+    patterns: [/^openai-docs\b/, /^pdf\b/, /documentation/, /docs mcp/, /ocr|watermark|extracting text/, /文档处理|文档转换/]
+  },
+  {
+    tag: '通知采集',
+    patterns: [/feishu|lark/, /notify|notification/, /live-session-fetcher/, /browser session/, /serial pdf downloading/, /active alerts/, /通知|采集|下载/]
+  },
+  {
+    tag: '文献选题',
+    patterns: [/^(arxiv|research-lit|comm-lit-review|novelty-check|idea-creator|idea-discovery|idea-discovery-robot|research-refine)\b/, /literature review|related work|prior art/, /research ideas?/, /文献|选题|查新|研究方向/]
+  },
+  {
+    tag: '公式证明',
+    patterns: [/formula-derivation|proof-writer/, /mathematical proof|theorem|lemma|proposition/, /公式推导|数学证明|定理|引理/]
+  },
+  {
+    tag: '基金申请',
+    patterns: [/grant-proposal/, /grant proposal|funding application/, /基金申请|科研费|项目申请/]
+  },
+  {
+    tag: '图表可视化',
+    patterns: [/mermaid-diagram|paper-figure/, /diagram|flowchart|visualization/, /comparison tables?/, /图表|流程图|可视化/]
+  },
+  {
+    tag: '图像设计',
+    patterns: [/^imagegen\b|pixel-art|paper-illustration/, /image generation|raster image|illustration/, /图像生成|像素图|插图/]
+  },
+  {
+    tag: '演示发布',
+    patterns: [/paper-(poster|slides)/, /conference poster|presentation slides|beamer/, /海报|幻灯片|演示文稿/]
+  },
+  {
+    tag: '结果分析',
+    patterns: [/analyze-results|result-to-claim|ablation-planner/, /analy[sz]e .*results?|compute statistics|ablation stud/, /结果分析|消融实验|统计分析/]
+  },
+  {
+    tag: '实验运行',
+    patterns: [/experiment-(bridge|plan)|run-experiment|monitor-experiment|training-check|dse-loop/, /run .*experiments?|training is running|deploy .*gpu|design space exploration/, /运行实验|实验计划|训练监控|参数搜索/]
+  },
+  {
+    tag: '学术审查',
+    patterns: [/auto-review-loop|research-review|rebuttal|auto-paper-improvement/, /reviewer|submission rebuttal|review my research/, /论文审查|同行评审|审稿|答辩回复/]
+  },
+  {
+    tag: '论文写作',
+    patterns: [/paper-(plan|write|writing|compile)|research-writing-five-steps/, /latex paper|write paper|paper outline|manuscript/, /论文写作|论文大纲|编译论文/]
+  },
+  {
+    tag: '内容运营',
+    patterns: [/content creat|content operat|twitter|social media|内容创作|内容运营/]
+  },
+  {
+    tag: '工作流自动化',
+    patterns: [/research-pipeline|refine-pipeline|orchestrat|autonomous .*loop|workflow/, /工作流|自动化流程|编排/]
+  },
+  {
+    tag: '代码实现',
+    patterns: [/format-flow-development|context-engineering|repo[_ -]?map/, /software|electron|repository|implementation|coding|code map/, /软件开发|代码实现|代码仓库|上下文工程/]
+  }
+]
+
 export function parseSkillMarkdown(content: string, filePath: string): SkillItem {
   const frontmatter = parseFrontmatter(content)
   const fallbackName = filePath.split(/[\\/]/).slice(-2, -1)[0] || 'skill'
@@ -529,7 +700,11 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
     .map(normalizeTag)
     .filter(Boolean)
     .map((tag) => LEARNING_GENERATOR_TAG_LABELS[tag] || tag)
-  const tags = Array.from(new Set(generatedByTags))
+  const explicitCategoryTags = parseSkillFrontmatterTags(frontmatter, ['category', 'categories', 'group', 'groups'])
+  const explicitTags = parseSkillFrontmatterTags(frontmatter, ['tags'])
+    .filter((tag) => !['skill', 'skills', 'codex'].includes(tag))
+  const smartTag = generatedByTags[0] || explicitCategoryTags[0] || inferSmartSkillTag(name, heading || name, summary)
+  const tags = Array.from(new Set([...explicitCategoryTags, ...explicitTags, ...generatedByTags, smartTag].map(normalizeTag).filter(Boolean)))
 
   return {
     id: skillIdFromPath(filePath),
@@ -559,12 +734,15 @@ export function mergeSkillMetadata(
       ?.map(normalizeTag)
       .filter(Boolean)
       .filter((tag) => manualTags.has(tag) || assignedTags.has(tag) || !legacyInferredTags.has(tag)) || []
+  const reusableMetadataTags = metadataTags.filter((tag) => assignedTags.has(tag) || !SMART_SKILL_CATEGORY_TAGS.has(tag))
   const learningGeneratorTags = skill.tags.map(normalizeTag).filter((tag) => LEARNING_GENERATOR_TAGS.has(tag))
   const summaryOverride = TEMPLATE_MANAGED_SKILL_NAMES.has(skill.name) ? '' : metadata?.summaryOverride?.trim()
   return {
     ...skill,
     summary: summaryOverride || skill.summary,
-    tags: metadataTags.length ? Array.from(new Set([...metadataTags, ...learningGeneratorTags])) : skill.tags,
+    tags: assignedTags.size
+      ? Array.from(new Set([...reusableMetadataTags, ...learningGeneratorTags]))
+      : Array.from(new Set([...skill.tags, ...reusableMetadataTags])),
     variables: metadata?.variables?.length ? metadata.variables.map(String).filter(Boolean) : skill.variables,
     favorite: Boolean(metadata?.favorite)
   }
@@ -602,6 +780,32 @@ export function deduplicateSkillGroupTags(skills: SkillItem[], manualGroups: Gro
     uniqueAutomaticTags.push(tag)
   }
   return uniqueAutomaticTags
+}
+
+export function buildSmartSkillGroups(skills: SkillItem[], manualGroups: GroupItem[] = []): GroupItem[] {
+  const remainingTags = new Set(deduplicateSkillGroupTags(skills, manualGroups))
+  const groups: GroupItem[] = []
+
+  for (const definition of SMART_SKILL_GROUP_DEFINITIONS) {
+    const normalizedRootTag = normalizeTag(definition.tag)
+    if (definition.children.length === 0) {
+      if (!remainingTags.delete(normalizedRootTag)) continue
+      groups.push(smartSkillGroup(definition.name, normalizedRootTag))
+      continue
+    }
+
+    const children = definition.children
+      .map((child) => ({ ...child, tag: normalizeTag(child.tag) }))
+      .filter((child) => remainingTags.delete(child.tag))
+      .map((child) => smartSkillGroup(child.name, child.tag))
+    if (children.length > 0) groups.push(smartSkillGroup(definition.name, normalizedRootTag, children))
+  }
+
+  for (const tag of Array.from(remainingTags).sort((left, right) => left.localeCompare(right))) {
+    groups.push(smartSkillGroup(tag, tag))
+  }
+
+  return groups
 }
 export function createRunSteps(workflow: Workflow): RunStep[] {
   return workflow.nodes.map((node) => ({
@@ -954,6 +1158,47 @@ function firstPlainParagraph(content: string): string {
 function trimSummary(value: string): string {
   const singleLine = value.replace(/\s+/g, ' ').trim()
   return singleLine.length > 180 ? `${singleLine.slice(0, 177)}...` : singleLine
+}
+
+function inferSmartSkillTag(name: string, title: string, summary: string): string {
+  const normalizedName = name.toLowerCase()
+  const matchedNameRule = SMART_SKILL_NAME_RULES.find((rule) => rule.patterns.some((pattern) => pattern.test(normalizedName)))
+  if (matchedNameRule) return normalizeTag(matchedNameRule.tag)
+  const profile = [name, title, summary].join('\n').toLowerCase()
+  const matchedRule = SMART_SKILL_RULES.find((rule) => rule.patterns.some((pattern) => pattern.test(profile)))
+  return normalizeTag(matchedRule?.tag || '其他 Skill')
+}
+
+function parseSkillFrontmatterTags(frontmatter: Record<string, string>, keys: string[]): string[] {
+  return Array.from(
+    new Set(
+      keys
+        .flatMap((key) => {
+          const value = frontmatter[key]
+          if (!value) return []
+          return value
+            .replace(/^\s*\[/, '')
+            .replace(/\]\s*$/, '')
+            .split(/[,，;；|]+/)
+        })
+        .map((tag) => normalizeTag(tag.replace(/^['"]|['"]$/g, '').trim()))
+        .filter(Boolean)
+    )
+  )
+}
+
+function smartSkillGroup(name: string, tag: string, children: GroupItem[] = []): GroupItem {
+  let hash = 2166136261
+  for (const character of tag) {
+    hash ^= character.charCodeAt(0)
+    hash = Math.imul(hash, 16777619)
+  }
+  return {
+    id: `smart_skill_group_${(hash >>> 0).toString(36)}`,
+    name,
+    tag,
+    children
+  }
 }
 
 function skillGroupTagPriority(tag: string): number {

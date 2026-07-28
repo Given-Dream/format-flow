@@ -14,6 +14,7 @@ import {
   allTags,
   approvalNode,
   buildExecutionPrompt,
+  buildSmartSkillGroups,
   clonePromptToGroup,
   createMcpServer,
   createPrompt,
@@ -21,7 +22,6 @@ import {
   createRunSteps,
   createWorkflow,
   defaultStore,
-  deduplicateSkillGroupTags,
   groupFromTag,
   matchesTextAndTags,
   mergeSkillMetadata,
@@ -1014,8 +1014,14 @@ function SkillPanel({
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const [skillClipboard, setSkillClipboard] = useState<SkillItem | null>(null)
   const skillGroups = mergeSkillGroups(store.groups.skills, skills)
-  const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
-  const visibleSkills = skills.filter((skill) => matchesTextAndTags(skill, query, effectiveTags))
+  const selectedSkillGroup = selectedGroup === 'all' ? undefined : findGroupByTag(skillGroups, selectedGroup)
+  const effectiveTags = selectedSkillGroup ? collectGroupTags(selectedSkillGroup) : selectedGroup === 'all' ? [] : [selectedGroup]
+  const effectiveTagSet = new Set(effectiveTags.map(normalizeTag))
+  const visibleSkills = skills.filter(
+    (skill) =>
+      matchesTextAndTags(skill, query, []) &&
+      (selectedGroup === 'all' || skill.tags.some((tag) => effectiveTagSet.has(normalizeTag(tag))))
+  )
   const activeSkillGroupTag = selectedGroup === 'all' ? '' : selectedGroup
 
   async function saveMetadata(skill: SkillItem, metadata: SkillMetadata): Promise<void> {
@@ -4801,7 +4807,25 @@ function mergeGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {
 }
 
 function mergeSkillGroups(groups: GroupItem[], skills: SkillItem[]): GroupItem[] {
-  return mergeGroupsWithTags(groups, deduplicateSkillGroupTags(skills, groups))
+  const uniqueGroups = ensureUniqueGroupTags(groups)
+  return mergeGroupTreesByTag(uniqueGroups, buildSmartSkillGroups(skills, uniqueGroups))
+}
+
+function mergeGroupTreesByTag(groups: GroupItem[], additions: GroupItem[]): GroupItem[] {
+  const merged = groups.map((group) => ({ ...group, children: [...group.children] }))
+  for (const addition of additions) {
+    const existingIndex = merged.findIndex((group) => group.tag === addition.tag)
+    if (existingIndex === -1) {
+      merged.push(addition)
+      continue
+    }
+    const existing = merged[existingIndex]
+    merged[existingIndex] = {
+      ...existing,
+      children: mergeGroupTreesByTag(existing.children, addition.children)
+    }
+  }
+  return merged
 }
 
 function filterGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {

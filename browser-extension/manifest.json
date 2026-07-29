@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Format Flow Browser Bridge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Inject Format Flow workflow tasks into supported AI web apps.",
   "permissions": ["tabs", "activeTab", "scripting", "storage"],
   "host_permissions": [
@@ -19,6 +19,7 @@
     "https://poe.com/*",
     "https://grok.com/*"
   ],
+  "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "background.js"
   },
@@ -44,7 +45,7 @@
         "https://poe.com/*",
         "https://grok.com/*"
       ],
-      "js": ["targets.js", "ai-injector.js"],
+      "js": ["targets.js", "custom-sites.js", "ai-injector.js"],
       "run_at": "document_idle"
     }
   ],

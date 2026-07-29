@@ -5,7 +5,7 @@ Chrome / Edge 加载方式：
 1. 打开 `chrome://extensions` 或 `edge://extensions`。
 2. 打开“开发者模式”。
 3. 选择“加载已解压的扩展程序”。
-4. 选择本目录：`G:\songyu\format-flow\browser-extension`。
+4. 选择项目中的 `browser-extension` 目录。
 
 使用方式：
 
@@ -22,6 +22,14 @@ Chrome / Edge 加载方式：
 - 桌面版 Format Flow 会在本机 `127.0.0.1:48174` 启动本地桥接服务，扩展会自动连接这个服务，不需要把 Format Flow 再放到浏览器标签页里。
 - 网页审查版仍然需要在已经加载本扩展的 Chrome 或 Edge 中打开 `http://127.0.0.1:5174/`。
 - Codex 的 in-app browser 不能加载 Chrome/Edge 扩展，只能用于普通网页审查，不能代表真实扩展连接状态。
+
+自定义网站：
+
+1. 点击浏览器工具栏中的 Format Flow Bridge 图标。
+2. 在“自定义网站”中输入域名或完整网址，例如 `ai.example.com`。
+3. 点击“添加”并确认浏览器的网站访问权限。
+4. 已经打开的目标网页会立即尝试连接；也可以刷新网页后再使用。
+5. 自定义网站使用通用输入框、发送按钮和输出识别规则。网站结构特殊时，仍需在 `targets.js` 中增加专用选择器。
 
 连通性测试：
 

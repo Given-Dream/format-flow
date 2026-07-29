@@ -3,14 +3,19 @@
   globalThis.__FORMAT_FLOW_AI_INJECTOR_READY__ = true
 
   const LOCAL_BRIDGE_BASE = 'http://127.0.0.1:48174/format-flow-bridge'
+  const customSiteApi = globalThis.FORMAT_FLOW_CUSTOM_SITES
   let lastOutput = ''
   let outputTimer = 0
   let localBridgePolling = false
+  let customTargets = []
+  let targetMonitoring = false
+  let initialization = initializeCustomTargets()
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || message.type !== 'FORMAT_FLOW_INJECT_TASK') return false
 
-    injectTask(message.payload || '')
+    initialization
+      .then(() => injectTask(message.payload || ''))
       .then((result) => {
         sendStatus()
         sendResponse(result)
@@ -22,11 +27,34 @@
     return true
   })
 
-  if (detectTarget()) {
+  chrome.storage?.onChanged?.addListener((changes, areaName) => {
+    if (areaName !== 'local' || !customSiteApi || !changes[customSiteApi.STORAGE_KEY]) return
+    initialization = refreshCustomTargets(changes[customSiteApi.STORAGE_KEY].newValue).then(startTargetMonitoring)
+  })
+
+  initialization.then(startTargetMonitoring)
+
+  function startTargetMonitoring() {
+    if (targetMonitoring || !detectTarget()) return
+    targetMonitoring = true
     sendStatus()
     window.setInterval(sendStatus, 3000)
     startOutputObserver()
     startLocalBridgePolling()
+  }
+
+  async function initializeCustomTargets() {
+    if (!customSiteApi || !chrome.storage?.local) return
+    const stored = await chrome.storage.local.get(customSiteApi.STORAGE_KEY)
+    await refreshCustomTargets(stored?.[customSiteApi.STORAGE_KEY])
+  }
+
+  async function refreshCustomTargets(value) {
+    if (!customSiteApi) {
+      customTargets = []
+      return
+    }
+    customTargets = customSiteApi.normalizeStoredSites(value).map(customSiteApi.siteToTarget)
   }
 
   async function injectTask(payload) {
@@ -75,8 +103,8 @@
   function detectTarget() {
     const hostname = location.hostname
     const pathname = location.pathname
-    return (globalThis.FORMAT_FLOW_AI_TARGETS || []).find((target) =>
-      target.domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`)) &&
+    return [...(globalThis.FORMAT_FLOW_AI_TARGETS || []), ...customTargets].find((target) =>
+      target.domains.some((domain) => hostname === domain || (!target.exactDomains && hostname.endsWith(`.${domain}`))) &&
       (!target.pathPrefixes || target.pathPrefixes.some((prefix) => pathname.startsWith(prefix)))
     )
   }

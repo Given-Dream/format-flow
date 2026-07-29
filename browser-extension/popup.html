@@ -2,35 +2,248 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Format Flow Bridge</title>
     <style>
-      body {
-        width: 320px;
-        margin: 0;
-        padding: 16px;
-        color: #121212;
-        background: #ffffff;
+      :root {
+        color-scheme: light;
         font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+        color: #171717;
+        background: #ffffff;
       }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        width: 368px;
+        margin: 0;
+        background: #ffffff;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 52px;
+        padding: 0 16px;
+        border-bottom: 1px solid #e6e6e6;
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+      }
+
       h1 {
-        margin: 0 0 10px;
-        font-size: 18px;
+        font-size: 16px;
+        font-weight: 650;
+        letter-spacing: 0;
       }
-      p,
-      li {
-        color: #555;
+
+      .bridge-state {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: #4f4f4f;
+        font-size: 12px;
+      }
+
+      .bridge-state::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #1f9d55;
+        content: "";
+      }
+
+      main {
+        padding: 14px 16px 16px;
+      }
+
+      h2 {
+        margin-bottom: 8px;
         font-size: 13px;
-        line-height: 1.5;
+        font-weight: 650;
+        letter-spacing: 0;
       }
-      code {
-        color: #165dff;
+
+      form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+      }
+
+      label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+
+      input,
+      button {
+        min-height: 36px;
+        border-radius: 6px;
+        font: inherit;
+        letter-spacing: 0;
+      }
+
+      input {
+        min-width: 0;
+        padding: 7px 10px;
+        color: #171717;
+        background: #ffffff;
+        border: 1px solid #bfbfbf;
+        outline: none;
+      }
+
+      input:focus {
+        border-color: #1769aa;
+        box-shadow: 0 0 0 2px rgba(23, 105, 170, 0.14);
+      }
+
+      button {
+        padding: 7px 13px;
+        color: #ffffff;
+        background: #1769aa;
+        border: 1px solid #1769aa;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #12598f;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+
+      .status {
+        min-height: 19px;
+        margin-top: 7px;
+        color: #555555;
+        font-size: 12px;
+        line-height: 19px;
+      }
+
+      .status[data-kind="error"] {
+        color: #b42318;
+      }
+
+      .status[data-kind="success"] {
+        color: #137a42;
+      }
+
+      .site-section {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid #ededed;
+      }
+
+      .site-list {
+        max-height: 220px;
+        margin: 0;
+        padding: 0;
+        overflow-y: auto;
+        list-style: none;
+      }
+
+      .site-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        min-height: 44px;
+        gap: 8px;
+        border-bottom: 1px solid #f0f0f0;
+      }
+
+      .site-row:last-child {
+        border-bottom: 0;
+      }
+
+      .site-info {
+        min-width: 0;
+      }
+
+      .site-domain {
+        overflow: hidden;
+        font-size: 13px;
+        font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .site-meta {
+        margin-top: 2px;
+        color: #6b6b6b;
+        font-size: 11px;
+      }
+
+      .site-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .site-action {
+        min-width: 30px;
+        min-height: 30px;
+        padding: 3px 7px;
+        color: #444444;
+        background: transparent;
+        border-color: transparent;
+      }
+
+      .site-action:hover {
+        color: #171717;
+        background: #f1f3f5;
+      }
+
+      .grant-action {
+        width: auto;
+        color: #1769aa;
+        font-size: 11px;
+      }
+
+      .empty-state {
+        padding: 18px 0 8px;
+        color: #777777;
+        font-size: 12px;
+        text-align: center;
       }
     </style>
   </head>
   <body>
-    <h1>Format Flow Bridge</h1>
-    <p>打开一个支持的 AI 网页，再在 Format Flow 的顺序运行中选择“浏览器插件连接”。</p>
-    <p>连接成功后，插件会把任务填入已打开的 AI 页面并自动发送。</p>
-    <p>支持：ChatGPT、Claude、Gemini、DeepSeek、Kimi、Qwen、Perplexity、Poe、Grok。</p>
+    <header>
+      <h1>Format Flow Bridge</h1>
+      <span class="bridge-state">本地桥接</span>
+    </header>
+    <main>
+      <section aria-labelledby="custom-site-heading">
+        <h2 id="custom-site-heading">自定义网站</h2>
+        <form id="custom-site-form">
+          <label for="site-domain">网站域名</label>
+          <input id="site-domain" name="domain" type="text" inputmode="url" autocomplete="off" placeholder="ai.example.com" required />
+          <button id="add-site" type="submit">添加</button>
+        </form>
+        <p id="site-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section class="site-section" aria-labelledby="saved-sites-heading">
+        <h2 id="saved-sites-heading">已添加域名</h2>
+        <ul id="site-list" class="site-list"></ul>
+        <p id="empty-state" class="empty-state">尚未添加自定义网站</p>
+      </section>
+    </main>
+    <script src="custom-sites.js"></script>
+    <script src="popup.js"></script>
   </body>
 </html>

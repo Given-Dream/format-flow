@@ -136,7 +136,7 @@ backups/                 默认本地备份目录
 
 ## 浏览器插件
 
-插件源码位于 [`browser-extension`](browser-extension)，通过本机端口 `48174` 与桌面应用通信。当前适配 ChatGPT、Claude、Gemini、DeepSeek、Kimi、Qwen、Perplexity、Poe 和 Grok。插件只负责检测网页、读取任务并填入输入框；最终发送仍由用户控制。
+插件源码位于 [`browser-extension`](browser-extension)，通过本机端口 `48174` 与桌面应用通信。当前适配 ChatGPT、Claude、Gemini、DeepSeek、Kimi、Qwen、Perplexity、Poe 和 Grok。点击浏览器工具栏中的插件图标，可以授权并管理自定义 AI 网站域名；自定义网站使用通用输入、发送和输出识别规则。是否自动发送由 Format Flow 当前调用模式决定。
 
 安装步骤：
 

@@ -1,3 +1,13 @@
+if (typeof importScripts === 'function') importScripts('custom-sites.js')
+
+const CUSTOM_SITE_API = globalThis.FORMAT_FLOW_CUSTOM_SITES || {
+  STORAGE_KEY: 'formatFlowCustomSites',
+  CONTENT_SCRIPT_ID: 'format-flow-custom-ai-sites',
+  normalizeStoredSites: () => [],
+  siteToTarget: () => undefined,
+  matchesUrl: () => false
+}
+
 const AI_TARGETS = [
   { name: 'Format Flow Test AI', icon: 'T', domains: ['127.0.0.1', 'localhost'], pathPrefixes: ['/extension-test-ai'] },
   { name: 'ChatGPT', icon: '◎', domains: ['chatgpt.com', 'chat.openai.com'] },
@@ -16,8 +26,24 @@ const aiStatuses = new Map()
 const LOCAL_BRIDGE_BASE = 'http://127.0.0.1:48174/format-flow-bridge'
 const FORMAT_FLOW_CAPABILITIES = { quickCallFillOnly: true }
 let localBridgePolling = false
+let customSites = []
+let customSitesSync = Promise.resolve()
+let customSitesReady = queueCustomSiteRefresh()
 
 startLocalBridgePolling()
+
+chrome.storage?.onChanged?.addListener((changes, areaName) => {
+  if (areaName !== 'local' || !changes[CUSTOM_SITE_API.STORAGE_KEY]) return
+  customSitesReady = queueCustomSiteRefresh(changes[CUSTOM_SITE_API.STORAGE_KEY].newValue, true)
+})
+
+chrome.permissions?.onAdded?.addListener(() => {
+  customSitesReady = queueCustomSiteRefresh(undefined, true)
+})
+
+chrome.permissions?.onRemoved?.addListener(() => {
+  customSitesReady = queueCustomSiteRefresh()
+})
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message?.type) return false
@@ -111,7 +137,7 @@ async function sendToAiTab(tabId, message) {
   } catch {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ['targets.js', 'ai-injector.js']
+      files: ['targets.js', 'custom-sites.js', 'ai-injector.js']
     })
     await sleep(120)
     return chrome.tabs.sendMessage(tabId, message)
@@ -119,6 +145,7 @@ async function sendToAiTab(tabId, message) {
 }
 
 async function findOpenAiTabs() {
+  await customSitesReady
   const tabs = await chrome.tabs.query({})
   return tabs.filter((tab) => isAiUrl(tab.url || ''))
 }
@@ -214,12 +241,86 @@ function targetFromUrl(url) {
   try {
     const parsed = new URL(url)
     const hostname = parsed.hostname
-    return AI_TARGETS.find((target) =>
-      target.domains.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`)) &&
+    return allAiTargets().find((target) =>
+      target.domains.some((domain) => hostname === domain || (!target.exactDomains && hostname.endsWith(`.${domain}`))) &&
       (!target.pathPrefixes || target.pathPrefixes.some((prefix) => parsed.pathname.startsWith(prefix)))
     )
   } catch {
     return undefined
+  }
+}
+
+function allAiTargets() {
+  return [...AI_TARGETS, ...customSites.map(CUSTOM_SITE_API.siteToTarget).filter(Boolean)]
+}
+
+function queueCustomSiteRefresh(storedValue, injectOpenTabs = false) {
+  customSitesSync = customSitesSync
+    .catch(() => undefined)
+    .then(() => refreshCustomSites(storedValue, injectOpenTabs))
+    .catch((error) => {
+      console.warn('Unable to refresh custom Format Flow sites:', error)
+      return customSites
+    })
+  return customSitesSync
+}
+
+async function refreshCustomSites(storedValue, injectOpenTabs = false) {
+  let nextValue = storedValue
+  if (nextValue === undefined && chrome.storage?.local) {
+    const stored = await chrome.storage.local.get(CUSTOM_SITE_API.STORAGE_KEY)
+    nextValue = stored?.[CUSTOM_SITE_API.STORAGE_KEY]
+  }
+
+  customSites = CUSTOM_SITE_API.normalizeStoredSites(nextValue)
+  const authorizedSites = await filterAuthorizedSites(customSites)
+  await registerCustomContentScripts(authorizedSites)
+  if (injectOpenTabs) await injectCustomScriptsIntoOpenTabs(authorizedSites)
+  return customSites
+}
+
+async function filterAuthorizedSites(sites) {
+  if (!chrome.permissions?.contains) return sites
+  const authorized = []
+  for (const site of sites) {
+    if (await chrome.permissions.contains({ origins: [site.pattern] })) authorized.push(site)
+  }
+  return authorized
+}
+
+async function registerCustomContentScripts(sites) {
+  if (!chrome.scripting?.registerContentScripts || !chrome.scripting?.unregisterContentScripts) return
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: [CUSTOM_SITE_API.CONTENT_SCRIPT_ID] })
+  } catch {
+    // The registration does not exist yet.
+  }
+
+  if (sites.length === 0) return
+  await chrome.scripting.registerContentScripts([
+    {
+      id: CUSTOM_SITE_API.CONTENT_SCRIPT_ID,
+      matches: sites.map((site) => site.pattern),
+      js: ['targets.js', 'custom-sites.js', 'ai-injector.js'],
+      runAt: 'document_idle',
+      persistAcrossSessions: true
+    }
+  ])
+}
+
+async function injectCustomScriptsIntoOpenTabs(sites) {
+  if (!chrome.scripting?.executeScript || sites.length === 0) return
+  const tabs = await chrome.tabs.query({})
+  for (const tab of tabs) {
+    if (!tab.id || !sites.some((site) => CUSTOM_SITE_API.matchesUrl(site, tab.url || ''))) continue
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['targets.js', 'custom-sites.js', 'ai-injector.js']
+      })
+    } catch {
+      // Restricted or closing tabs can be skipped; the next navigation will inject normally.
+    }
   }
 }
 

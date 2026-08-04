@@ -34,9 +34,6 @@ jobs:
       - name: Build Windows installer
         run: npm run dist -- --publish never
 
-      - name: Build license manager installer
-        run: npm run dist-license-manager
-
       - name: Upload assets and publish release
         shell: pwsh
         env:
@@ -48,10 +45,8 @@ jobs:
           $installer = "release/Format-Flow-Setup-$version.exe"
           $blockmap = "$installer.blockmap"
           $metadata = "release/latest.yml"
-          $managerInstaller = "release/license-manager/Format-Flow-License-Manager-Setup-$version.exe"
-          $managerBlockmap = "$managerInstaller.blockmap"
 
-          foreach ($asset in @($installer, $blockmap, $metadata, $managerInstaller, $managerBlockmap)) {
+          foreach ($asset in @($installer, $blockmap, $metadata)) {
             if (-not (Test-Path -LiteralPath $asset)) {
               throw "Missing release asset: $asset"
             }
@@ -67,7 +62,7 @@ jobs:
             }
           }
 
-          gh release upload $env:RELEASE_TAG $installer $blockmap $metadata $managerInstaller $managerBlockmap --repo $env:GH_REPO --clobber
+          gh release upload $env:RELEASE_TAG $installer $blockmap $metadata --repo $env:GH_REPO --clobber
           if ($LASTEXITCODE -ne 0) {
             throw "Unable to upload release assets for $env:RELEASE_TAG"
           }

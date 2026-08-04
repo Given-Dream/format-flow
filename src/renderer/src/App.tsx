@@ -150,6 +150,12 @@ type PromptFillDraft = {
   values: Record<string, string>
   submit: (filledContent: string, values: Record<string, string>) => void
 }
+type LicenseStatus = {
+  activated: boolean
+  machineCode: string
+  activatedAt?: string
+  message: string
+}
 type ShortcutCaptureInput = {
   key?: unknown
   code?: unknown
@@ -275,6 +281,7 @@ const activeTabStorageKey = 'format-flow-active-tab'
 export function App(): JSX.Element {
   const [store, setStore] = useState<AppStore | null>(null)
   const [paths, setPaths] = useState<AppPaths | null>(null)
+  const [license, setLicense] = useState<LicenseStatus | null>(null)
   const [rawSkills, setRawSkills] = useState<SkillItem[]>([])
   const [activeTab, setActiveTabState] = useState<TabId>(() => {
     const savedTab = localStorage.getItem(activeTabStorageKey)
@@ -302,6 +309,15 @@ export function App(): JSX.Element {
 
     async function bootstrap(): Promise<void> {
       try {
+        const licenseStatus = await formatFlow.getLicenseStatus()
+        if (!licenseStatus.activated) {
+          if (!cancelled) {
+            setLicense(licenseStatus)
+            setIsBusy(false)
+          }
+          return
+        }
+
         const [loadedStore, loadedPaths] = await Promise.all([formatFlow.loadStore(), formatFlow.getPaths()])
         const skillDirectories =
           loadedStore.settings.skillDirectories.length > 0
@@ -487,6 +503,9 @@ export function App(): JSX.Element {
   }
 
   if (!store) {
+    if (license && !license.activated) {
+      return <LicenseGate status={license} onActivated={setLicense} />
+    }
     return (
       <main className="boot">
         <div className="boot-card">
@@ -4843,6 +4862,74 @@ function mergeGroupsWithTags(groups: GroupItem[], tags: string[]): GroupItem[] {
 function mergeSkillGroups(groups: GroupItem[], skills: SkillItem[]): GroupItem[] {
   const uniqueGroups = ensureUniqueGroupTags(groups)
   return mergeGroupTreesByTag(uniqueGroups, buildSmartSkillGroups(skills, uniqueGroups))
+}
+
+function LicenseGate({
+  status,
+  onActivated
+}: {
+  status: LicenseStatus
+  onActivated: (status: LicenseStatus) => void
+}): JSX.Element {
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState(status.message)
+
+  async function copyMachineCode(): Promise<void> {
+    const result = await writeClipboardText(status.machineCode)
+    setMessage(result.ok ? '机器码已复制，请发送给软件管理员获取授权密码' : result.message)
+  }
+
+  async function submit(): Promise<void> {
+    if (!password.trim() || busy) return
+    setBusy(true)
+    try {
+      const result = await formatFlow.activateLicense(password)
+      setMessage(result.message)
+      if (result.activated) {
+        onActivated(result)
+        window.setTimeout(() => window.location.reload(), 250)
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '授权失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <main className="license-gate">
+      <section className="license-card">
+        <div className="brand-mark">FF</div>
+        <h1>Format Flow 授权</h1>
+        <p>首次使用需要管理员根据本机机器码生成永久授权密码。</p>
+        <label>
+          本机机器码
+          <div className="license-code-row">
+            <input readOnly value={status.machineCode} />
+            <button type="button" onClick={() => void copyMachineCode()}>复制</button>
+          </div>
+        </label>
+        <label>
+          永久授权密码
+          <input
+            autoFocus
+            type="password"
+            value={password}
+            placeholder="请输入管理员提供的密码"
+            onChange={(event) => setPassword(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void submit()
+            }}
+          />
+        </label>
+        <button className="primary-action" type="button" disabled={!password.trim() || busy} onClick={() => void submit()}>
+          {busy ? '验证中...' : '验证并永久启用'}
+        </button>
+        <p className="license-message">{message}</p>
+      </section>
+    </main>
+  )
 }
 
 function mergeGroupTreesByTag(groups: GroupItem[], additions: GroupItem[]): GroupItem[] {

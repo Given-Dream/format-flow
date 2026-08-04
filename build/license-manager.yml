@@ -1,0 +1,24 @@
+appId: com.songyu.formatflow.licensemanager
+productName: Format Flow License Manager
+artifactName: Format-Flow-License-Manager-Setup-${version}.${ext}
+directories:
+  output: release/license-manager
+files:
+  - tools/license-manager-app.cjs
+  - tools/license-manager-preload.cjs
+  - tools/license-manager.html
+  - package.json
+extraMetadata:
+  main: tools/license-manager-app.cjs
+win:
+  signAndEditExecutable: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

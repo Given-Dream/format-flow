@@ -17,6 +17,18 @@ import type {
 } from '../shared/types'
 
 const api = {
+  getLicenseStatus: (): Promise<{
+    activated: boolean
+    machineCode: string
+    activatedAt?: string
+    message: string
+  }> => ipcRenderer.invoke('license:getStatus'),
+  activateLicense: (password: string): Promise<{
+    activated: boolean
+    machineCode: string
+    activatedAt?: string
+    message: string
+  }> => ipcRenderer.invoke('license:activate', password),
   loadStore: (): Promise<AppStore> => ipcRenderer.invoke('store:load'),
   saveStore: (store: AppStore): Promise<AppStore> => ipcRenderer.invoke('store:save', store),
   getPaths: (): Promise<AppPaths> => ipcRenderer.invoke('paths:get'),

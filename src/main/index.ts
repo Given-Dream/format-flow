@@ -8,6 +8,7 @@ import { execFile as execFileCallback, spawn, type ChildProcess } from 'node:chi
 import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
 import { migrateTemplateDirectory, syncTemplateDirectory } from './builtin-skills'
+import { activateLicense, getLicenseStatus } from './license'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
 import type {
   AppPaths,
@@ -1919,6 +1920,8 @@ function isKeyboardShortcutRegistered(accelerator: string): boolean {
 }
 
 function registerIpc(): void {
+  ipcMain.handle('license:getStatus', () => getLicenseStatus(app.getPath('userData')))
+  ipcMain.handle('license:activate', (_event, password: string) => activateLicense(app.getPath('userData'), password))
   ipcMain.handle('store:load', () => loadStore())
   ipcMain.handle('store:save', (_event, store: AppStore) => saveStore(store))
   ipcMain.handle('paths:get', () => getPaths())

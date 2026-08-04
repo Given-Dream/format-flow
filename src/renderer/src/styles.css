@@ -1294,6 +1294,53 @@ label {
   overflow: hidden;
 }
 
+.license-gate {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.license-card {
+  display: grid;
+  width: min(460px, 100%);
+  gap: 16px;
+  padding: 32px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.license-card .brand-mark {
+  width: 44px;
+  height: 44px;
+}
+
+.license-card h1,
+.license-card p {
+  margin: 0;
+}
+
+.license-code-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.license-code-row input {
+  font-family: Consolas, monospace;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.license-message {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .runner-content-scroll {
   display: grid;
   align-content: start;

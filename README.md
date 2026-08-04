@@ -7,6 +7,7 @@ Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工�
 ## 下载与安装
 
 - [下载 Format Flow v0.1.38 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.38/Format-Flow-Setup-0.1.38.exe)
+- [下载管理员 License Manager v0.1.38](https://github.com/Given-Dream/format-flow/releases/download/v0.1.38/Format-Flow-License-Manager-Setup-0.1.38.exe)
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
 - Release 同时提供 `.blockmap` 和 `latest.yml`，便于分发安装包及其版本元数据。
@@ -35,7 +36,7 @@ README 已按当前代码重写，不再沿用 `v0.1.1` 时仅覆盖基础功能
 | `v0.1.27` - `v0.1.32` | 工作流改用可检索的分层资源选择器，Prompt、Skill、MCP 成为真实节点；节点变量会在运行前填充；修复重复弹窗；Skill 编辑器支持完整目录预览与维护。 |
 | `v0.1.33` - `v0.1.35` | 加入工程控制论用户习惯学习 Skill 及生成 Skill 管理；清理重复/路径噪声标签；按 Skill 语义自动建立父子分类并支持父级汇总；补齐 Windows Release 自动构建流程。 |
 | `v0.1.36` - `v0.1.37` | 改善顺序运行在窄窗口中的滚动与操作布局；浏览器插件支持在弹窗中授权、管理和动态连接自定义 AI 网站域名。 |
-| `v0.1.38` | 快捷调用记住各模式的搜索、分组和上次填写的自定义变量，并记录最近一次调用信息。 |
+| `v0.1.38` | 快捷调用记住各模式的搜索、分组和上次填写的自定义变量；加入机器码绑定的永久授权和管理员授权管理器。 |
 
 ## 功能展示
 

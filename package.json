@@ -14,7 +14,10 @@
     "test": "vitest run && node browser-extension/tests/selector-smoke.mjs && node browser-extension/tests/custom-sites-smoke.mjs && node browser-extension/tests/connectivity-smoke.mjs",
     "extension:test": "node browser-extension/tests/selector-smoke.mjs && node browser-extension/tests/custom-sites-smoke.mjs && node browser-extension/tests/connectivity-smoke.mjs",
     "preview": "electron-vite preview",
-    "start": "electron-vite preview"
+    "start": "electron-vite preview",
+    "license-manager": "node tools/license-manager.mjs",
+    "license-manager-app": "electron tools/license-manager-app.cjs",
+    "dist-license-manager": "set CSC_IDENTITY_AUTO_DISCOVERY=false&& electron-builder --win nsis --x64 --config build/license-manager.yml --publish never"
   },
   "dependencies": {
     "@xyflow/react": "12.10.2",

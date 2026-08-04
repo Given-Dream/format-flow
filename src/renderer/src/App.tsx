@@ -146,8 +146,9 @@ type PromptFillDraft = {
   content: string
   submitLabel: string
   cancelLabel?: string
+  historyKey?: string
   values: Record<string, string>
-  submit: (filledContent: string) => void
+  submit: (filledContent: string, values: Record<string, string>) => void
 }
 type ShortcutCaptureInput = {
   key?: unknown
@@ -205,6 +206,9 @@ const formatFlow = getFormatFlowApi()
 const appVersion = __APP_VERSION__
 const quickLauncherModeStorageKey = 'format-flow-quick-launcher-mode'
 const quickLauncherGroupStoragePrefix = 'format-flow-quick-launcher-group'
+const quickLauncherQueryStoragePrefix = 'format-flow-quick-launcher-query'
+const quickLauncherFillStorageKey = 'format-flow-quick-launcher-fill-history'
+const quickLauncherLastCallStorageKey = 'format-flow-quick-launcher-last-call'
 
 async function writeClipboardText(text: string): Promise<{ ok: boolean; message: string }> {
   if (!text.trim()) return { ok: false, message: '没有可复制的内容' }
@@ -2264,7 +2268,7 @@ function RunnerPanel({
               <textarea className="content-editor readonly" readOnly value={taskFillPreview} />
             </label>
             <div className="inline-actions">
-              <button className="primary-action" type="button" disabled={!taskFillReady} onClick={() => taskFillDraft.submit(taskFillPreview)}>
+              <button className="primary-action" type="button" disabled={!taskFillReady} onClick={() => taskFillDraft.submit(taskFillPreview, taskFillDraft.values)}>
                 {taskFillDraft.submitLabel}
               </button>
               <button type="button" onClick={() => setTaskFillDraft(null)}>
@@ -3842,7 +3846,7 @@ function LauncherModal({
   pasteQuickCall: (text: string, success: string) => Promise<void>
 }): JSX.Element {
   const [mode, setMode] = useState<LauncherMode>(() => readStoredQuickLauncherMode())
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(() => readStoredQuickLauncherQuery(mode))
   const [selectedGroup, setSelectedGroup] = useState(() => readStoredQuickLauncherGroup(mode))
   const [fillDraft, setFillDraft] = useState<PromptFillDraft | null>(null)
   const callablePrompts = store.prompts.filter((prompt) => prompt.content.trim())
@@ -3881,20 +3885,40 @@ function LauncherModal({
     writeStoredQuickLauncherState(mode, selectedGroup)
   }, [mode, selectedGroup])
 
+  useEffect(() => {
+    writeStoredQuickLauncherQuery(mode, query)
+  }, [mode, query])
   function selectLauncherMode(nextMode: LauncherMode): void {
     setMode(nextMode)
     setSelectedGroup(readStoredQuickLauncherGroup(nextMode))
+    setQuery(readStoredQuickLauncherQuery(nextMode))
+  }
+  function rememberQuickCall(itemId: string, title: string, values: Record<string, string> = {}): void {
+    const cleanValues = Object.fromEntries(Object.entries(values).filter(([, value]) => typeof value === 'string'))
+    writeStoredQuickLauncherFillValues(quickLauncherHistoryKey(mode, itemId), cleanValues)
+    writeStoredQuickLauncherLastCall({
+      mode,
+      itemId,
+      title,
+      selectedGroup,
+      query,
+      values: cleanValues,
+      updatedAt: Date.now()
+    })
   }
 
   function callPrompt(prompt: PromptItem): void {
     const slots = extractPromptFillSlots(prompt.content)
+    const historyKey = quickLauncherHistoryKey(mode, prompt.id)
     if (slots.length > 0) {
       setFillDraft({
         title: `填写提示词：${prompt.title}`,
         content: prompt.content,
         submitLabel: '复制填充后内容',
-        values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
-        submit: (filledContent) => {
+        historyKey,
+        values: readStoredQuickLauncherFillValues(historyKey, slots),
+        submit: (filledContent, values) => {
+          rememberQuickCall(prompt.id, prompt.title, values)
           void pasteQuickCall(filledContent, `已复制提示词：${prompt.title}`)
             .then(close)
             .catch(() => undefined)
@@ -3902,6 +3926,7 @@ function LauncherModal({
       })
       return
     }
+    rememberQuickCall(prompt.id, prompt.title)
     void pasteQuickCall(prompt.content, `已复制提示词：${prompt.title}`)
       .then(close)
       .catch(() => undefined)
@@ -3910,6 +3935,7 @@ function LauncherModal({
   function callSkill(skill: SkillItem): void {
     const content = skill.contentPreview || `使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`
     const slots = extractPromptFillSlots(content)
+    const historyKey = quickLauncherHistoryKey(mode, skill.id)
     const copySkill = (filledContent: string) =>
       pasteQuickCall(filledContent, `已复制 Skill 调用信息：${skill.title}`)
         .then(close)
@@ -3919,13 +3945,16 @@ function LauncherModal({
         title: `填写 Skill：${skill.title || skill.name}`,
         content,
         submitLabel: '复制填充后 Skill',
-        values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
-        submit: (filledContent) => {
+        historyKey,
+        values: readStoredQuickLauncherFillValues(historyKey, slots),
+        submit: (filledContent, values) => {
+          rememberQuickCall(skill.id, skill.title || skill.name, values)
           void copySkill(filledContent)
         }
       })
       return
     }
+    rememberQuickCall(skill.id, skill.title || skill.name)
     void copySkill(content)
   }
 
@@ -3935,6 +3964,7 @@ function LauncherModal({
       ? buildExecutionPrompt(firstNode, store.prompts, skills, '', store.mcpServers)
       : `调用工作流：${workflow.title}\n${workflow.description}`
     const slots = extractPromptFillSlots(task)
+    const historyKey = quickLauncherHistoryKey(mode, workflow.id)
     const copyWorkflowTask = (filledTask: string) =>
       pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务：${workflow.title}`)
         .then(() => {
@@ -3947,13 +3977,16 @@ function LauncherModal({
         title: `填写工作流节点：${workflow.title}`,
         content: task,
         submitLabel: '复制填充后任务',
-        values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
-        submit: (filledTask) => {
+        historyKey,
+        values: readStoredQuickLauncherFillValues(historyKey, slots),
+        submit: (filledTask, values) => {
+          rememberQuickCall(workflow.id, workflow.title, values)
           void copyWorkflowTask(filledTask)
         }
       })
       return
     }
+    rememberQuickCall(workflow.id, workflow.title)
     void copyWorkflowTask(task)
   }
 
@@ -3980,12 +4013,11 @@ function LauncherModal({
                   autoFocus={slot === fillSlots[0]}
                   value={fillDraft.values[slot.label] || ''}
                   placeholder={`请输入${slot.label}...`}
-                  onChange={(event) =>
-                    setFillDraft({
-                      ...fillDraft,
-                      values: { ...fillDraft.values, [slot.label]: event.target.value }
-                    })
-                  }
+                  onChange={(event) => {
+                    const values = { ...fillDraft.values, [slot.label]: event.target.value }
+                    setFillDraft({ ...fillDraft, values })
+                    if (fillDraft.historyKey) writeStoredQuickLauncherFillValues(fillDraft.historyKey, values)
+                  }}
                 />
               </label>
             ))}
@@ -3999,7 +4031,7 @@ function LauncherModal({
               className="primary-action"
               type="button"
               disabled={!fillReady}
-              onClick={() => fillDraft.submit(filledPromptContent)}
+              onClick={() => fillDraft.submit(filledPromptContent, fillDraft.values)}
             >
               {fillDraft.submitLabel}
             </button>
@@ -4939,9 +4971,68 @@ function readStoredQuickLauncherGroup(mode: LauncherMode): string {
   return localStorage.getItem(`${quickLauncherGroupStoragePrefix}-${mode}`) || 'all'
 }
 
+function readStoredQuickLauncherQuery(mode: LauncherMode): string {
+  return localStorage.getItem(`${quickLauncherQueryStoragePrefix}-${mode}`) || ''
+}
+
+function writeStoredQuickLauncherQuery(mode: LauncherMode, query: string): void {
+  try {
+    localStorage.setItem(`${quickLauncherQueryStoragePrefix}-${mode}`, query)
+  } catch {
+    // Browser storage can be unavailable in private or restricted contexts.
+  }
+}
+
 function writeStoredQuickLauncherState(mode: LauncherMode, selectedGroup: string): void {
   localStorage.setItem(quickLauncherModeStorageKey, mode)
   localStorage.setItem(`${quickLauncherGroupStoragePrefix}-${mode}`, selectedGroup || 'all')
+}
+
+function quickLauncherHistoryKey(mode: LauncherMode, itemId: string): string {
+  return `${mode}:${itemId}`
+}
+
+function readStoredQuickLauncherFillValues(historyKey: string, slots: PromptFillSlot[]): Record<string, string> {
+  const emptyValues = Object.fromEntries(slots.map((slot) => [slot.label, '']))
+  try {
+    const raw = localStorage.getItem(quickLauncherFillStorageKey)
+    if (!raw) return emptyValues
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const stored = parsed?.[historyKey]
+    if (!stored || typeof stored !== 'object') return emptyValues
+    return Object.fromEntries(
+      slots.map((slot) => [slot.label, typeof (stored as Record<string, unknown>)[slot.label] === 'string' ? (stored as Record<string, string>)[slot.label] : ''])
+    )
+  } catch {
+    return emptyValues
+  }
+}
+
+function writeStoredQuickLauncherFillValues(historyKey: string, values: Record<string, string>): void {
+  try {
+    const raw = localStorage.getItem(quickLauncherFillStorageKey)
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+    parsed[historyKey] = values
+    localStorage.setItem(quickLauncherFillStorageKey, JSON.stringify(parsed))
+  } catch {
+    // Browser storage can be unavailable in private or restricted contexts.
+  }
+}
+
+function writeStoredQuickLauncherLastCall(record: {
+  mode: LauncherMode
+  itemId: string
+  title: string
+  selectedGroup: string
+  query: string
+  values: Record<string, string>
+  updatedAt: number
+}): void {
+  try {
+    localStorage.setItem(quickLauncherLastCallStorageKey, JSON.stringify(record))
+  } catch {
+    // Browser storage can be unavailable in private or restricted contexts.
+  }
 }
 
 function createGroupFromName(name: string, groups: GroupItem[]): GroupItem {

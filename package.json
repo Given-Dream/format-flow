@@ -1,6 +1,6 @@
 {
   "name": "format-flow",
-  "version": "0.1.38",
+  "version": "0.1.39",
   "description": "Local prompt and Codex Skill workflow manager",
   "main": "./out/main/index.js",
   "private": true,
@@ -45,6 +45,7 @@
     "directories": {
       "output": "release"
     },
+    "icon": "resources/format-flow.ico",
     "files": [
       "out/**/*",
       "package.json",
@@ -68,7 +69,6 @@
       }
     ],
     "win": {
-      "signAndEditExecutable": false,
       "target": [
         {
           "target": "nsis",

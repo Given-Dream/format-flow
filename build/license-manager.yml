@@ -1,6 +1,7 @@
 appId: com.songyu.formatflow.licensemanager
 productName: Format Flow License Manager
 artifactName: Format-Flow-License-Manager-Setup-${version}.${ext}
+icon: resources/format-flow.ico
 directories:
   output: release/license-manager
 files:
@@ -11,7 +12,6 @@ files:
 extraMetadata:
   main: tools/license-manager-app.cjs
 win:
-  signAndEditExecutable: false
   target:
     - target: nsis
       arch:

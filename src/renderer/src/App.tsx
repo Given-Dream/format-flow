@@ -3031,9 +3031,104 @@ function PromptEditorModal({
 }): JSX.Element {
   const [draft, setDraft] = useState(prompt)
   const [tagText, setTagText] = useState(tagsToText(prompt.tags))
+  const [findText, setFindText] = useState('')
+  const [replaceText, setReplaceText] = useState('')
+  const [caseSensitive, setCaseSensitive] = useState(false)
+  const [searchMessage, setSearchMessage] = useState('')
+  const contentRef = useRef<HTMLTextAreaElement | null>(null)
+  const findInputRef = useRef<HTMLInputElement | null>(null)
+  const pendingSelection = useRef<{ start: number; end: number } | null>(null)
+  const matches = useMemo(() => findTextMatches(draft.content, findText, caseSensitive), [draft.content, findText, caseSensitive])
+
+  useEffect(() => {
+    const selection = pendingSelection.current
+    const textarea = contentRef.current
+    if (!selection || !textarea) return
+    pendingSelection.current = null
+    requestAnimationFrame(() => {
+      textarea.focus()
+      textarea.setSelectionRange(selection.start, selection.end)
+    })
+  }, [draft.content])
+
+  function focusMatch(direction: 1 | -1): void {
+    if (!findText.trim()) {
+      setSearchMessage('\u8bf7\u8f93\u5165\u8981\u67e5\u627e\u7684\u5185\u5bb9')
+      findInputRef.current?.focus()
+      return
+    }
+    if (matches.length === 0) {
+      setSearchMessage('\u672a\u627e\u5230\u5339\u914d\u5185\u5bb9')
+      return
+    }
+
+    const textarea = contentRef.current
+    const position = direction === 1 ? textarea?.selectionEnd ?? 0 : textarea?.selectionStart ?? 0
+    let match: TextMatch | undefined
+    if (direction === 1) {
+      match = matches.find((item) => item.start >= position) || matches[0]
+    } else {
+      for (let index = matches.length - 1; index >= 0; index -= 1) {
+        if (matches[index].end <= position) {
+          match = matches[index]
+          break
+        }
+      }
+      match ||= matches[matches.length - 1]
+    }
+
+    if (!match || !textarea) return
+    textarea.focus()
+    textarea.setSelectionRange(match.start, match.end)
+    setSearchMessage(`${matches.indexOf(match) + 1}/${matches.length}`)
+  }
+
+  function replaceCurrent(): void {
+    const textarea = contentRef.current
+    if (!textarea || !findText) {
+      focusMatch(1)
+      return
+    }
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+    const selected = draft.content.slice(start, end)
+    const selectedMatches = caseSensitive ? selected === findText : selected.toLowerCase() === findText.toLowerCase()
+    if (!selectedMatches) {
+      focusMatch(1)
+      return
+    }
+
+    const nextContent = `${draft.content.slice(0, start)}${replaceText}${draft.content.slice(end)}`
+    pendingSelection.current = { start, end: start + replaceText.length }
+    setDraft({ ...draft, content: nextContent })
+    setSearchMessage('\u5df2\u66ff\u6362 1 \u5904')
+  }
+
+  function replaceAll(): void {
+    if (!findText) {
+      setSearchMessage('\u8bf7\u8f93\u5165\u8981\u67e5\u627e\u7684\u5185\u5bb9')
+      findInputRef.current?.focus()
+      return
+    }
+    if (matches.length === 0) {
+      setSearchMessage('\u672a\u627e\u5230\u5339\u914d\u5185\u5bb9')
+      return
+    }
+
+    const chunks: string[] = []
+    let cursor = 0
+    for (const match of matches) {
+      chunks.push(draft.content.slice(cursor, match.start), replaceText)
+      cursor = match.end
+    }
+    chunks.push(draft.content.slice(cursor))
+    pendingSelection.current = { start: 0, end: 0 }
+    setDraft({ ...draft, content: chunks.join('') })
+    setSearchMessage(`\u5df2\u5168\u90e8\u66ff\u6362 ${matches.length} \u5904`)
+  }
 
   return (
-    <Modal title="编辑提示词" close={close}>
+    <Modal title="编辑提示词" close={close} className="prompt-editor-modal">
       <label>
         标题
         <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
@@ -3046,9 +3141,68 @@ function PromptEditorModal({
         分类标签
         <input value={tagText} onChange={(event) => setTagText(event.target.value)} placeholder="codex, review" />
       </label>
+      <section className="prompt-find-replace" aria-label={'\u6b63\u6587\u67e5\u627e\u548c\u66ff\u6362'}>
+        <div className="prompt-find-row">
+          <label>
+            {'\u67e5\u627e'}
+            <input
+              ref={findInputRef}
+              value={findText}
+              onChange={(event) => {
+                setFindText(event.target.value)
+                setSearchMessage('')
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  focusMatch(event.shiftKey ? -1 : 1)
+                }
+              }}
+              placeholder={'\u8f93\u5165\u6b63\u6587\u4e2d\u7684\u6587\u5b57'}
+            />
+          </label>
+          <label>
+            {'\u66ff\u6362\u4e3a'}
+            <input value={replaceText} onChange={(event) => setReplaceText(event.target.value)} placeholder={'\u53ef\u7559\u7a7a\u4ee5\u5220\u9664'} />
+          </label>
+          <label className="prompt-find-checkbox">
+            <span>{'\u5927\u5c0f\u5199\u654f\u611f'}</span>
+            <input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} />
+          </label>
+        </div>
+        <div className="prompt-find-actions">
+          <button type="button" onClick={() => focusMatch(-1)}>
+            {'\u4e0a\u4e00\u4e2a'}
+          </button>
+          <button type="button" onClick={() => focusMatch(1)}>
+            {'\u4e0b\u4e00\u4e2a'}
+          </button>
+          <button type="button" onClick={replaceCurrent}>
+            {'\u66ff\u6362\u5f53\u524d'}
+          </button>
+          <button type="button" onClick={replaceAll}>
+            {'\u5168\u90e8\u66ff\u6362'}
+          </button>
+          <span className="prompt-find-status" role="status">
+            {searchMessage || (findText ? `${matches.length} \u5904\u5339\u914d` : '\u8f93\u5165\u6587\u5b57\u540e\u5f00\u59cb\u67e5\u627e')}
+          </span>
+        </div>
+      </section>
       <label className="grow">
         正文
-        <textarea className="content-editor" value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} />
+        <textarea
+          ref={contentRef}
+          className="content-editor"
+          value={draft.content}
+          onChange={(event) => setDraft({ ...draft, content: event.target.value })}
+          onKeyDown={(event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+              event.preventDefault()
+              findInputRef.current?.focus()
+              findInputRef.current?.select()
+            }
+          }}
+        />
       </label>
       <div className="inline-actions">
         <button className="primary-action" type="button" onClick={() => void save({ ...draft, tags: parseTags(tagText) })}>
@@ -3063,6 +3217,23 @@ function PromptEditorModal({
       </div>
     </Modal>
   )
+}
+
+type TextMatch = { start: number; end: number }
+
+function findTextMatches(text: string, query: string, caseSensitive: boolean): TextMatch[] {
+  if (!query) return []
+  const source = caseSensitive ? text : text.toLowerCase()
+  const target = caseSensitive ? query : query.toLowerCase()
+  const matches: TextMatch[] = []
+  let cursor = 0
+  while (cursor <= source.length - target.length) {
+    const start = source.indexOf(target, cursor)
+    if (start < 0) break
+    matches.push({ start, end: start + query.length })
+    cursor = start + Math.max(query.length, 1)
+  }
+  return matches
 }
 
 const skillEditorLabels = {

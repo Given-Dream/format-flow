@@ -866,6 +866,58 @@ label {
   font-size: 13px;
 }
 
+.prompt-editor-modal {
+  width: min(1080px, calc(100vw - 56px));
+}
+
+.prompt-editor-modal .modal-body {
+  grid-template-rows: auto auto auto auto minmax(280px, 1fr) auto;
+}
+
+.prompt-find-replace {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+}
+
+.prompt-find-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.prompt-find-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.prompt-find-checkbox input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.prompt-find-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.prompt-find-status {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .readonly {
   color: #333333;
 }
@@ -2103,5 +2155,14 @@ label {
 
   .modal-card {
     width: calc(100vw - 24px);
+  }
+
+  .prompt-find-row {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-find-status {
+    width: 100%;
+    margin-left: 0;
   }
 }

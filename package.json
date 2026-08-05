@@ -1,6 +1,6 @@
 {
   "name": "format-flow",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "Local prompt and Codex Skill workflow manager",
   "main": "./out/main/index.js",
   "private": true,

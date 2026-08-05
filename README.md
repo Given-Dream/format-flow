@@ -2,11 +2,12 @@
 
 Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工作流与 MCP 管理器。它将分散在文件、Codex 目录和浏览器中的 AI 工作资产集中管理，并通过快捷调用、变量填充、顺序运行、导入导出和备份形成可复用的个人工作流。
 
-当前版本：`v0.1.40`，历史版本v0.1.38以下无密钥，若使用新版请联系作者。
+当前版本：`v0.1.41`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
 
 ## 下载与安装
 
-- [下载 Format Flow v0.1.40 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.40/Format-Flow-Setup-0.1.40.exe)
+- [下载 Format Flow v0.1.41 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.41/Format-Flow-Setup-0.1.41.exe)
+- 管理员 License Manager 不放在公开 Release，授权管理员请通过私有仓库获取。
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
 - Release 同时提供 `.blockmap` 和 `latest.yml`，便于分发安装包及其版本元数据。
@@ -23,7 +24,9 @@ Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工�
 5. 遇到 `【请填写：xx】` 或 `{{variable}}` 时，先完成变量表单再复制或运行。
 6. 使用剪贴板或浏览器插件连接 AI 网页，并通过本地/Git 备份长期保存数据。
 
-## 版本历史
+## 从 v0.1.1 到当前版本
+
+README 已按当前代码重写，不再沿用 `v0.1.1` 时仅覆盖基础功能的说明。后续版本的主要演进如下：
 
 | 版本阶段 | 主要变化 |
 | --- | --- |
@@ -36,6 +39,7 @@ Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工�
 | `v0.1.38` | 快捷调用记住各模式的搜索、分组和上次填写的自定义变量；加入机器码绑定的永久授权和管理员授权管理器。 |
 | `v0.1.39` | 更换节点流应用图标；提示词正文编辑器加入查找定位、区分大小写、当前替换和全部替换。 |
 | `v0.1.40` | 将节点流图标显示到应用内品牌区域；查找结果会自动选中并滚动正文到关键词所在行。 |
+| `v0.1.41` | 修复 Electron `file://` 页面下品牌图标路径错误导致图片无法显示的问题。 |
 
 ## 功能展示
 

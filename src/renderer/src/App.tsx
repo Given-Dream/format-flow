@@ -217,7 +217,7 @@ const quickLauncherFillStorageKey = 'format-flow-quick-launcher-fill-history'
 const quickLauncherLastCallStorageKey = 'format-flow-quick-launcher-last-call'
 
 function FormatFlowMark(): JSX.Element {
-  return <img className="brand-mark" src="/format-flow.svg" alt="Format Flow" />
+  return <img className="brand-mark" src="./format-flow.svg" alt="Format Flow" />
 }
 
 async function writeClipboardText(text: string): Promise<{ ok: boolean; message: string }> {

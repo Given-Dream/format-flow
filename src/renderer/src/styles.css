@@ -176,13 +176,10 @@ label {
 }
 
 .brand-mark {
-  display: grid;
+  display: block;
   width: 38px;
   height: 38px;
-  place-items: center;
-  color: var(--on-accent);
-  font-weight: 900;
-  background: var(--accent);
+  object-fit: cover;
   border-radius: var(--radius);
   box-shadow: var(--shadow-soft);
 }

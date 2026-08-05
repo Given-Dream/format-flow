@@ -2,11 +2,11 @@
 
 Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工作流与 MCP 管理器。它将分散在文件、Codex 目录和浏览器中的 AI 工作资产集中管理，并通过快捷调用、变量填充、顺序运行、导入导出和备份形成可复用的个人工作流。
 
-当前版本：`v0.1.39`，历史版本无密钥，若使用新版请联系作者。
+当前版本：`v0.1.40`，历史版本无密钥，若使用新版请联系作者。
 
 ## 下载与安装
 
-- [下载 Format Flow v0.1.39 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.39/Format-Flow-Setup-0.1.39.exe)
+- [下载 Format Flow v0.1.40 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.40/Format-Flow-Setup-0.1.40.exe)
 - 管理员 License Manager 不放在公开 Release，授权管理员请通过私有仓库获取。
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
@@ -38,6 +38,7 @@ README 已按当前代码重写，不再沿用 `v0.1.1` 时仅覆盖基础功能
 | `v0.1.36` - `v0.1.37` | 改善顺序运行在窄窗口中的滚动与操作布局；浏览器插件支持在弹窗中授权、管理和动态连接自定义 AI 网站域名。 |
 | `v0.1.38` | 快捷调用记住各模式的搜索、分组和上次填写的自定义变量；加入机器码绑定的永久授权和管理员授权管理器。 |
 | `v0.1.39` | 更换节点流应用图标；提示词正文编辑器加入查找定位、区分大小写、当前替换和全部替换。 |
+| `v0.1.40` | 将节点流图标显示到应用内品牌区域；查找结果会自动选中并滚动正文到关键词所在行。 |
 
 ## 功能展示
 

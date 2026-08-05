@@ -216,6 +216,10 @@ const quickLauncherQueryStoragePrefix = 'format-flow-quick-launcher-query'
 const quickLauncherFillStorageKey = 'format-flow-quick-launcher-fill-history'
 const quickLauncherLastCallStorageKey = 'format-flow-quick-launcher-last-call'
 
+function FormatFlowMark(): JSX.Element {
+  return <img className="brand-mark" src="/format-flow.svg" alt="Format Flow" />
+}
+
 async function writeClipboardText(text: string): Promise<{ ok: boolean; message: string }> {
   if (!text.trim()) return { ok: false, message: '没有可复制的内容' }
   if (formatFlow.writeClipboardText) return formatFlow.writeClipboardText(text)
@@ -509,7 +513,7 @@ export function App(): JSX.Element {
     return (
       <main className="boot">
         <div className="boot-card">
-          <div className="brand-mark">FF</div>
+          <FormatFlowMark />
           <h1>Format Flow</h1>
           <p>{notice}</p>
         </div>
@@ -521,7 +525,7 @@ export function App(): JSX.Element {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">FF</div>
+          <FormatFlowMark />
           <div>
             <div className="brand-title">
               <strong>Format Flow</strong>
@@ -3080,6 +3084,13 @@ function PromptEditorModal({
     if (!match || !textarea) return
     textarea.focus()
     textarea.setSelectionRange(match.start, match.end)
+    requestAnimationFrame(() => {
+      const lineHeight = Number.parseFloat(window.getComputedStyle(textarea).lineHeight) || 20
+      const lineNumber = draft.content.slice(0, match.start).split('\n').length - 1
+      const targetTop = lineNumber * lineHeight - textarea.clientHeight / 2 + lineHeight / 2
+      textarea.scrollTop = Math.max(0, targetTop)
+      textarea.setSelectionRange(match.start, match.end)
+    })
     setSearchMessage(`${matches.indexOf(match) + 1}/${matches.length}`)
   }
 
@@ -5071,7 +5082,7 @@ function LicenseGate({
   return (
     <main className="license-gate">
       <section className="license-card">
-        <div className="brand-mark">FF</div>
+        <FormatFlowMark />
         <h1>Format Flow 授权</h1>
         <p>首次使用需要管理员根据本机机器码生成永久授权密码。</p>
         <label>

@@ -6,8 +6,7 @@ Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工�
 
 ## 下载与安装
 
-- [下载 Format Flow v0.1.41 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.41/Format-Flow-Setup-0.1.41.exe)
-- 管理员 License Manager 不放在公开 Release，授权管理员请通过私有仓库获取。
+- [下载 Format Flow v0.1.41 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.41/Format-Flow-Setup-0.1.41.exe)。
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
 - Release 同时提供 `.blockmap` 和 `latest.yml`，便于分发安装包及其版本元数据。

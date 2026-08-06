@@ -88,6 +88,7 @@ let mouseShortcutAccelerator = ''
 let shortcutCaptureActive = false
 let captureAltSpaceRegistered = false
 let lastLauncherOpenAt = 0
+let releaseForegroundTimer: NodeJS.Timeout | null = null
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 
 function getDataDirectoryPreferencePath(): string {
@@ -1794,23 +1795,45 @@ function createWindow(): void {
   }
 }
 
+function showMainWindowInForeground(temporaryAlwaysOnTop = false): void {
+  const window = mainWindow
+  if (!window || window.isDestroyed()) return
+  if (window.isMinimized()) window.restore()
+
+  if (releaseForegroundTimer) {
+    clearTimeout(releaseForegroundTimer)
+    releaseForegroundTimer = null
+  }
+
+  window.setFocusable(true)
+  window.show()
+  if (temporaryAlwaysOnTop) window.setAlwaysOnTop(true, 'screen-saver')
+  window.moveTop()
+  window.focus()
+  window.flashFrame(false)
+
+  if (temporaryAlwaysOnTop) {
+    releaseForegroundTimer = setTimeout(() => {
+      releaseForegroundTimer = null
+      if (window.isDestroyed()) return
+      window.setAlwaysOnTop(false)
+      window.flashFrame(false)
+    }, 1200)
+  }
+}
+
 async function toggleMainWindow(): Promise<void> {
   if (!mainWindow) return
   const now = Date.now()
   if (now - lastLauncherOpenAt < 500) return
   lastLauncherOpenAt = now
   await rememberExternalForegroundWindow()
-  mainWindow.show()
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.focus()
   mainWindow.webContents.send('launcher:open')
+  showMainWindowInForeground(true)
 }
 
 function focusExistingWindow(): void {
-  if (!mainWindow) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.show()
-  mainWindow.focus()
+  showMainWindowInForeground(true)
 }
 
 async function registerStoredShortcut(): Promise<ShortcutResult> {

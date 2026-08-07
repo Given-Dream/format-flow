@@ -379,6 +379,46 @@ try {
 }
 `.trim()
 
+const clipboardAutomationScript = String.raw`
+param(
+  [Parameter(Mandatory=$true)][string]$PayloadPath
+)
+
+$ErrorActionPreference = 'Stop'
+$null = Add-Type -AssemblyName System.Windows.Forms
+$payload = ([IO.File]::ReadAllText($PayloadPath, [Text.Encoding]::UTF8) | ConvertFrom-Json)
+$data = New-Object System.Windows.Forms.DataObject
+$includeText = [bool]$payload.includeText
+if ($includeText) {
+  $data.SetText([string]$payload.text, [System.Windows.Forms.TextDataFormat]::UnicodeText)
+}
+
+[string[]]$paths = @($payload.filePaths | ForEach-Object { [string]$_ })
+if ($paths.Count -eq 0) { throw 'FORMAT_FLOW_CLIPBOARD_FILES_MISSING' }
+$files = New-Object System.Collections.Specialized.StringCollection
+$files.AddRange($paths)
+$data.SetFileDropList($files)
+$dropEffect = New-Object byte[] 4
+$dropEffect[0] = 5
+$data.SetData('Preferred DropEffect', $dropEffect)
+
+$written = $false
+for ($attempt = 0; $attempt -lt 5 -and -not $written; $attempt++) {
+  try {
+    [System.Windows.Forms.Clipboard]::SetDataObject($data, $true)
+    $written = $true
+  } catch {
+    if ($attempt -ge 4) { throw }
+    Start-Sleep -Milliseconds 100
+  }
+}
+if (-not $written) { throw 'FORMAT_FLOW_CLIPBOARD_BUSY' }
+if (-not [System.Windows.Forms.Clipboard]::ContainsFileDropList()) { throw 'FORMAT_FLOW_CLIPBOARD_FILES_MISSING' }
+if ($includeText -and -not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)) {
+  throw 'FORMAT_FLOW_CLIPBOARD_TEXT_MISSING'
+}
+`.trim()
+
 export function configureTemporaryWordStorage(settings: Pick<AppSettings, 'temporaryWordDirectory' | 'temporaryWordRetentionHours'>): void {
   configuredRootDirectory = settings.temporaryWordDirectory?.trim()
     ? path.resolve(settings.temporaryWordDirectory.trim())
@@ -520,37 +560,29 @@ async function writeTemporaryWordClipboard(
   managedPaths: string[],
   includeText: boolean
 ): Promise<ExportResult> {
-  const textBase64 = Buffer.from(text, 'utf8').toString('base64')
-
-  const jsonBase64 = Buffer.from(JSON.stringify(managedPaths), 'utf8').toString('base64')
-  const command = [
-    'Add-Type -AssemblyName System.Windows.Forms',
-    `$pathsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${jsonBase64}'))`,
-    '[string[]]$paths = $pathsJson | ConvertFrom-Json',
-    '$data = New-Object System.Windows.Forms.DataObject',
-    ...(includeText
-      ? [
-          `$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${textBase64}'))`,
-          '$data.SetText($text, [System.Windows.Forms.TextDataFormat]::UnicodeText)'
-        ]
-      : []),
-    '$files = New-Object System.Collections.Specialized.StringCollection',
-    '$files.AddRange([string[]]$paths)',
-    '$data.SetFileDropList($files)',
-    '$dropEffect = New-Object byte[] 4',
-    '$dropEffect[0] = 5',
-    '$data.SetData("Preferred DropEffect", $dropEffect)',
-    '$written = $false',
-    'for ($attempt = 0; $attempt -lt 5 -and -not $written; $attempt++) { try { [System.Windows.Forms.Clipboard]::SetDataObject($data, $true); $written = $true } catch { if ($attempt -ge 4) { throw }; Start-Sleep -Milliseconds 100 } }',
-    'if (-not $written) { throw "FORMAT_FLOW_CLIPBOARD_BUSY" }',
-    'if (-not [System.Windows.Forms.Clipboard]::ContainsFileDropList()) { throw "FORMAT_FLOW_CLIPBOARD_FILES_MISSING" }',
-    ...(includeText
-      ? ['if (-not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)) { throw "FORMAT_FLOW_CLIPBOARD_TEXT_MISSING" }']
-      : [])
-  ].join('; ')
-  const encodedCommand = Buffer.from(command, 'utf16le').toString('base64')
+  const root = getTemporaryWordRoot()
+  const token = randomBytes(6).toString('hex')
+  const scriptPath = path.join(root, `.format-flow-clipboard-${token}.ps1`)
+  const payloadPath = path.join(root, `.format-flow-clipboard-${token}.json`)
   try {
-    await execFile('powershell.exe', ['-NoProfile', '-STA', '-NonInteractive', '-EncodedCommand', encodedCommand], {
+    await fs.mkdir(root, { recursive: true })
+    await fs.writeFile(scriptPath, `\uFEFF${clipboardAutomationScript}\r\n`, 'utf8')
+    await fs.writeFile(
+      payloadPath,
+      JSON.stringify({ text, filePaths: managedPaths, includeText }),
+      'utf8'
+    )
+    await execFile('powershell.exe', [
+      '-NoProfile',
+      '-STA',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      scriptPath,
+      '-PayloadPath',
+      payloadPath
+    ], {
       windowsHide: true,
       timeout: 15_000
     })
@@ -569,6 +601,11 @@ async function writeTemporaryWordClipboard(
         ? `复制填充内容和附件失败：${errorMessage(error)}`
         : `复制临时 Word 文件失败：${errorMessage(error)}`
     }
+  } finally {
+    await Promise.all([
+      fs.rm(scriptPath, { force: true }).catch(() => undefined),
+      fs.rm(payloadPath, { force: true }).catch(() => undefined)
+    ])
   }
 }
 

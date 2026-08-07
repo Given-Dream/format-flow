@@ -2737,6 +2737,10 @@ function SettingsPanel({
   const [shortcut, setShortcut] = useState(store.settings.shortcut)
   const [dataDirectory, setDataDirectory] = useState(store.settings.dataDirectory || '')
   const [backupDirectory, setBackupDirectory] = useState(store.settings.backupDirectory || '')
+  const [temporaryWordDirectory, setTemporaryWordDirectory] = useState(store.settings.temporaryWordDirectory || '')
+  const [temporaryWordRetentionHours, setTemporaryWordRetentionHours] = useState(
+    store.settings.temporaryWordRetentionHours || 24
+  )
   const [gitBackupRemote, setGitBackupRemote] = useState(store.settings.gitBackupRemote || '')
   const [gitBackupBranch, setGitBackupBranch] = useState(store.settings.gitBackupBranch || 'main')
   const [gitBackupUserEmail, setGitBackupUserEmail] = useState(store.settings.gitBackupUserEmail || '2878705044@qq.com')
@@ -2859,6 +2863,47 @@ function SettingsPanel({
   async function saveBackupDirectory(): Promise<void> {
     await commit({ ...store, settings: { ...store.settings, backupDirectory } })
     setNotice(backupDirectory ? '备份目录已保存' : '备份目录已恢复默认')
+  }
+
+  async function chooseTemporaryWordDirectory(): Promise<void> {
+    if (isBrowserReviewMode() || !formatFlow.chooseTemporaryWordDirectory) {
+      setNotice('浏览器审查模式不能选择临时文档目录。')
+      return
+    }
+    const result = await formatFlow.chooseTemporaryWordDirectory()
+    setNotice(result.message)
+    if (!result.ok) return
+    setTemporaryWordDirectory(result.path)
+    await commit({
+      ...store,
+      settings: { ...store.settings, temporaryWordDirectory: result.path, temporaryWordRetentionHours }
+    })
+    await refreshPaths()
+  }
+
+  async function saveTemporaryWordSettings(): Promise<void> {
+    const retentionHours = Math.min(720, Math.max(1, Math.round(temporaryWordRetentionHours || 24)))
+    await commit({
+      ...store,
+      settings: {
+        ...store.settings,
+        temporaryWordDirectory: temporaryWordDirectory.trim(),
+        temporaryWordRetentionHours: retentionHours
+      }
+    })
+    setTemporaryWordRetentionHours(retentionHours)
+    await refreshPaths()
+    setNotice('临时文档设置已保存')
+  }
+
+  async function openTemporaryWordDirectory(): Promise<void> {
+    const result = await formatFlow.openTemporaryWordDirectory()
+    setNotice(result.message)
+  }
+
+  async function cleanupTemporaryWords(): Promise<void> {
+    const result = await formatFlow.cleanupTemporaryWords()
+    setNotice(result.message)
   }
 
   async function createBackupNow(): Promise<void> {
@@ -2993,7 +3038,52 @@ function SettingsPanel({
         </dl>
       </div>
 
-      <div className="settings-card">
+      <div className="settings-card temporary-word-settings-card">
+        <PanelHeader title="临时 Word 文档" detail="管理自定义变量生成的临时附件" />
+        <label>
+          存放目录
+          <input
+            value={temporaryWordDirectory}
+            onChange={(event) => setTemporaryWordDirectory(event.target.value)}
+            placeholder="留空使用系统临时目录"
+          />
+        </label>
+        <div className="inline-actions wrap">
+          <button type="button" onClick={() => void chooseTemporaryWordDirectory()}>
+            选择目录
+          </button>
+          <button type="button" onClick={() => setTemporaryWordDirectory('')}>
+            恢复默认
+          </button>
+          <button type="button" onClick={() => void openTemporaryWordDirectory()}>
+            打开目录
+          </button>
+        </div>
+        <label>
+          过期清理时间（小时）
+          <input
+            type="number"
+            min={1}
+            max={720}
+            step={1}
+            value={temporaryWordRetentionHours}
+            onChange={(event) => setTemporaryWordRetentionHours(Number(event.target.value))}
+          />
+        </label>
+        <div className="path-box">
+          <code title={paths?.temporaryWordDirectory}>{paths?.temporaryWordDirectory || '尚未加载'}</code>
+        </div>
+        <div className="inline-actions wrap">
+          <button className="primary-action" type="button" onClick={() => void saveTemporaryWordSettings()}>
+            保存临时文档设置
+          </button>
+          <button type="button" onClick={() => void cleanupTemporaryWords()}>
+            清理过期文档
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-card backup-settings-card">
         <PanelHeader title="备份目录" detail="用于备份提示词、Skill、MCP、分组和工作流；安装包阶段保留这个配置入口" />
         <label>
           备份目录
@@ -4372,14 +4462,6 @@ function LauncherModal({
                 })}
               <div className="inline-actions wrap">
                 <button type="button" onClick={() => void copyAttachmentFiles(Object.values(fillDraft.attachments))}>复制全部附件文件</button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void formatFlow.cleanupTemporaryWords().then((result: { message: string }) => setAttachmentNotice(result.message))
-                  }
-                >
-                  清理过期文档
-                </button>
               </div>
             </div>
           )}
@@ -6679,6 +6761,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     skillMetadataPath: 'browser-localStorage:skillIndex',
     managedSkillDirectory: 'browser-review-mode',
     dataDirectoryPreferencePath: '',
+    temporaryWordDirectory: 'browser-review-mode',
     defaultSkillDirectories: []
   }
 
@@ -6711,6 +6794,11 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
       ok: false,
       path: '',
       message: '浏览器审查模式不能选择本地备份目录；桌面版中会打开目录选择器。'
+    }),
+    chooseTemporaryWordDirectory: async () => ({
+      ok: false,
+      path: '',
+      message: '浏览器审查模式不能选择临时文档目录。'
     }),
     createBackup: async (store: AppStore) => createBrowserBackup(store),
     createGitBackup: async (store: AppStore) => createBrowserBackup(store, true),
@@ -6776,6 +6864,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     getPathForFile: () => '',
     openTemporaryWord: async () => '浏览器审查模式不能打开本地 Word 文档。',
     revealTemporaryWord: async () => undefined,
+    openTemporaryWordDirectory: async () => ({ ok: false, message: '浏览器审查模式不能打开临时文档目录。' }),
     copyTemporaryWordFiles: async () => ({ ok: false, message: '浏览器审查模式不能复制本地 Word 文件。' }),
     copyTemporaryWordPayload: async () => ({ ok: false, message: '浏览器审查模式不能复制本地 Word 附件。' }),
     removeTemporaryWord: async () => ({ ok: false, message: '浏览器审查模式不能删除本地 Word 文件。', removed: 0 }),

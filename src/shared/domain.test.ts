@@ -72,6 +72,20 @@ describe('tag parsing and search', () => {
     expect(matchesTextAndTags(item, '验证', ['codex'])).toBe(true)
     expect(matchesTextAndTags(item, '验证', ['missing'])).toBe(false)
   })
+
+  it('normalizes temporary Word retention settings', () => {
+    expect(
+      normalizeStore({ settings: { shortcut: 'Alt+Space', skillDirectories: [], temporaryWordRetentionHours: 0 } })
+        .settings.temporaryWordRetentionHours
+    ).toBe(1)
+    expect(
+      normalizeStore({ settings: { shortcut: 'Alt+Space', skillDirectories: [], temporaryWordRetentionHours: 999 } })
+        .settings.temporaryWordRetentionHours
+    ).toBe(720)
+    expect(
+      normalizeStore({ settings: { shortcut: 'Alt+Space', skillDirectories: [] } }).settings.temporaryWordRetentionHours
+    ).toBe(24)
+  })
 })
 
 describe('skill parsing', () => {

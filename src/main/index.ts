@@ -12,9 +12,12 @@ import { activateLicense, getLicenseStatus } from './license'
 import {
   captureWordSelection,
   cleanupTemporaryWordAttachments,
+  configureTemporaryWordStorage,
   copyTemporaryWordFiles,
   copyTemporaryWordPayload,
   createTemporaryWordFromFiles,
+  getTemporaryWordRoot,
+  getTemporaryWordRetentionHours,
   removeTemporaryWordAttachment
 } from './temporary-word'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
@@ -758,6 +761,7 @@ async function loadStore(): Promise<AppStore> {
   try {
     const content = await fs.readFile(storePath, 'utf8')
     const normalized = normalizeStore(JSON.parse(content) as Partial<AppStore>)
+    configureTemporaryWordStorage(normalized.settings)
     await saveCategorizedStoreFiles(normalized)
     return normalized
   } catch {
@@ -769,6 +773,7 @@ async function loadStore(): Promise<AppStore> {
 
 async function saveStore(store: AppStore): Promise<AppStore> {
   const normalized = normalizeStore(store)
+  configureTemporaryWordStorage(normalized.settings)
   await writeDataDirectoryPreference(normalized.settings.dataDirectory || '')
   const storePath = getStorePath()
   await fs.mkdir(path.dirname(storePath), { recursive: true })
@@ -845,6 +850,7 @@ function getPaths(): AppPaths {
     managedSkillDirectory: getManagedSkillDirectory(),
     browserExtensionDirectory: getBrowserExtensionDirectory(),
     dataDirectoryPreferencePath: getDataDirectoryPreferencePath(),
+    temporaryWordDirectory: getTemporaryWordRoot(),
     defaultSkillDirectories: defaultSkillDirectories()
   }
 }
@@ -1355,6 +1361,8 @@ async function buildBackupPayload(normalized: AppStore, timestamp: string): Prom
       skillDirectories: normalized.settings.skillDirectories,
       dataDirectory: normalized.settings.dataDirectory,
       backupDirectory: normalized.settings.backupDirectory,
+      temporaryWordDirectory: normalized.settings.temporaryWordDirectory,
+      temporaryWordRetentionHours: normalized.settings.temporaryWordRetentionHours,
       gitBackupRemote: normalized.settings.gitBackupRemote,
       gitBackupBranch: normalized.settings.gitBackupBranch,
       gitBackupUserEmail: normalized.settings.gitBackupUserEmail
@@ -1806,6 +1814,20 @@ function createWindow(): void {
   }
 }
 
+async function chooseTemporaryWordDirectory(): Promise<{ ok: boolean; path: string; message: string }> {
+  const selection = await dialog.showOpenDialog({
+    title: '选择临时 Word 文档目录',
+    properties: ['openDirectory', 'createDirectory']
+  })
+  if (selection.canceled || !selection.filePaths[0]) {
+    return { ok: false, path: '', message: '已取消选择临时文档目录' }
+  }
+
+  const selectedPath = selection.filePaths[0]
+  await fs.mkdir(selectedPath, { recursive: true })
+  return { ok: true, path: selectedPath, message: '已选择临时文档目录' }
+}
+
 function showMainWindowInForeground(temporaryAlwaysOnTop = false): void {
   const window = mainWindow
   if (!window || window.isDestroyed()) return
@@ -1957,10 +1979,15 @@ function registerIpc(): void {
   ipcMain.handle('license:getStatus', () => getLicenseStatus(app.getPath('userData')))
   ipcMain.handle('license:activate', (_event, password: string) => activateLicense(app.getPath('userData'), password))
   ipcMain.handle('store:load', () => loadStore())
-  ipcMain.handle('store:save', (_event, store: AppStore) => saveStore(store))
+  ipcMain.handle('store:save', async (_event, store: AppStore) => {
+    const saved = await saveStore(store)
+    scheduleTemporaryWordCleanup()
+    return saved
+  })
   ipcMain.handle('paths:get', () => getPaths())
   ipcMain.handle('paths:chooseDataDirectory', () => chooseDataDirectory())
   ipcMain.handle('paths:chooseBackupDirectory', () => chooseBackupDirectory())
+  ipcMain.handle('paths:chooseTemporaryWordDirectory', () => chooseTemporaryWordDirectory())
   ipcMain.handle('backup:create', (_event, store: AppStore) => createBackup(store))
   ipcMain.handle('backup:createGit', (_event, store: AppStore) => createGitBackup(store))
   ipcMain.handle('export:textFile', (_event, request: ExportTextFileRequest) => exportTextFile(request))
@@ -2017,6 +2044,14 @@ function registerIpc(): void {
   )
   ipcMain.handle('temporaryWord:open', (_event, filePath: string) => shell.openPath(filePath))
   ipcMain.handle('temporaryWord:reveal', (_event, filePath: string) => shell.showItemInFolder(filePath))
+  ipcMain.handle('temporaryWord:openDirectory', async () => {
+    const directory = getTemporaryWordRoot()
+    await fs.mkdir(directory, { recursive: true })
+    const error = await shell.openPath(directory)
+    return error
+      ? { ok: false, message: `打开临时文档目录失败：${error}`, path: directory }
+      : { ok: true, message: '已打开临时文档目录', path: directory }
+  })
   ipcMain.handle('temporaryWord:copyFiles', (_event, filePaths: string[]) => copyTemporaryWordFiles(filePaths))
   ipcMain.handle('temporaryWord:copyPayload', (_event, request: TemporaryWordClipboardRequest) =>
     copyTemporaryWordPayload(request.text, request.filePaths)
@@ -2049,6 +2084,18 @@ function registerIpc(): void {
 
 const singleInstanceLock = app.requestSingleInstanceLock()
 
+function scheduleTemporaryWordCleanup(): void {
+  if (temporaryWordCleanupTimer) clearInterval(temporaryWordCleanupTimer)
+  const retentionMilliseconds = getTemporaryWordRetentionHours() * 60 * 60 * 1000
+  const intervalMilliseconds = Math.min(
+    6 * 60 * 60 * 1000,
+    Math.max(15 * 60 * 1000, Math.floor(retentionMilliseconds / 4))
+  )
+  temporaryWordCleanupTimer = setInterval(() => {
+    void cleanupTemporaryWordAttachments()
+  }, intervalMilliseconds)
+}
+
 if (!singleInstanceLock) {
   app.quit()
 } else {
@@ -2062,10 +2109,9 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') app.setAppUserModelId('com.songyu.formatflow')
   Menu.setApplicationMenu(null)
   registerIpc()
+  await loadStore()
   await cleanupTemporaryWordAttachments()
-  temporaryWordCleanupTimer = setInterval(() => {
-    void cleanupTemporaryWordAttachments()
-  }, 6 * 60 * 60 * 1000)
+  scheduleTemporaryWordCleanup()
   startBrowserBridgeServer()
   createWindow()
   await registerStoredShortcut()

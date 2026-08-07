@@ -347,6 +347,8 @@ export function defaultStore(): AppStore {
       skillDirectories: [],
       dataDirectory: '',
       backupDirectory: '',
+      temporaryWordDirectory: '',
+      temporaryWordRetentionHours: 24,
       gitBackupRemote: '',
       gitBackupBranch: 'main',
       gitBackupUserEmail: '2878705044@qq.com'
@@ -374,12 +376,22 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
       skillDirectories: Array.isArray(value.settings?.skillDirectories) ? value.settings.skillDirectories : [],
       dataDirectory: typeof value.settings?.dataDirectory === 'string' ? value.settings.dataDirectory : '',
       backupDirectory: typeof value.settings?.backupDirectory === 'string' ? value.settings.backupDirectory : '',
+      temporaryWordDirectory:
+        typeof value.settings?.temporaryWordDirectory === 'string' ? value.settings.temporaryWordDirectory : '',
+      temporaryWordRetentionHours: normalizeTemporaryWordRetentionHours(
+        value.settings?.temporaryWordRetentionHours
+      ),
       gitBackupRemote: typeof value.settings?.gitBackupRemote === 'string' ? value.settings.gitBackupRemote : '',
       gitBackupBranch: typeof value.settings?.gitBackupBranch === 'string' ? value.settings.gitBackupBranch : 'main',
       gitBackupUserEmail:
         typeof value.settings?.gitBackupUserEmail === 'string' ? value.settings.gitBackupUserEmail : '2878705044@qq.com'
     }
   }
+}
+
+function normalizeTemporaryWordRetentionHours(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 24
+  return Math.min(720, Math.max(1, Math.round(value)))
 }
 
 function repairSplitGroupTags(prompts: PromptItem[], groups: GroupItem[]): PromptItem[] {

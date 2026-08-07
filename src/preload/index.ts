@@ -40,6 +40,8 @@ const api = {
     ipcRenderer.invoke('paths:chooseDataDirectory'),
   chooseBackupDirectory: (): Promise<{ ok: boolean; path: string; message: string }> =>
     ipcRenderer.invoke('paths:chooseBackupDirectory'),
+  chooseTemporaryWordDirectory: (): Promise<{ ok: boolean; path: string; message: string }> =>
+    ipcRenderer.invoke('paths:chooseTemporaryWordDirectory'),
   createBackup: (store: AppStore): Promise<BackupResult> => ipcRenderer.invoke('backup:create', store),
   createGitBackup: (store: AppStore): Promise<BackupResult> => ipcRenderer.invoke('backup:createGit', store),
   exportTextFile: (request: ExportTextFileRequest): Promise<ExportResult> => ipcRenderer.invoke('export:textFile', request),
@@ -81,6 +83,7 @@ const api = {
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   openTemporaryWord: (filePath: string): Promise<string> => ipcRenderer.invoke('temporaryWord:open', filePath),
   revealTemporaryWord: (filePath: string): Promise<void> => ipcRenderer.invoke('temporaryWord:reveal', filePath),
+  openTemporaryWordDirectory: (): Promise<ExportResult> => ipcRenderer.invoke('temporaryWord:openDirectory'),
   copyTemporaryWordFiles: (filePaths: string[]): Promise<ExportResult> =>
     ipcRenderer.invoke('temporaryWord:copyFiles', filePaths),
   copyTemporaryWordPayload: (request: TemporaryWordClipboardRequest): Promise<ExportResult> =>

@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import type {
+  AppSettings,
   ExportResult,
   TemporaryWordAttachment,
   TemporaryWordCleanupResult,
@@ -13,7 +14,10 @@ import type {
 } from '../shared/types'
 
 const execFile = promisify(execFileCallback)
-const retentionMilliseconds = 24 * 60 * 60 * 1000
+const defaultRetentionHours = 24
+const temporaryWordFilePattern = /^FFV-[A-F0-9]{6}__.+\.docx$/i
+let configuredRootDirectory = ''
+let configuredRetentionHours = defaultRetentionHours
 const maximumFileBytes = 100 * 1024 * 1024
 const maximumTotalBytes = 250 * 1024 * 1024
 const wordExtensions = new Set(['.doc', '.docx', '.docm', '.rtf', '.odt'])
@@ -363,8 +367,22 @@ try {
 }
 `.trim()
 
+export function configureTemporaryWordStorage(settings: Pick<AppSettings, 'temporaryWordDirectory' | 'temporaryWordRetentionHours'>): void {
+  configuredRootDirectory = settings.temporaryWordDirectory?.trim()
+    ? path.resolve(settings.temporaryWordDirectory.trim())
+    : ''
+  const hours = settings.temporaryWordRetentionHours
+  configuredRetentionHours = typeof hours === 'number' && Number.isFinite(hours)
+    ? Math.min(720, Math.max(1, Math.round(hours)))
+    : defaultRetentionHours
+}
+
 export function getTemporaryWordRoot(): string {
-  return path.join(os.tmpdir(), 'Format Flow', 'word-attachments')
+  return configuredRootDirectory || path.join(os.tmpdir(), 'Format Flow', 'word-attachments')
+}
+
+export function getTemporaryWordRetentionHours(): number {
+  return configuredRetentionHours
 }
 
 export async function captureWordSelection(
@@ -424,7 +442,9 @@ export async function removeTemporaryWordAttachment(filePath: string): Promise<T
   }
 }
 
-export async function cleanupTemporaryWordAttachments(maxAgeMilliseconds = retentionMilliseconds): Promise<TemporaryWordCleanupResult> {
+export async function cleanupTemporaryWordAttachments(
+  maxAgeMilliseconds = configuredRetentionHours * 60 * 60 * 1000
+): Promise<TemporaryWordCleanupResult> {
   const root = getTemporaryWordRoot()
   let entries
   try {
@@ -437,7 +457,7 @@ export async function cleanupTemporaryWordAttachments(maxAgeMilliseconds = reten
   const cutoff = Date.now() - Math.max(0, maxAgeMilliseconds)
   let removed = 0
   for (const entry of entries) {
-    if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.docx') continue
+    if (!entry.isFile() || !temporaryWordFilePattern.test(entry.name)) continue
     const filePath = path.join(root, entry.name)
     try {
       const stat = await fs.stat(filePath)
@@ -505,9 +525,16 @@ async function writeTemporaryWordClipboard(
     '$files = New-Object System.Collections.Specialized.StringCollection',
     '$files.AddRange([string[]]$paths)',
     '$data.SetFileDropList($files)',
+    '$dropEffect = New-Object byte[] 4',
+    '$dropEffect[0] = 5',
+    '$data.SetData("Preferred DropEffect", $dropEffect)',
     '$written = $false',
     'for ($attempt = 0; $attempt -lt 5 -and -not $written; $attempt++) { try { [System.Windows.Forms.Clipboard]::SetDataObject($data, $true); $written = $true } catch { if ($attempt -ge 4) { throw }; Start-Sleep -Milliseconds 100 } }',
-    'if (-not $written) { throw "FORMAT_FLOW_CLIPBOARD_BUSY" }'
+    'if (-not $written) { throw "FORMAT_FLOW_CLIPBOARD_BUSY" }',
+    'if (-not [System.Windows.Forms.Clipboard]::ContainsFileDropList()) { throw "FORMAT_FLOW_CLIPBOARD_FILES_MISSING" }',
+    ...(includeText
+      ? ['if (-not [System.Windows.Forms.Clipboard]::ContainsText([System.Windows.Forms.TextDataFormat]::UnicodeText)) { throw "FORMAT_FLOW_CLIPBOARD_TEXT_MISSING" }']
+      : [])
   ].join('; ')
   const encodedCommand = Buffer.from(command, 'utf16le').toString('base64')
   try {
@@ -557,7 +584,7 @@ async function createAttachmentRecord(
     path: path.join(root, fileName),
     fileName,
     createdAt: createdAt.toISOString(),
-    expiresAt: new Date(createdAt.getTime() + retentionMilliseconds).toISOString(),
+    expiresAt: new Date(createdAt.getTime() + configuredRetentionHours * 60 * 60 * 1000).toISOString(),
     source,
     sourceFileNames,
     warnings
@@ -639,7 +666,7 @@ function isManagedTemporaryDocument(filePath: string): boolean {
   const root = path.resolve(getTemporaryWordRoot())
   const resolved = path.resolve(filePath)
   const relative = path.relative(root, resolved)
-  return path.extname(resolved).toLowerCase() === '.docx' && relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+  return temporaryWordFilePattern.test(path.basename(resolved)) && relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
 }
 
 function safeFileName(value: string): string {

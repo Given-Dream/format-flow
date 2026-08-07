@@ -160,6 +160,8 @@ export type AppSettings = {
   skillDirectories: string[]
   dataDirectory?: string
   backupDirectory?: string
+  temporaryWordDirectory?: string
+  temporaryWordRetentionHours?: number
   gitBackupRemote?: string
   gitBackupBranch?: string
   gitBackupUserEmail?: string
@@ -187,6 +189,7 @@ export type AppPaths = {
   managedSkillDirectory: string
   browserExtensionDirectory?: string
   dataDirectoryPreferencePath?: string
+  temporaryWordDirectory?: string
   defaultSkillDirectories: string[]
 }
 

@@ -9,6 +9,13 @@ import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
 import { migrateTemplateDirectory, syncTemplateDirectory } from './builtin-skills'
 import { activateLicense, getLicenseStatus } from './license'
+import {
+  captureWordSelection,
+  cleanupTemporaryWordAttachments,
+  copyTemporaryWordFiles,
+  createTemporaryWordFromFiles,
+  removeTemporaryWordAttachment
+} from './temporary-word'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
 import type {
   AppPaths,
@@ -25,7 +32,8 @@ import type {
   SkillFileWriteRequest,
   SkillDirectoryNode,
   SkillDirectorySnapshot,
-  SkillItem
+  SkillItem,
+  TemporaryWordFilesRequest
 } from '../shared/types'
 
 const SKILL_TEXT_EXTENSIONS = new Set([
@@ -89,6 +97,7 @@ let shortcutCaptureActive = false
 let captureAltSpaceRegistered = false
 let lastLauncherOpenAt = 0
 let releaseForegroundTimer: NodeJS.Timeout | null = null
+let temporaryWordCleanupTimer: NodeJS.Timeout | null = null
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 
 function getDataDirectoryPreferencePath(): string {
@@ -1983,6 +1992,30 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('clipboard:writeTextAndPaste', (_event, text: string) => writeClipboardTextAndPasteWithFeedback(text))
+  ipcMain.handle('temporaryWord:captureSelection', (_event, variableName: string) => captureWordSelection(variableName))
+  ipcMain.handle('temporaryWord:chooseFiles', async (_event, variableName: string) => {
+    const selection = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, {
+          title: `选择要放入“${variableName}”临时 Word 的文件`,
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: '所有文件', extensions: ['*'] }]
+        })
+      : await dialog.showOpenDialog({
+          title: `选择要放入“${variableName}”临时 Word 的文件`,
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: '所有文件', extensions: ['*'] }]
+        })
+    if (selection.canceled || selection.filePaths.length === 0) return { ok: false, message: '已取消选择文件。' }
+    return createTemporaryWordFromFiles(variableName, selection.filePaths)
+  })
+  ipcMain.handle('temporaryWord:createFromFiles', (_event, request: TemporaryWordFilesRequest) =>
+    createTemporaryWordFromFiles(request.variableName, request.filePaths)
+  )
+  ipcMain.handle('temporaryWord:open', (_event, filePath: string) => shell.openPath(filePath))
+  ipcMain.handle('temporaryWord:reveal', (_event, filePath: string) => shell.showItemInFolder(filePath))
+  ipcMain.handle('temporaryWord:copyFiles', (_event, filePaths: string[]) => copyTemporaryWordFiles(filePaths))
+  ipcMain.handle('temporaryWord:remove', (_event, filePath: string) => removeTemporaryWordAttachment(filePath))
+  ipcMain.handle('temporaryWord:cleanup', () => cleanupTemporaryWordAttachments())
   ipcMain.handle('browserBridge:getStatus', () => getBrowserBridgeStatus())
   ipcMain.handle('browserBridge:getOutput', () => browserBridgeOutput)
   ipcMain.handle('browserBridge:queueTask', (_event, payload: Record<string, unknown>) => queueBrowserBridgeTask(payload))
@@ -2022,6 +2055,10 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') app.setAppUserModelId('com.songyu.formatflow')
   Menu.setApplicationMenu(null)
   registerIpc()
+  await cleanupTemporaryWordAttachments()
+  temporaryWordCleanupTimer = setInterval(() => {
+    void cleanupTemporaryWordAttachments()
+  }, 6 * 60 * 60 * 1000)
   startBrowserBridgeServer()
   createWindow()
   await registerStoredShortcut()
@@ -2039,6 +2076,8 @@ app.on('will-quit', () => {
   shortcutCaptureActive = false
   captureAltSpaceRegistered = false
   stopMouseShortcutWatcher()
+  if (temporaryWordCleanupTimer) clearInterval(temporaryWordCleanupTimer)
+  temporaryWordCleanupTimer = null
   globalShortcut.unregisterAll()
   browserBridgeServer?.close()
 })

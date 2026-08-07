@@ -37,6 +37,7 @@ import {
   rebuildLinearEdges,
   tagsToText
 } from '@shared/domain'
+import { temporaryWordMarker } from '@shared/temporary-word'
 import type {
   AppPaths,
   AppStore,
@@ -52,6 +53,7 @@ import type {
   SkillDirectorySnapshot,
   SkillItem,
   SkillMetadata,
+  TemporaryWordAttachment,
   Workflow,
   WorkflowNode
 } from '@shared/types'
@@ -148,6 +150,7 @@ type PromptFillDraft = {
   cancelLabel?: string
   historyKey?: string
   values: Record<string, string>
+  attachments: Record<string, TemporaryWordAttachment>
   submit: (filledContent: string, values: Record<string, string>) => void
 }
 type LicenseStatus = {
@@ -2031,6 +2034,7 @@ function RunnerPanel({
         submitLabel: '填充并发送当前任务',
         cancelLabel: '暂不发送',
         values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
+        attachments: {},
         submit: (filledTask) => {
           setTaskFillDraft(null)
           void sendTaskText(filledTask)
@@ -4050,6 +4054,8 @@ function LauncherModal({
   const [query, setQuery] = useState(() => readStoredQuickLauncherQuery(mode))
   const [selectedGroup, setSelectedGroup] = useState(() => readStoredQuickLauncherGroup(mode))
   const [fillDraft, setFillDraft] = useState<PromptFillDraft | null>(null)
+  const [attachmentBusy, setAttachmentBusy] = useState('')
+  const [attachmentNotice, setAttachmentNotice] = useState('')
   const callablePrompts = store.prompts.filter((prompt) => prompt.content.trim())
   const quickGroupTags =
     mode === 'prompt'
@@ -4073,8 +4079,11 @@ function LauncherModal({
     matchesQuickCallFilters({ title: workflow.title, summary: workflow.description, tags: workflow.tags }, query, selectedQuickTagSet, selectedGroup)
   )
   const fillSlots = fillDraft ? extractPromptFillSlots(fillDraft.content) : []
-  const filledPromptContent = fillDraft ? fillPromptPlaceholders(fillDraft.content, fillDraft.values) : ''
-  const fillReady = fillDraft ? fillSlots.every((slot) => fillDraft.values[slot.label]?.trim()) : false
+  const effectiveFillValues = fillDraft ? fillValuesWithAttachments(fillDraft.values, fillDraft.attachments) : {}
+  const filledPromptContent = fillDraft ? fillPromptPlaceholders(fillDraft.content, effectiveFillValues) : ''
+  const fillReady = fillDraft
+    ? fillSlots.every((slot) => fillDraft.values[slot.label]?.trim() || fillDraft.attachments[slot.label])
+    : false
 
   useEffect(() => {
     if (selectedGroup !== 'all' && !groupOptions.some((group) => group.tag === selectedGroup)) {
@@ -4108,6 +4117,50 @@ function LauncherModal({
     })
   }
 
+  async function createVariableAttachment(
+    label: string,
+    create: () => Promise<{ ok: boolean; message: string; attachment?: TemporaryWordAttachment }>
+  ): Promise<void> {
+    setAttachmentBusy(label)
+    setAttachmentNotice('正在生成临时 Word 文档...')
+    try {
+      const result = await create()
+      setAttachmentNotice(result.message)
+      if (!result.ok || !result.attachment) return
+      const previous = fillDraft?.attachments[label]
+      setFillDraft((current) =>
+        current
+          ? {
+              ...current,
+              attachments: { ...current.attachments, [label]: result.attachment as TemporaryWordAttachment }
+            }
+          : current
+      )
+      if (previous && previous.path !== result.attachment.path) void formatFlow.removeTemporaryWord(previous.path)
+    } catch (error) {
+      setAttachmentNotice(`生成临时 Word 文档失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setAttachmentBusy('')
+    }
+  }
+
+  async function removeVariableAttachment(label: string, attachment: TemporaryWordAttachment): Promise<void> {
+    const result = await formatFlow.removeTemporaryWord(attachment.path)
+    setAttachmentNotice(result.message)
+    if (!result.ok) return
+    setFillDraft((current) => {
+      if (!current) return current
+      const attachments = { ...current.attachments }
+      delete attachments[label]
+      return { ...current, attachments }
+    })
+  }
+
+  async function copyAttachmentFiles(attachments: TemporaryWordAttachment[]): Promise<void> {
+    const result = await formatFlow.copyTemporaryWordFiles(attachments.map((attachment) => attachment.path))
+    setAttachmentNotice(result.message)
+  }
+
   function callPrompt(prompt: PromptItem): void {
     const slots = extractPromptFillSlots(prompt.content)
     const historyKey = quickLauncherHistoryKey(mode, prompt.id)
@@ -4118,6 +4171,7 @@ function LauncherModal({
         submitLabel: '复制填充后内容',
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
+        attachments: {},
         submit: (filledContent, values) => {
           rememberQuickCall(prompt.id, prompt.title, values)
           void pasteQuickCall(filledContent, `已复制提示词：${prompt.title}`)
@@ -4148,6 +4202,7 @@ function LauncherModal({
         submitLabel: '复制填充后 Skill',
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
+        attachments: {},
         submit: (filledContent, values) => {
           rememberQuickCall(skill.id, skill.title || skill.name, values)
           void copySkill(filledContent)
@@ -4180,6 +4235,7 @@ function LauncherModal({
         submitLabel: '复制填充后任务',
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
+        attachments: {},
         submit: (filledTask, values) => {
           rememberQuickCall(workflow.id, workflow.title, values)
           void copyWorkflowTask(filledTask)
@@ -4204,25 +4260,113 @@ function LauncherModal({
 
   if (fillDraft) {
     return (
-      <Modal title={fillDraft.title} close={close}>
+      <Modal title={fillDraft.title} close={close} className="prompt-fill-modal">
         <div className="prompt-fill-layout">
           <div className="prompt-fill-fields">
-            {fillSlots.map((slot) => (
-              <label key={slot.label}>
-                {slot.label}
-                <textarea
-                  autoFocus={slot === fillSlots[0]}
-                  value={fillDraft.values[slot.label] || ''}
-                  placeholder={`请输入${slot.label}...`}
-                  onChange={(event) => {
-                    const values = { ...fillDraft.values, [slot.label]: event.target.value }
-                    setFillDraft({ ...fillDraft, values })
-                    if (fillDraft.historyKey) writeStoredQuickLauncherFillValues(fillDraft.historyKey, values)
-                  }}
-                />
-              </label>
-            ))}
+            {fillSlots.map((slot) => {
+              const attachment = fillDraft.attachments[slot.label]
+              const busy = attachmentBusy === slot.label
+              return (
+                <div className="prompt-fill-field" key={slot.label}>
+                  <label>
+                    {slot.label}
+                    <textarea
+                      autoFocus={slot === fillSlots[0]}
+                      value={fillDraft.values[slot.label] || ''}
+                      placeholder={`请输入${slot.label}...`}
+                      onChange={(event) => {
+                        const values = { ...fillDraft.values, [slot.label]: event.target.value }
+                        setFillDraft({ ...fillDraft, values })
+                        if (fillDraft.historyKey) writeStoredQuickLauncherFillValues(fillDraft.historyKey, values)
+                      }}
+                    />
+                  </label>
+                  <div
+                    className="temporary-word-drop-zone"
+                    onDragOver={(event) => {
+                      event.preventDefault()
+                      event.dataTransfer.dropEffect = 'copy'
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault()
+                      const filePaths = Array.from(event.dataTransfer.files)
+                        .map((file) => formatFlow.getPathForFile(file))
+                        .filter(Boolean)
+                      if (filePaths.length === 0) {
+                        setAttachmentNotice('没有从拖放内容中读取到本地文件。')
+                        return
+                      }
+                      void createVariableAttachment(slot.label, () =>
+                        formatFlow.createTemporaryWordFromFiles({ variableName: slot.label, filePaths })
+                      )
+                    }}
+                  >
+                    <span>拖入文件</span>
+                    <div className="inline-actions wrap">
+                      <button
+                        type="button"
+                        disabled={Boolean(attachmentBusy)}
+                        onClick={() =>
+                          void createVariableAttachment(slot.label, () => formatFlow.captureWordSelection(slot.label))
+                        }
+                      >
+                        {busy ? '正在生成...' : '读取 Word 当前选区'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={Boolean(attachmentBusy)}
+                        onClick={() =>
+                          void createVariableAttachment(slot.label, () => formatFlow.chooseTemporaryWordFiles(slot.label))
+                        }
+                      >
+                        选择本地文件
+                      </button>
+                    </div>
+                  </div>
+                  {attachment && (
+                    <div className="temporary-word-attachment">
+                      <div>
+                        <strong>{attachment.fileName}</strong>
+                        <span>{attachment.id} · {attachment.sourceFileNames.join('、')}</span>
+                      </div>
+                      {attachment.warnings.map((warning) => (
+                        <p className="form-error" key={warning}>{warning}</p>
+                      ))}
+                      <div className="inline-actions wrap">
+                        <button type="button" onClick={() => void formatFlow.openTemporaryWord(attachment.path)}>打开</button>
+                        <button type="button" onClick={() => void formatFlow.revealTemporaryWord(attachment.path)}>位置</button>
+                        <button type="button" onClick={() => void copyAttachmentFiles([attachment])}>复制文件</button>
+                        <button className="danger" type="button" onClick={() => void removeVariableAttachment(slot.label, attachment)}>删除</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
+          {Object.keys(fillDraft.attachments).length > 0 && (
+            <div className="temporary-word-summary">
+              <strong>附件变量映射</strong>
+              {fillSlots
+                .filter((slot) => fillDraft.attachments[slot.label])
+                .map((slot) => {
+                  const attachment = fillDraft.attachments[slot.label]
+                  return <span key={slot.label}>{slot.label} → {attachment.id} → {attachment.fileName}</span>
+                })}
+              <div className="inline-actions wrap">
+                <button type="button" onClick={() => void copyAttachmentFiles(Object.values(fillDraft.attachments))}>复制全部附件文件</button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void formatFlow.cleanupTemporaryWords().then((result: { message: string }) => setAttachmentNotice(result.message))
+                  }
+                >
+                  清理过期文档
+                </button>
+              </div>
+            </div>
+          )}
+          {attachmentNotice && <p className="temporary-word-notice">{attachmentNotice}</p>}
           <label className="prompt-fill-preview">
             填充预览
             <textarea className="content-editor readonly" readOnly value={filledPromptContent} />
@@ -5845,6 +5989,17 @@ function fillPromptPlaceholders(content: string, values: Record<string, string>)
   return content.replace(/【\s*请填写\s*[:：]\s*([^】]+?)\s*】/g, (_token, rawLabel: string) => values[normalizeFillLabel(rawLabel)] || '')
 }
 
+function fillValuesWithAttachments(
+  values: Record<string, string>,
+  attachments: Record<string, TemporaryWordAttachment>
+): Record<string, string> {
+  const filledValues = { ...values }
+  for (const [label, attachment] of Object.entries(attachments)) {
+    filledValues[label] = [values[label]?.trim(), temporaryWordMarker(attachment)].filter(Boolean).join('\n\n')
+  }
+  return filledValues
+}
+
 function normalizeFillLabel(label: string): string {
   return label.replace(/\s+/g, ' ').trim()
 }
@@ -6509,6 +6664,18 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
   }
 
   return {
+    getLicenseStatus: async () => ({
+      activated: true,
+      machineCode: 'browser-review-mode',
+      activatedAt: nowIso(),
+      message: '浏览器审查模式'
+    }),
+    activateLicense: async () => ({
+      activated: true,
+      machineCode: 'browser-review-mode',
+      activatedAt: nowIso(),
+      message: '浏览器审查模式'
+    }),
     loadStore: async () => cachedStore,
     saveStore: async (store: AppStore) => {
       cachedStore = normalizeStore(store)
@@ -6584,6 +6751,15 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
         }
       }
     },
+    captureWordSelection: async () => ({ ok: false, message: '浏览器审查模式不能读取桌面 Word 选区。' }),
+    chooseTemporaryWordFiles: async () => ({ ok: false, message: '浏览器审查模式不能生成临时 Word 文档。' }),
+    createTemporaryWordFromFiles: async () => ({ ok: false, message: '浏览器审查模式不能生成临时 Word 文档。' }),
+    getPathForFile: () => '',
+    openTemporaryWord: async () => '浏览器审查模式不能打开本地 Word 文档。',
+    revealTemporaryWord: async () => undefined,
+    copyTemporaryWordFiles: async () => ({ ok: false, message: '浏览器审查模式不能复制本地 Word 文件。' }),
+    removeTemporaryWord: async () => ({ ok: false, message: '浏览器审查模式不能删除本地 Word 文件。', removed: 0 }),
+    cleanupTemporaryWords: async () => ({ ok: true, message: '浏览器审查模式没有临时 Word 文件。', removed: 0 }),
     getBrowserBridgeStatus: async () => ({
       bridgeConnected: false,
       connected: false,

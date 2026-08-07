@@ -1978,13 +1978,70 @@ label {
   gap: 14px;
 }
 
+.prompt-fill-modal {
+  width: min(980px, calc(100vw - 56px));
+}
+
 .prompt-fill-fields {
   display: grid;
   gap: 12px;
 }
 
+.prompt-fill-field {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
 .prompt-fill-fields textarea {
   min-height: 96px;
+}
+
+.temporary-word-drop-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 54px;
+  padding: 9px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  border: 1px dashed #98a2b3;
+  border-radius: var(--radius);
+  background: #f8fafc;
+}
+
+.temporary-word-attachment,
+.temporary-word-summary {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-left: 3px solid var(--accent-2);
+  background: #f0fdf4;
+}
+
+.temporary-word-attachment > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.temporary-word-attachment strong,
+.temporary-word-attachment span,
+.temporary-word-summary span {
+  overflow-wrap: anywhere;
+}
+
+.temporary-word-attachment span,
+.temporary-word-summary span,
+.temporary-word-notice {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.temporary-word-notice {
+  margin: 0;
 }
 
 .prompt-fill-preview textarea {

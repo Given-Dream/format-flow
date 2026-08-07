@@ -228,6 +228,35 @@ export type ExportResult = {
   path?: string
 }
 
+export type TemporaryWordAttachment = {
+  id: string
+  variableName: string
+  path: string
+  fileName: string
+  createdAt: string
+  expiresAt: string
+  source: 'word-selection' | 'files'
+  sourceFileNames: string[]
+  warnings: string[]
+}
+
+export type TemporaryWordResult = {
+  ok: boolean
+  message: string
+  attachment?: TemporaryWordAttachment
+}
+
+export type TemporaryWordFilesRequest = {
+  variableName: string
+  filePaths: string[]
+}
+
+export type TemporaryWordCleanupResult = {
+  ok: boolean
+  message: string
+  removed: number
+}
+
 export type SkillFileWriteRequest = {
   skillPath: string
   relativePath: string

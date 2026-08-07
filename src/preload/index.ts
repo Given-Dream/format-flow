@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   AppPaths,
   AppStore,
@@ -13,7 +13,10 @@ import type {
   SkillDirectorySnapshot,
   SkillEntryCreateRequest,
   SkillFileWriteRequest,
-  SkillItem
+  SkillItem,
+  TemporaryWordCleanupResult,
+  TemporaryWordFilesRequest,
+  TemporaryWordResult
 } from '../shared/types'
 
 const api = {
@@ -68,6 +71,20 @@ const api = {
     ipcRenderer.invoke('clipboard:writeText', text),
   writeClipboardTextAndPaste: (text: string): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke('clipboard:writeTextAndPaste', text),
+  captureWordSelection: (variableName: string): Promise<TemporaryWordResult> =>
+    ipcRenderer.invoke('temporaryWord:captureSelection', variableName),
+  chooseTemporaryWordFiles: (variableName: string): Promise<TemporaryWordResult> =>
+    ipcRenderer.invoke('temporaryWord:chooseFiles', variableName),
+  createTemporaryWordFromFiles: (request: TemporaryWordFilesRequest): Promise<TemporaryWordResult> =>
+    ipcRenderer.invoke('temporaryWord:createFromFiles', request),
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+  openTemporaryWord: (filePath: string): Promise<string> => ipcRenderer.invoke('temporaryWord:open', filePath),
+  revealTemporaryWord: (filePath: string): Promise<void> => ipcRenderer.invoke('temporaryWord:reveal', filePath),
+  copyTemporaryWordFiles: (filePaths: string[]): Promise<ExportResult> =>
+    ipcRenderer.invoke('temporaryWord:copyFiles', filePaths),
+  removeTemporaryWord: (filePath: string): Promise<TemporaryWordCleanupResult> =>
+    ipcRenderer.invoke('temporaryWord:remove', filePath),
+  cleanupTemporaryWords: (): Promise<TemporaryWordCleanupResult> => ipcRenderer.invoke('temporaryWord:cleanup'),
   getBrowserBridgeStatus: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('browserBridge:getStatus'),
   getBrowserBridgeOutput: (): Promise<Record<string, unknown> | null> => ipcRenderer.invoke('browserBridge:getOutput'),
   queueBrowserBridgeTask: (payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; status?: Record<string, unknown> }> =>

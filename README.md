@@ -2,11 +2,11 @@
 
 Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工作流与 MCP 管理器。它将分散在文件、Codex 目录和浏览器中的 AI 工作资产集中管理，并通过快捷调用、变量填充、顺序运行、导入导出和备份形成可复用的个人工作流。
 
-当前版本：`v0.1.50`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
+当前版本：`v0.1.51`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
 
 ## 下载与安装
 
-- [下载 Format Flow v0.1.50 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.50/Format-Flow-Setup-0.1.50.exe)
+- [下载 Format Flow v0.1.51 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.51/Format-Flow-Setup-0.1.51.exe)
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
 - Release 同时提供 `.blockmap` 和 `latest.yml`，便于分发安装包及其版本元数据。
@@ -43,6 +43,7 @@ README 已按当前代码重写，不再沿用 `v0.1.1` 时仅覆盖基础功能
 | `v0.1.43` | 自定义变量支持读取 Word 当前选区或合并拖入/本地文件，生成带唯一变量 ID 的临时 Word 附件，并保留 OMML 公式、表格、图片与格式。 |
 | `v0.1.44` | 修复多 Word 实例或受保护视图下误报“没有打开的文档”：按快捷调用前的 Word 窗口定位选区，并在句柄不可用时枚举 Word 窗口回退。 |
 | `v0.1.45` | “复制填充后内容”会在同一剪贴板数据中同时写入 Unicode 文本和临时 Word 附件，提示词、Skill、工作流均支持，并阻止复制已过期附件。 |
+| `v0.1.51` | “移动到其他分组”改为完整路径目标列表，支持将分组移动到任意层级的小类中，并明确标识分组、小类层级。 |
 | `v0.1.50` | 提示词与 Skill 管理新增历史重复项扫描和清理入口；可逐组选择保留版本，合并标签、收藏和变量，自动修复工作流引用，并将多余 Skill 目录移入系统回收站。 |
 | `v0.1.49` | Prompt 与 Skill 导入增加去重和正文差异选择；支持恢复误删的提示词标签；GitHub Prompt/Skill 搜索结果先预览，再由用户选择已有标签或新标签后添加。 |
 | `v0.1.48` | 修复长提示词与 Word 附件同时复制时的 `spawn ENAMETOOLONG`：改用临时 JSON 文件传递剪贴板内容，确保文本和附件都能复制。 |

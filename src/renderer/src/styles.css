@@ -526,6 +526,40 @@ label {
   text-align: left;
 }
 
+.group-move-targets {
+  display: grid;
+  gap: 7px;
+  max-height: min(440px, 55vh);
+  overflow: auto;
+  padding: 2px;
+}
+
+.group-move-targets button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  text-align: left;
+}
+
+.group-move-targets button span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.group-move-targets button small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.group-move-targets button.active {
+  color: var(--accent);
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--accent-soft);
+}
+
 .group-footer {
   display: grid;
   gap: 10px;

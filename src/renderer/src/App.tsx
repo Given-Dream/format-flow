@@ -5965,21 +5965,31 @@ function ResourceGroupManager({
       )}
       {moveDraft && (
         <Modal title={`移动「${moveDraft.group.name}」`} close={() => setMoveDraft(null)}>
-          <label className="form-field">
-            目标位置
-            <select
-              autoFocus
-              value={moveDraft.targetParentId}
-              onChange={(event) => setMoveDraft({ ...moveDraft, targetParentId: event.target.value })}
+          <div className="group-move-targets" role="radiogroup" aria-label="目标位置">
+            <button
+              className={moveDraft.targetParentId === '' ? 'active' : ''}
+              type="button"
+              role="radio"
+              aria-checked={moveDraft.targetParentId === ''}
+              onClick={() => setMoveDraft({ ...moveDraft, targetParentId: '' })}
             >
-              <option value="">顶层分组</option>
-              {moveTargets.map((target) => (
-                <option key={target.group.id} value={target.group.id}>
-                  {'　'.repeat(target.depth)}{target.group.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              <span>顶层分组</span>
+              <small>根目录</small>
+            </button>
+            {moveTargets.map((target) => (
+              <button
+                key={target.group.id}
+                className={moveDraft.targetParentId === target.group.id ? 'active' : ''}
+                type="button"
+                role="radio"
+                aria-checked={moveDraft.targetParentId === target.group.id}
+                onClick={() => setMoveDraft({ ...moveDraft, targetParentId: target.group.id })}
+              >
+                <span>{target.path.join(' / ')}</span>
+                <small>{target.depth === 0 ? '分组' : `${target.depth} 级小类`}</small>
+              </button>
+            ))}
+          </div>
           <div className="inline-actions">
             <button className="primary-action" type="button" onClick={() => void saveMoveGroup()}>
               移动
@@ -6544,15 +6554,25 @@ function groupContainsId(group: GroupItem, id: string): boolean {
   return group.children.some((child) => child.id === id || groupContainsId(child, id))
 }
 
-function availableGroupMoveTargets(groups: GroupItem[], movingGroupId: string): Array<{ group: GroupItem; depth: number }> {
+function availableGroupMoveTargets(
+  groups: GroupItem[],
+  movingGroupId: string
+): Array<{ group: GroupItem; depth: number; path: string[] }> {
   const movingGroup = findGroupById(groups, movingGroupId)
   return flattenGroupTargets(groups).filter(
     (target) => target.group.id !== movingGroupId && (!movingGroup || !groupContainsId(movingGroup, target.group.id))
   )
 }
 
-function flattenGroupTargets(groups: GroupItem[], depth = 0): Array<{ group: GroupItem; depth: number }> {
-  return groups.flatMap((group) => [{ group, depth }, ...flattenGroupTargets(group.children, depth + 1)])
+function flattenGroupTargets(
+  groups: GroupItem[],
+  depth = 0,
+  parentPath: string[] = []
+): Array<{ group: GroupItem; depth: number; path: string[] }> {
+  return groups.flatMap((group) => {
+    const path = [...parentPath, group.name]
+    return [{ group, depth, path }, ...flattenGroupTargets(group.children, depth + 1, path)]
+  })
 }
 
 function addTagToPrompts(prompts: PromptItem[], tag: string): PromptItem[] {

@@ -285,6 +285,12 @@ try {
     if ($null -eq $selectionRange -or $selectionRange.Start -eq $selectionRange.End) {
       throw 'FORMAT_FLOW_EMPTY_SELECTION'
     }
+
+    # Freeze the source before Documents.Add changes Word's active document/selection.
+    $sourceRange = Get-ComProperty $selectionRange 'Duplicate'
+    if ($null -eq $sourceRange) { throw 'FORMAT_FLOW_EMPTY_SELECTION' }
+    $sourceFormattedText = Get-ComProperty $sourceRange 'FormattedText'
+    if ($null -eq $sourceFormattedText) { throw 'FORMAT_FLOW_EMPTY_SELECTION' }
   } else {
     try {
       $word = [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
@@ -296,6 +302,12 @@ try {
   }
 
   $document = $word.Documents.Add()
+  # Word can show the new document immediately. Keep the intermediate document hidden
+  # until it has been saved; the renderer opens the completed file afterwards.
+  $documentWindow = Get-ComProperty $document 'ActiveWindow'
+  if ($null -ne $documentWindow) {
+    try { $documentWindow.Visible = $false } catch {}
+  }
   $header = $document.Range(0, 0)
   $headerText = @(
     'Format Flow Temporary Attachment',
@@ -310,7 +322,7 @@ try {
 
   if ($Mode -eq 'capture-selection') {
     $target = End-Range $document
-    $target.FormattedText = $selection.Range.FormattedText
+    $target.FormattedText = $sourceFormattedText
   } else {
     if ([string]::IsNullOrWhiteSpace($FilesBase64)) { throw 'FORMAT_FLOW_NO_FILES' }
     $filesJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($FilesBase64))

@@ -4244,6 +4244,10 @@ function LauncherModal({
           : current
       )
       if (previous && previous.path !== result.attachment.path) void formatFlow.removeTemporaryWord(previous.path)
+      if (result.attachment.source === 'word-selection') {
+        const openError = await formatFlow.openTemporaryWord(result.attachment.path)
+        if (openError) setAttachmentNotice(`临时 Word 文档已生成，但打开最终文件失败：${openError}`)
+      }
     } catch (error) {
       setAttachmentNotice(`生成临时 Word 文档失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {

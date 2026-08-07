@@ -91,6 +91,30 @@ describe('tag parsing and search', () => {
     ).toBe(24)
   })
 
+  it('normalizes category-specific data directories without breaking older settings', () => {
+    const settings = normalizeStore({
+      settings: {
+        shortcut: 'Alt+Space',
+        skillDirectories: [],
+        dataDirectory: 'D:/format-flow',
+        dataDirectories: {
+          prompts: ' D:/prompt-library ',
+          workflows: '',
+          skillMetadata: 'D:/skill-index',
+          managedSkills: 'C:/Users/test/.codex/skills'
+        }
+      }
+    }).settings
+
+    expect(settings.dataDirectory).toBe('D:/format-flow')
+    expect(settings.dataDirectories).toEqual({
+      prompts: 'D:/prompt-library',
+      skillMetadata: 'D:/skill-index',
+      managedSkills: 'C:/Users/test/.codex/skills'
+    })
+    expect(normalizeStore({ settings: { shortcut: 'Alt+Space', skillDirectories: [] } }).settings.dataDirectories).toEqual({})
+  })
+
   it('preserves valid custom discovery sources and removes invalid duplicates', () => {
     const settings = normalizeStore({
       settings: {

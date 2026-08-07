@@ -54,6 +54,8 @@ import type {
   AppPaths,
   AppStore,
   BackupResult,
+  DataDirectoryKind,
+  DataDirectoryOverrides,
   DiscoverySource,
   GithubSearchResult,
   GithubPreviewResult,
@@ -1763,7 +1765,7 @@ function SkillPanel({
             从 ZIP 安装
           </button>
           <button type="button" onClick={() => void runSkillImport(formatFlow.importExistingSkills)}>
-            导入已有
+            导入完整目录
           </button>
           <button type="button" onClick={scanSkillLibraryDuplicates}>
             扫描并清理重复项
@@ -3236,7 +3238,14 @@ function SettingsPanel({
   const [skillDirectories, setSkillDirectories] = useState(() => normalizeSkillDirectories(store.settings.skillDirectories))
   const [manualSkillDirectory, setManualSkillDirectory] = useState('')
   const [shortcut, setShortcut] = useState(store.settings.shortcut)
-  const [dataDirectory, setDataDirectory] = useState(store.settings.dataDirectory || '')
+  const [dataDirectoryKind, setDataDirectoryKind] = useState<DataDirectoryKind>('data')
+  const [dataDirectories, setDataDirectories] = useState<Record<DataDirectoryKind, string>>(() => ({
+    data: store.settings.dataDirectory || '',
+    prompts: store.settings.dataDirectories?.prompts || '',
+    workflows: store.settings.dataDirectories?.workflows || '',
+    skillMetadata: store.settings.dataDirectories?.skillMetadata || '',
+    managedSkills: store.settings.dataDirectories?.managedSkills || ''
+  }))
   const [backupDirectory, setBackupDirectory] = useState(store.settings.backupDirectory || '')
   const [temporaryWordDirectory, setTemporaryWordDirectory] = useState(store.settings.temporaryWordDirectory || '')
   const [temporaryWordRetentionHours, setTemporaryWordRetentionHours] = useState(
@@ -3340,18 +3349,29 @@ function SettingsPanel({
       setNotice('浏览器审查模式不能选择本地数据目录；桌面版中会打开目录选择器。')
       return
     }
-    const result = await formatFlow.chooseDataDirectory()
+    const result = await formatFlow.chooseDataDirectory(dataDirectoryKind)
     setNotice(result.message)
     if (!result.ok) return
-    setDataDirectory(result.path)
-    await commit({ ...store, settings: { ...store.settings, dataDirectory: result.path } })
-    await refreshPaths()
+    setDataDirectories({ ...dataDirectories, [dataDirectoryKind]: result.path })
   }
 
-  async function saveDataDirectory(): Promise<void> {
-    await commit({ ...store, settings: { ...store.settings, dataDirectory } })
+  async function saveDataDirectories(): Promise<void> {
+    const overrides: DataDirectoryOverrides = {}
+    for (const key of ['prompts', 'workflows', 'skillMetadata', 'managedSkills'] as const) {
+      const value = dataDirectories[key].trim()
+      if (value) overrides[key] = value
+    }
+    await commit({
+      ...store,
+      settings: {
+        ...store.settings,
+        dataDirectory: dataDirectories.data.trim(),
+        dataDirectories: overrides
+      }
+    })
     await refreshPaths()
-    setNotice(dataDirectory ? '数据保存目录已保存' : '数据保存目录已恢复默认')
+    await scanSkills(normalizeSkillDirectories(store.settings.skillDirectories))
+    setNotice('分类数据目录已保存')
   }
 
   async function chooseBackupDirectory(): Promise<void> {
@@ -3534,7 +3554,7 @@ function SettingsPanel({
       </div>
 
       <div className="settings-card skill-directory-card">
-        <PanelHeader title="Skill 目录" detail="每行一个目录，扫描其中的 SKILL.md" />
+        <PanelHeader title="Skill 目录" detail="每行一个完整 Skill 目录，扫描 SKILL.md 及其附属文件" />
         <div className="directory-list" aria-label="Skill 目录列表">
           {skillDirectories.length > 0 ? (
             skillDirectories.map((directory) => (
@@ -3670,17 +3690,37 @@ function SettingsPanel({
       </div>
 
       <div className="settings-card data-location-card">
-        <PanelHeader title="数据保存位置" detail="桌面版可选择数据保存目录；安装包阶段会保留这个选择入口" />
+        <PanelHeader title="数据保存位置" detail="按类别选择保存目录；留空时使用当前类别的默认位置" />
         <label>
-          数据目录
-          <input value={dataDirectory} onChange={(event) => setDataDirectory(event.target.value)} placeholder="留空使用默认 userData 目录" />
+          目录类别
+          <select value={dataDirectoryKind} onChange={(event) => setDataDirectoryKind(event.target.value as DataDirectoryKind)}>
+            <option value="data">应用数据与设置</option>
+            <option value="prompts">Prompt 数据</option>
+            <option value="workflows">工作流数据</option>
+            <option value="skillMetadata">Skill 元数据</option>
+            <option value="managedSkills">托管 Skill</option>
+          </select>
         </label>
-        <div className="inline-actions">
+        <label>
+          目录路径
+          <input
+            value={dataDirectories[dataDirectoryKind]}
+            onChange={(event) => setDataDirectories({ ...dataDirectories, [dataDirectoryKind]: event.target.value })}
+            placeholder={paths?.defaultDataDirectories[dataDirectoryKind] || '留空使用默认目录'}
+          />
+        </label>
+        <div className="inline-actions wrap">
           <button type="button" onClick={() => void chooseDataDirectory()}>
             选择目录
           </button>
-          <button className="primary-action" type="button" onClick={() => void saveDataDirectory()}>
-            保存数据目录
+          <button
+            type="button"
+            onClick={() => setDataDirectories({ ...dataDirectories, [dataDirectoryKind]: '' })}
+          >
+            恢复此类别默认
+          </button>
+          <button className="primary-action" type="button" onClick={() => void saveDataDirectories()}>
+            保存分类目录
           </button>
         </div>
         <dl className="path-list">
@@ -8033,10 +8073,17 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     promptDirectory: 'browser-downloads/prompts',
     workflowDirectory: 'browser-downloads/workflows',
     skillMetadataPath: 'browser-localStorage:skillIndex',
-    managedSkillDirectory: 'browser-review-mode',
+    managedSkillDirectory: '~/.codex/skills',
     dataDirectoryPreferencePath: '',
     temporaryWordDirectory: 'browser-review-mode',
-    defaultSkillDirectories: []
+    defaultSkillDirectories: [],
+    defaultDataDirectories: {
+      data: 'browser-localStorage',
+      prompts: 'browser-downloads/prompts',
+      workflows: 'browser-downloads/workflows',
+      skillMetadata: 'browser-localStorage/skills',
+      managedSkills: '~/.codex/skills'
+    }
   }
 
   return {
@@ -8263,6 +8310,7 @@ async function searchGithubFallback(
         path: file.path,
         htmlUrl: `${repo.html_url}/blob/${branch}/${file.path}`,
         rawUrl: `https://raw.githubusercontent.com/${repo.full_name}/${branch}/${file.path}`,
+        ref: branch,
         sourceId: 'github',
         sourceName: 'GitHub',
         sourceType: 'github',

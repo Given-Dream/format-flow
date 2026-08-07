@@ -1,5 +1,6 @@
 import type {
   AppStore,
+  DataDirectoryOverrides,
   GroupItem,
   McpServer,
   PromptDuplicateGroup,
@@ -407,6 +408,7 @@ export function defaultStore(): AppStore {
       shortcut: DEFAULT_SHORTCUT,
       skillDirectories: [],
       dataDirectory: '',
+      dataDirectories: {},
       backupDirectory: '',
       temporaryWordDirectory: '',
       temporaryWordRetentionHours: 24,
@@ -440,6 +442,7 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
       shortcut: value.settings?.shortcut || DEFAULT_SHORTCUT,
       skillDirectories: Array.isArray(value.settings?.skillDirectories) ? value.settings.skillDirectories : [],
       dataDirectory: typeof value.settings?.dataDirectory === 'string' ? value.settings.dataDirectory : '',
+      dataDirectories: normalizeDataDirectoryOverrides(value.settings?.dataDirectories),
       backupDirectory: typeof value.settings?.backupDirectory === 'string' ? value.settings.backupDirectory : '',
       temporaryWordDirectory:
         typeof value.settings?.temporaryWordDirectory === 'string' ? value.settings.temporaryWordDirectory : '',
@@ -453,6 +456,16 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
       discoverySources: normalizeDiscoverySources(value.settings?.discoverySources)
     }
   }
+}
+
+function normalizeDataDirectoryOverrides(value: unknown): DataDirectoryOverrides {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const record = value as Record<string, unknown>
+  const result: DataDirectoryOverrides = {}
+  for (const key of ['prompts', 'workflows', 'skillMetadata', 'managedSkills'] as const) {
+    if (typeof record[key] === 'string' && record[key].trim()) result[key] = record[key].trim()
+  }
+  return result
 }
 
 function normalizeTemporaryWordRetentionHours(value: unknown): number {

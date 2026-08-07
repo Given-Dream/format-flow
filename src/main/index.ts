@@ -27,12 +27,16 @@ import {
   buildWebsiteSearchUrl,
   createWebsiteSearchPageResult,
   discoverySourceSupports,
-  normalizeDiscoverySources
+  githubSkillRootPath,
+  normalizeDiscoverySources,
+  shouldIncludeGithubSkillEntry
 } from '../shared/github-discovery'
 import type {
   AppPaths,
   AppStore,
   BackupResult,
+  DataDirectoryKind,
+  DataDirectoryOverrides,
   DiscoveryKind,
   DiscoverySource,
   ExportResult,
@@ -120,24 +124,42 @@ function getDataDirectoryPreferencePath(): string {
   return path.join(app.getPath('userData'), 'data-location.json')
 }
 
-function readDataDirectoryPreference(): string {
+type DataDirectoryPreference = {
+  dataDirectory: string
+  dataDirectories: DataDirectoryOverrides
+}
+
+function readDataDirectoryPreference(): DataDirectoryPreference {
   try {
     const content = fsSync.readFileSync(getDataDirectoryPreferencePath(), 'utf8')
-    const parsed = JSON.parse(content) as { dataDirectory?: string }
-    return typeof parsed.dataDirectory === 'string' ? parsed.dataDirectory : ''
+    const parsed = JSON.parse(content) as { dataDirectory?: unknown; dataDirectories?: unknown }
+    const directories = parsed.dataDirectories && typeof parsed.dataDirectories === 'object' && !Array.isArray(parsed.dataDirectories)
+      ? (parsed.dataDirectories as Record<string, unknown>)
+      : {}
+    const dataDirectories: DataDirectoryOverrides = {}
+    for (const key of ['prompts', 'workflows', 'skillMetadata', 'managedSkills'] as const) {
+      if (typeof directories[key] === 'string' && directories[key].trim()) dataDirectories[key] = directories[key].trim()
+    }
+    return {
+      dataDirectory: typeof parsed.dataDirectory === 'string' ? parsed.dataDirectory.trim() : '',
+      dataDirectories
+    }
   } catch {
-    return ''
+    return { dataDirectory: '', dataDirectories: {} }
   }
 }
 
-async function writeDataDirectoryPreference(dataDirectory: string): Promise<void> {
+async function writeDataDirectoryPreference(
+  dataDirectory: string,
+  dataDirectories: DataDirectoryOverrides = {}
+): Promise<void> {
   const preferencePath = getDataDirectoryPreferencePath()
   await fs.mkdir(path.dirname(preferencePath), { recursive: true })
-  await fs.writeFile(preferencePath, `${JSON.stringify({ dataDirectory }, null, 2)}\n`, 'utf8')
+  await fs.writeFile(preferencePath, `${JSON.stringify({ dataDirectory, dataDirectories }, null, 2)}\n`, 'utf8')
 }
 
 function getDataRoot(): string {
-  return readDataDirectoryPreference() || app.getPath('userData')
+  return readDataDirectoryPreference().dataDirectory || app.getPath('userData')
 }
 
 function getStorePath(): string {
@@ -145,19 +167,38 @@ function getStorePath(): string {
 }
 
 function getManagedSkillDirectory(): string {
+  return readDataDirectoryPreference().dataDirectories.managedSkills || getDefaultManagedSkillDirectory()
+}
+
+function getDefaultManagedSkillDirectory(): string {
+  return process.env.CODEX_HOME ? path.join(process.env.CODEX_HOME, 'skills') : path.join(os.homedir(), '.codex', 'skills')
+}
+
+function getLegacyManagedSkillDirectory(): string {
   return path.join(getDataRoot(), 'managed-skills')
 }
 
 function getPromptDirectory(): string {
-  return path.join(getDataRoot(), 'prompts')
+  return readDataDirectoryPreference().dataDirectories.prompts || path.join(getDataRoot(), 'prompts')
 }
 
 function getWorkflowDirectory(): string {
-  return path.join(getDataRoot(), 'workflows')
+  return readDataDirectoryPreference().dataDirectories.workflows || path.join(getDataRoot(), 'workflows')
 }
 
 function getSkillMetadataDirectory(): string {
-  return path.join(getDataRoot(), 'skills')
+  return readDataDirectoryPreference().dataDirectories.skillMetadata || path.join(getDataRoot(), 'skills')
+}
+
+function getDefaultDataDirectories(): Record<DataDirectoryKind, string> {
+  const dataRoot = getDataRoot()
+  return {
+    data: app.getPath('userData'),
+    prompts: path.join(dataRoot, 'prompts'),
+    workflows: path.join(dataRoot, 'workflows'),
+    skillMetadata: path.join(dataRoot, 'skills'),
+    managedSkills: getDefaultManagedSkillDirectory()
+  }
 }
 
 function getSkillMetadataPath(): string {
@@ -785,7 +826,7 @@ async function loadStore(): Promise<AppStore> {
 async function saveStore(store: AppStore): Promise<AppStore> {
   const normalized = normalizeStore(store)
   configureTemporaryWordStorage(normalized.settings)
-  await writeDataDirectoryPreference(normalized.settings.dataDirectory || '')
+  await writeDataDirectoryPreference(normalized.settings.dataDirectory || '', normalized.settings.dataDirectories)
   const storePath = getStorePath()
   await fs.mkdir(path.dirname(storePath), { recursive: true })
   await fs.writeFile(storePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8')
@@ -799,29 +840,37 @@ async function saveCategorizedStoreFiles(store: AppStore): Promise<void> {
   const workflowDirectory = getWorkflowDirectory()
   const skillDirectory = getSkillMetadataDirectory()
 
-  await resetManagedDataDirectory(promptDirectory, dataRoot)
-  await resetManagedDataDirectory(workflowDirectory, dataRoot)
+  await resetManagedDataDirectory(promptDirectory, dataRoot, 'prompts')
+  await resetManagedDataDirectory(workflowDirectory, dataRoot, 'workflows')
   await fs.mkdir(skillDirectory, { recursive: true })
 
+  const promptFiles = store.prompts.map(
+    (prompt) => `${safeSegment(prompt.title)}-${safeSegment(prompt.id)}.json`
+  )
   await Promise.all(
-    store.prompts.map((prompt) =>
+    store.prompts.map((prompt, index) =>
       fs.writeFile(
-        path.join(promptDirectory, `${safeSegment(prompt.title)}-${safeSegment(prompt.id)}.json`),
+        path.join(promptDirectory, promptFiles[index]),
         `${JSON.stringify(prompt, null, 2)}\n`,
         'utf8'
       )
     )
   )
+  await writeManagedDataManifest(promptDirectory, 'prompts', promptFiles)
 
+  const workflowFiles = store.workflows.map(
+    (workflow) => `${safeSegment(workflow.title)}-${safeSegment(workflow.id)}.json`
+  )
   await Promise.all(
-    store.workflows.map((workflow) =>
+    store.workflows.map((workflow, index) =>
       fs.writeFile(
-        path.join(workflowDirectory, `${safeSegment(workflow.title)}-${safeSegment(workflow.id)}.json`),
+        path.join(workflowDirectory, workflowFiles[index]),
         `${JSON.stringify(workflow, null, 2)}\n`,
         'utf8'
       )
     )
   )
+  await writeManagedDataManifest(workflowDirectory, 'workflows', workflowFiles)
 
   await fs.writeFile(
     getSkillMetadataPath(),
@@ -841,12 +890,45 @@ async function saveCategorizedStoreFiles(store: AppStore): Promise<void> {
   )
 }
 
-async function resetManagedDataDirectory(directory: string, dataRoot: string): Promise<void> {
-  if (!isPathInside(directory, dataRoot)) {
-    throw new Error(`Refusing to reset data directory outside data root: ${directory}`)
+async function resetManagedDataDirectory(
+  directory: string,
+  dataRoot: string,
+  kind: 'prompts' | 'workflows'
+): Promise<void> {
+  if (isPathInside(directory, dataRoot)) {
+    await fs.rm(directory, { recursive: true, force: true })
+    await fs.mkdir(directory, { recursive: true })
+    return
   }
-  await fs.rm(directory, { recursive: true, force: true })
+
   await fs.mkdir(directory, { recursive: true })
+  const manifestPath = managedDataManifestPath(directory, kind)
+  try {
+    const parsed = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as { files?: unknown }
+    const files = Array.isArray(parsed.files) ? parsed.files.filter((item): item is string => typeof item === 'string') : []
+    for (const fileName of files) {
+      if (path.basename(fileName) !== fileName) continue
+      await fs.rm(path.join(directory, fileName), { force: true })
+    }
+  } catch {
+    // A newly selected external directory has no Format Flow manifest yet.
+  }
+}
+
+function managedDataManifestPath(directory: string, kind: 'prompts' | 'workflows'): string {
+  return path.join(directory, `.format-flow-${kind}-manifest.json`)
+}
+
+async function writeManagedDataManifest(
+  directory: string,
+  kind: 'prompts' | 'workflows',
+  files: string[]
+): Promise<void> {
+  await fs.writeFile(
+    managedDataManifestPath(directory, kind),
+    `${JSON.stringify({ format: `format-flow-${kind}`, files }, null, 2)}\n`,
+    'utf8'
+  )
 }
 
 function getPaths(): AppPaths {
@@ -862,23 +944,30 @@ function getPaths(): AppPaths {
     browserExtensionDirectory: getBrowserExtensionDirectory(),
     dataDirectoryPreferencePath: getDataDirectoryPreferencePath(),
     temporaryWordDirectory: getTemporaryWordRoot(),
-    defaultSkillDirectories: defaultSkillDirectories()
+    defaultSkillDirectories: defaultSkillDirectories(),
+    defaultDataDirectories: getDefaultDataDirectories()
   }
 }
 
-async function chooseDataDirectory(): Promise<{ ok: boolean; path: string; message: string }> {
+async function chooseDataDirectory(kind: DataDirectoryKind = 'data'): Promise<{ ok: boolean; path: string; message: string }> {
+  const titles: Record<DataDirectoryKind, string> = {
+    data: '选择 Format Flow 应用数据目录',
+    prompts: '选择 Prompt 数据目录',
+    workflows: '选择工作流数据目录',
+    skillMetadata: '选择 Skill 元数据目录',
+    managedSkills: '选择托管 Skill 目录'
+  }
   const selection = await dialog.showOpenDialog({
-    title: 'Choose Format Flow data directory',
+    title: titles[kind],
     properties: ['openDirectory', 'createDirectory']
   })
   if (selection.canceled || !selection.filePaths[0]) {
-    return { ok: false, path: '', message: 'Data directory selection cancelled' }
+    return { ok: false, path: '', message: '已取消选择目录' }
   }
 
   const selectedPath = selection.filePaths[0]
   await fs.mkdir(selectedPath, { recursive: true })
-  await writeDataDirectoryPreference(selectedPath)
-  return { ok: true, path: selectedPath, message: 'Data directory selected' }
+  return { ok: true, path: selectedPath, message: `已选择${titles[kind].replace(/^选择/, '')}` }
 }
 
 async function chooseBackupDirectory(): Promise<{ ok: boolean; path: string; message: string }> {
@@ -896,6 +985,7 @@ async function chooseBackupDirectory(): Promise<{ ok: boolean; path: string; mes
 }
 
 async function ensureBuiltInLearningSkills(): Promise<void> {
+  await migrateLegacyManagedSkills()
   const managedDirectory = getManagedSkillDirectory()
   await fs.mkdir(managedDirectory, { recursive: true })
 
@@ -960,7 +1050,9 @@ async function ensureBuiltInLearningSkills(): Promise<void> {
 }
 async function scanSkills(directories: string[]): Promise<SkillItem[]> {
   await ensureBuiltInLearningSkills()
-  const uniqueDirectories = Array.from(new Set([...directories, getManagedSkillDirectory()].filter(Boolean)))
+  const uniqueDirectories = Array.from(
+    new Set([...directories, ...defaultSkillDirectories(), getLegacyManagedSkillDirectory()].filter(Boolean))
+  )
   const files = (
     await Promise.all(uniqueDirectories.map((directory) => findSkillFiles(directory, 0)))
   ).flat()
@@ -1004,9 +1096,9 @@ async function findSkillFiles(directory: string, depth: number): Promise<string[
 
 async function importExistingSkills(): Promise<ImportResult<SkillItem>> {
   const selection = await dialog.showOpenDialog({
-    title: 'Import existing Skill',
+    title: '导入完整 Skill 目录或文件',
     properties: ['openFile', 'openDirectory', 'multiSelections'],
-    filters: [{ name: 'Codex Skill', extensions: ['md'] }]
+    filters: [{ name: 'Skill 目录、SKILL.md、ZIP 或备份', extensions: ['md', 'zip', 'json'] }]
   })
   if (selection.canceled) return emptyImport('Import cancelled')
 
@@ -1371,6 +1463,7 @@ async function buildBackupPayload(normalized: AppStore, timestamp: string): Prom
       shortcut: normalized.settings.shortcut,
       skillDirectories: normalized.settings.skillDirectories,
       dataDirectory: normalized.settings.dataDirectory,
+      dataDirectories: normalized.settings.dataDirectories,
       backupDirectory: normalized.settings.backupDirectory,
       temporaryWordDirectory: normalized.settings.temporaryWordDirectory,
       temporaryWordRetentionHours: normalized.settings.temporaryWordRetentionHours,
@@ -1652,6 +1745,7 @@ async function searchGithub(kind: 'skill' | 'prompt', query: string): Promise<Gi
           path: file.path,
           htmlUrl: `${repo.html_url}/blob/${branch}/${file.path}`,
           rawUrl: `https://raw.githubusercontent.com/${repo.full_name}/${branch}/${file.path}`,
+          ref: branch,
           sourceId: 'github',
           sourceName: 'GitHub',
           sourceType: 'github',
@@ -1665,6 +1759,27 @@ async function searchGithub(kind: 'skill' | 'prompt', query: string): Promise<Gi
   }
 
   return results.slice(0, 20)
+}
+
+async function migrateLegacyManagedSkills(): Promise<void> {
+  const legacyDirectory = path.resolve(getLegacyManagedSkillDirectory())
+  const managedDirectory = path.resolve(getManagedSkillDirectory())
+  if (legacyDirectory.toLowerCase() === managedDirectory.toLowerCase() || !(await pathExists(legacyDirectory))) return
+
+  await fs.mkdir(managedDirectory, { recursive: true })
+  const entries = await fs.readdir(legacyDirectory, { withFileTypes: true }).catch(() => [])
+  for (const entry of entries) {
+    const source = path.resolve(legacyDirectory, entry.name)
+    const destination = path.resolve(managedDirectory, entry.name)
+    if (!isPathInside(source, legacyDirectory) || !isPathInside(destination, managedDirectory)) continue
+    if (await pathExists(destination)) continue
+    try {
+      await fs.rename(source, destination)
+    } catch {
+      await fs.cp(source, destination, { recursive: entry.isDirectory(), force: false, errorOnExist: true })
+      await fs.rm(source, { recursive: entry.isDirectory(), force: true })
+    }
+  }
 }
 
 async function searchDiscovery(
@@ -1798,24 +1913,103 @@ function githubFetch(url: string): Promise<Response> {
 }
 
 async function installGithubSkill(result: GithubSearchResult): Promise<ImportResult<SkillItem>> {
-  const content = await fetchText(result.rawUrl)
+  if (result.sourceType && result.sourceType !== 'github') throw new Error('外部网站结果需要在原网站下载后再导入')
+  const files = await downloadGithubSkillFiles(result)
+  const skillSource = files.find((file) => file.relativePath.toLowerCase() === 'skill.md')
+  if (!skillSource) throw new Error('GitHub Skill 目录中没有找到 SKILL.md')
+  const content = skillSource.data.toString('utf8')
+  const parsed = parseSkillMarkdown(content, result.path)
   const managedDirectory = getManagedSkillDirectory()
   await fs.mkdir(managedDirectory, { recursive: true })
-  const destination = await uniqueDirectory(
-    path.join(managedDirectory, safeSegment(`${result.repository}-${path.dirname(result.path)}`))
-  )
+  const destination = await uniqueDirectory(path.join(managedDirectory, safeSegment(parsed.name || result.repository)))
+  try {
+    for (const file of files) {
+      const relativePath = file.relativePath.toLowerCase() === 'skill.md' ? 'SKILL.md' : file.relativePath
+      const targetPath = path.resolve(destination, ...relativePath.split('/'))
+      if (!isPathInside(targetPath, destination)) throw new Error(`拦截了不安全的 Skill 路径：${relativePath}`)
+      await fs.mkdir(path.dirname(targetPath), { recursive: true })
+      await fs.writeFile(targetPath, file.data)
+    }
+  } catch (error) {
+    await fs.rm(destination, { recursive: true, force: true })
+    throw error
+  }
+
   const skillFile = path.join(destination, 'SKILL.md')
-  await fs.writeFile(skillFile, content, 'utf8')
   const stat = await fs.stat(skillFile)
   const skill = { ...parseSkillMarkdown(content, skillFile), updatedAt: stat.mtime.toISOString() }
 
   return {
     ok: true,
-    message: `Installed ${skill.name}`,
+    message: `已安装完整 Skill：${skill.name}（${files.length} 个文件）`,
     items: [skill],
     installedPaths: [destination],
     managedDirectory
   }
+}
+
+type DownloadedGithubSkillFile = {
+  relativePath: string
+  data: Buffer
+}
+
+type GithubContentEntry = {
+  type: 'file' | 'dir' | 'symlink' | 'submodule'
+  path: string
+  name: string
+  size?: number
+  download_url?: string | null
+}
+
+const MAX_GITHUB_SKILL_FILES = 200
+const MAX_GITHUB_SKILL_FILE_BYTES = 8 * 1024 * 1024
+const MAX_GITHUB_SKILL_TOTAL_BYTES = 25 * 1024 * 1024
+
+async function downloadGithubSkillFiles(result: GithubSearchResult): Promise<DownloadedGithubSkillFile[]> {
+  if (!/^[^/]+\/[^/]+$/.test(result.repository)) throw new Error('GitHub 仓库名称无效')
+  const skillRoot = githubSkillRootPath(result.path)
+  const files: DownloadedGithubSkillFile[] = []
+  let totalBytes = 0
+  let visitedDirectories = 0
+
+  async function visitDirectory(directoryPath: string, depth: number): Promise<void> {
+    if (depth > 8) throw new Error('Skill 目录层级超过 8 层，已停止安装')
+    visitedDirectories += 1
+    if (visitedDirectories > 80) throw new Error('Skill 子目录数量超过 80 个，已停止安装')
+
+    const repositoryPath = result.repository.split('/').map(encodeURIComponent).join('/')
+    const encodedDirectory = directoryPath ? `/${directoryPath.split('/').map(encodeURIComponent).join('/')}` : ''
+    const url = new URL(`https://api.github.com/repos/${repositoryPath}/contents${encodedDirectory}`)
+    if (result.ref) url.searchParams.set('ref', result.ref)
+    const response = await githubFetch(url.href)
+    if (!response.ok) throw new Error(`读取 GitHub Skill 目录失败：${response.status} ${response.statusText}`)
+    const payload = (await response.json()) as GithubContentEntry[] | GithubContentEntry
+    if (!Array.isArray(payload)) throw new Error('GitHub Skill 路径不是目录')
+
+    for (const entry of payload) {
+      const relativePath = path.posix.relative(skillRoot || '.', entry.path)
+      if (!shouldIncludeGithubSkillEntry(skillRoot, relativePath, entry.type === 'dir' ? 'dir' : 'file')) continue
+      if (entry.type === 'dir') {
+        await visitDirectory(entry.path, depth + 1)
+        continue
+      }
+      if (entry.type !== 'file' || !entry.download_url) continue
+      if (files.length >= MAX_GITHUB_SKILL_FILES) throw new Error(`Skill 文件数量超过 ${MAX_GITHUB_SKILL_FILES} 个，已停止安装`)
+      if ((entry.size || 0) > MAX_GITHUB_SKILL_FILE_BYTES) throw new Error(`Skill 文件过大：${relativePath}`)
+      if (totalBytes + (entry.size || 0) > MAX_GITHUB_SKILL_TOTAL_BYTES) throw new Error('Skill 文件总大小超过 25 MB，已停止安装')
+
+      const fileResponse = await fetch(entry.download_url, { headers: { 'User-Agent': 'format-flow' } })
+      if (!fileResponse.ok) throw new Error(`下载 Skill 文件失败：${relativePath} (${fileResponse.status})`)
+      const data = Buffer.from(await fileResponse.arrayBuffer())
+      if (data.byteLength > MAX_GITHUB_SKILL_FILE_BYTES) throw new Error(`Skill 文件过大：${relativePath}`)
+      totalBytes += data.byteLength
+      if (totalBytes > MAX_GITHUB_SKILL_TOTAL_BYTES) throw new Error('Skill 文件总大小超过 25 MB，已停止安装')
+      files.push({ relativePath, data })
+    }
+  }
+
+  await visitDirectory(skillRoot, 0)
+  return files
 }
 
 async function importGithubPrompt(result: GithubSearchResult): Promise<ImportResult<PromptItem>> {
@@ -2107,7 +2301,7 @@ function registerIpc(): void {
     return saved
   })
   ipcMain.handle('paths:get', () => getPaths())
-  ipcMain.handle('paths:chooseDataDirectory', () => chooseDataDirectory())
+  ipcMain.handle('paths:chooseDataDirectory', (_event, kind: DataDirectoryKind = 'data') => chooseDataDirectory(kind))
   ipcMain.handle('paths:chooseBackupDirectory', () => chooseBackupDirectory())
   ipcMain.handle('paths:chooseTemporaryWordDirectory', () => chooseTemporaryWordDirectory())
   ipcMain.handle('backup:create', (_event, store: AppStore) => createBackup(store))

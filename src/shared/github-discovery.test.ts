@@ -4,8 +4,10 @@ import {
   buildGithubRepositorySearchUrl,
   buildWebsiteSearchUrl,
   discoverySourceSupports,
+  githubSkillRootPath,
   normalizeDiscoverySources,
-  RECOMMENDED_DISCOVERY_SOURCES
+  RECOMMENDED_DISCOVERY_SOURCES,
+  shouldIncludeGithubSkillEntry
 } from './github-discovery'
 
 describe('GitHub discovery search', () => {
@@ -67,5 +69,17 @@ describe('GitHub discovery search', () => {
     expect(discoverySourceSupports(RECOMMENDED_DISCOVERY_SOURCES[0].source, 'skill')).toBe(false)
     expect(discoverySourceSupports(RECOMMENDED_DISCOVERY_SOURCES[1].source, 'skill')).toBe(true)
     expect(discoverySourceSupports(RECOMMENDED_DISCOVERY_SOURCES[1].source, 'prompt')).toBe(false)
+  })
+
+  it('selects a complete GitHub Skill directory without pulling unrelated root folders', () => {
+    expect(githubSkillRootPath('.claude/skills/review/SKILL.md')).toBe('.claude/skills/review')
+    expect(githubSkillRootPath('SKILL.md')).toBe('')
+    expect(() => githubSkillRootPath('README.md')).toThrow(/SKILL\.md/)
+
+    expect(shouldIncludeGithubSkillEntry('.claude/skills/review', 'scripts/check.js', 'file')).toBe(true)
+    expect(shouldIncludeGithubSkillEntry('', 'agent', 'dir')).toBe(true)
+    expect(shouldIncludeGithubSkillEntry('', 'references/guide.md', 'file')).toBe(true)
+    expect(shouldIncludeGithubSkillEntry('', 'src', 'dir')).toBe(false)
+    expect(shouldIncludeGithubSkillEntry('', 'node_modules/pkg/index.js', 'file')).toBe(false)
   })
 })

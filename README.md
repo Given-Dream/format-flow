@@ -2,11 +2,11 @@
 
 Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工作流与 MCP 管理器。它将分散在文件、Codex 目录和浏览器中的 AI 工作资产集中管理，并通过快捷调用、变量填充、顺序运行、导入导出和备份形成可复用的个人工作流。
 
-当前版本：`v0.1.53`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
+当前版本：`v0.1.54`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
 
 ## 下载与安装
 
-- [下载 Format Flow v0.1.53 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.53/Format-Flow-Setup-0.1.53.exe)
+- [下载 Format Flow v0.1.54 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.54/Format-Flow-Setup-0.1.54.exe)
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
 - Release 同时提供 `.blockmap` 和 `latest.yml`，便于分发安装包及其版本元数据。
@@ -50,6 +50,7 @@ README 已按当前代码重写，不再沿用 `v0.1.1` 时仅覆盖基础功能
 | `v0.1.50` | 提示词与 Skill 管理新增历史重复项扫描和清理入口；可逐组选择保留版本，合并标签、收藏和变量，自动修复工作流引用，并将多余 Skill 目录移入系统回收站。 |
 | `v0.1.51` | “移动到其他分组”改为完整路径目标列表，支持将分组移动到任意层级的小类中，并明确标识分组、小类层级。 |
 | `v0.1.52` - `v0.1.53` | GitHub 发现改为独立大弹窗；Prompt 与 Skill 支持 GitHub 和自定义网站综合检索、来源标识与失败隔离；设置页提供 prompts.chat、SkillsMP 推荐接口及手动来源配置。 |
+| `v0.1.54` | Skill 导入和 GitHub 安装会保留 `SKILL.md`、agent/agents、scripts、references、assets、extras 等完整目录内容；Prompt、工作流、Skill 元数据和托管 Skill 支持分别选择保存目录，托管 Skill 默认保存到 `.codex/skills`。 |
 
 ## 功能展示
 

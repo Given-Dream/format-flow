@@ -3,6 +3,7 @@ import type {
   AppPaths,
   AppStore,
   BackupResult,
+  DataDirectoryKind,
   DiscoverySource,
   ExportResult,
   ExportTextFileRequest,
@@ -38,8 +39,8 @@ const api = {
   loadStore: (): Promise<AppStore> => ipcRenderer.invoke('store:load'),
   saveStore: (store: AppStore): Promise<AppStore> => ipcRenderer.invoke('store:save', store),
   getPaths: (): Promise<AppPaths> => ipcRenderer.invoke('paths:get'),
-  chooseDataDirectory: (): Promise<{ ok: boolean; path: string; message: string }> =>
-    ipcRenderer.invoke('paths:chooseDataDirectory'),
+  chooseDataDirectory: (kind: DataDirectoryKind = 'data'): Promise<{ ok: boolean; path: string; message: string }> =>
+    ipcRenderer.invoke('paths:chooseDataDirectory', kind),
   chooseBackupDirectory: (): Promise<{ ok: boolean; path: string; message: string }> =>
     ipcRenderer.invoke('paths:chooseBackupDirectory'),
   chooseTemporaryWordDirectory: (): Promise<{ ok: boolean; path: string; message: string }> =>

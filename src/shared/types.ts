@@ -91,6 +91,7 @@ export type GithubSearchResult = {
   path: string
   htmlUrl: string
   rawUrl: string
+  ref?: string
   sourceId?: string
   sourceName?: string
   sourceType?: 'github' | 'website'
@@ -106,6 +107,15 @@ export type DiscoverySource = {
   searchUrlTemplate: string
   resultLinkMatch?: string
   enabled: boolean
+}
+
+export type DataDirectoryKind = 'data' | 'prompts' | 'workflows' | 'skillMetadata' | 'managedSkills'
+
+export type DataDirectoryOverrides = {
+  prompts?: string
+  workflows?: string
+  skillMetadata?: string
+  managedSkills?: string
 }
 
 export type SkillMetadata = {
@@ -219,6 +229,7 @@ export type AppSettings = {
   shortcut: string
   skillDirectories: string[]
   dataDirectory?: string
+  dataDirectories?: DataDirectoryOverrides
   backupDirectory?: string
   temporaryWordDirectory?: string
   temporaryWordRetentionHours?: number
@@ -253,6 +264,7 @@ export type AppPaths = {
   dataDirectoryPreferencePath?: string
   temporaryWordDirectory?: string
   defaultSkillDirectories: string[]
+  defaultDataDirectories: Record<DataDirectoryKind, string>
 }
 
 export type ShortcutResult = {

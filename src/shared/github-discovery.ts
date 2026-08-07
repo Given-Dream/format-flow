@@ -5,6 +5,8 @@ const DEFAULT_GITHUB_QUERIES: Record<DiscoveryKind, string> = {
   prompt: 'prompt template'
 }
 
+const STANDARD_SKILL_DIRECTORIES = new Set(['agent', 'agents', 'scripts', 'references', 'assets', 'extras'])
+
 export const RECOMMENDED_DISCOVERY_SOURCES = [
   {
     source: {
@@ -91,6 +93,27 @@ export function buildWebsiteSearchUrl(source: DiscoverySource, query: string): s
 
 export function discoverySourceSupports(source: DiscoverySource, kind: DiscoveryKind): boolean {
   return source.enabled && (source.kind === 'both' || source.kind === kind)
+}
+
+export function githubSkillRootPath(skillPath: string): string {
+  const normalized = skillPath.replaceAll('\\', '/').replace(/^\/+/, '')
+  if (!/(^|\/)skill\.md$/i.test(normalized)) throw new Error('GitHub Skill 条目必须指向 SKILL.md')
+  const directory = normalized.split('/').slice(0, -1).join('/')
+  return directory === '.' ? '' : directory
+}
+
+export function shouldIncludeGithubSkillEntry(
+  skillRootPath: string,
+  relativePath: string,
+  type: 'file' | 'dir'
+): boolean {
+  const normalized = relativePath.replaceAll('\\', '/').replace(/^\/+/, '')
+  if (!normalized || normalized === '..' || normalized.startsWith('../')) return false
+  const segments = normalized.split('/').filter(Boolean)
+  if (segments.some((segment) => ['.git', 'node_modules', 'dist', 'out'].includes(segment.toLowerCase()))) return false
+  if (skillRootPath) return true
+  if (type === 'dir') return segments.length === 1 && STANDARD_SKILL_DIRECTORIES.has(segments[0].toLowerCase())
+  return segments.length === 1 || STANDARD_SKILL_DIRECTORIES.has(segments[0].toLowerCase())
 }
 
 export function createWebsiteSearchPageResult(

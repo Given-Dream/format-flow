@@ -676,6 +676,7 @@ function PromptPanel({
   const [githubQuery, setGithubQuery] = useState('codex prompt')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
+  const [githubDiscoveryOpen, setGithubDiscoveryOpen] = useState(false)
   const [promptImportReview, setPromptImportReview] = useState<PromptImportReview | null>(null)
   const [promptDuplicateGroups, setPromptDuplicateGroups] = useState<PromptDuplicateGroup[] | null>(null)
   const [tagRecoveryOpen, setTagRecoveryOpen] = useState(false)
@@ -1038,6 +1039,7 @@ function PromptPanel({
         setNotice(imported.message)
         return
       }
+      setGithubDiscoveryOpen(false)
       stagePromptImport(imported.items, `GitHub：${result.repository}/${result.path}`, true, result)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'GitHub Prompt 导入失败')
@@ -1173,9 +1175,8 @@ function PromptPanel({
               event.currentTarget.value = ''
             }}
           />
-          <input value={githubQuery} onChange={(event) => setGithubQuery(event.target.value)} aria-label="GitHub Prompt 查询" />
-          <button type="button" disabled={githubBusy} onClick={() => void discoverGithubPrompts()}>
-            {githubBusy ? '搜索中...' : '从 GitHub 发现 Prompt'}
+          <button type="button" onClick={() => setGithubDiscoveryOpen(true)}>
+            从 GitHub 发现 Prompt
           </button>
         </div>
 
@@ -1202,17 +1203,6 @@ function PromptPanel({
           </button>
         </div>
 
-        {githubResults.length > 0 && (
-          <div className="github-results horizontal">
-            {githubResults.map((result) => (
-              <button key={result.id} type="button" onClick={() => void importGithubPrompt(result)}>
-                <strong>{result.repository}</strong>
-                <span>{result.path}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
         {promptSections.length > 0 ? (
           <div className="prompt-section-list">
             {promptSections.map((section) => (
@@ -1236,6 +1226,18 @@ function PromptPanel({
           close={() => setEditing(null)}
           save={savePrompt}
           deletePrompt={deletePrompt}
+        />
+      )}
+      {githubDiscoveryOpen && (
+        <GithubDiscoveryModal
+          kind="Prompt"
+          query={githubQuery}
+          setQuery={setGithubQuery}
+          busy={githubBusy}
+          results={githubResults}
+          close={() => setGithubDiscoveryOpen(false)}
+          search={discoverGithubPrompts}
+          select={(result) => void importGithubPrompt(result)}
         />
       )}
       {promptImportReview && (
@@ -1309,6 +1311,7 @@ function SkillPanel({
   const [githubQuery, setGithubQuery] = useState('codex skill')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
+  const [githubDiscoveryOpen, setGithubDiscoveryOpen] = useState(false)
   const [githubPreview, setGithubPreview] = useState<GithubSkillPreview | null>(null)
   const [skillImportReview, setSkillImportReview] = useState<SkillImportReview | null>(null)
   const [skillDuplicateGroups, setSkillDuplicateGroups] = useState<SkillDuplicateGroup[] | null>(null)
@@ -1644,6 +1647,7 @@ function SkillPanel({
         return
       }
       setGithubPreview({ result, content: preview.content })
+      setGithubDiscoveryOpen(false)
       setNotice(preview.message)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'GitHub Skill 预览失败')
@@ -1748,9 +1752,8 @@ function SkillPanel({
           <button type="button" onClick={scanSkillLibraryDuplicates}>
             扫描并清理重复项
           </button>
-          <input value={githubQuery} onChange={(event) => setGithubQuery(event.target.value)} aria-label="GitHub Skill 查询" />
-          <button type="button" disabled={githubBusy} onClick={() => void discoverGithubSkills()}>
-            {githubBusy ? '搜索中...' : '从 GitHub 发现 Skill'}
+          <button type="button" onClick={() => setGithubDiscoveryOpen(true)}>
+            从 GitHub 发现 Skill
           </button>
         </div>
 
@@ -1767,17 +1770,6 @@ function SkillPanel({
             导出全部 Skill
           </button>
         </div>
-
-        {githubResults.length > 0 && (
-          <div className="github-results horizontal">
-            {githubResults.map((result) => (
-              <button key={result.id} type="button" onClick={() => void previewGithubSkill(result)}>
-                <strong>{result.repository}</strong>
-                <span>{result.path}</span>
-              </button>
-            ))}
-          </div>
-        )}
 
         <div className="tile-grid">
           {visibleSkills.map((skill) => (
@@ -1819,6 +1811,18 @@ function SkillPanel({
           close={() => setEditing(null)}
           save={saveMetadata}
           deleteSkill={deleteSkill}
+        />
+      )}
+      {githubDiscoveryOpen && (
+        <GithubDiscoveryModal
+          kind="Skill"
+          query={githubQuery}
+          setQuery={setGithubQuery}
+          busy={githubBusy}
+          results={githubResults}
+          close={() => setGithubDiscoveryOpen(false)}
+          search={discoverGithubSkills}
+          select={(result) => void previewGithubSkill(result)}
         />
       )}
       {skillImportReview && (
@@ -3606,6 +3610,83 @@ function SettingsPanel({
         </p>
       </div>
     </section>
+  )
+}
+
+function GithubDiscoveryModal({
+  kind,
+  query,
+  setQuery,
+  busy,
+  results,
+  close,
+  search,
+  select
+}: {
+  kind: 'Prompt' | 'Skill'
+  query: string
+  setQuery: (query: string) => void
+  busy: boolean
+  results: GithubSearchResult[]
+  close: () => void
+  search: () => Promise<void>
+  select: (result: GithubSearchResult) => void
+}): JSX.Element {
+  const [searched, setSearched] = useState(results.length > 0)
+
+  async function runSearch(): Promise<void> {
+    if (!query.trim() || busy) return
+    setSearched(true)
+    await search()
+  }
+
+  return (
+    <Modal title={`从 GitHub 发现 ${kind}`} close={close} className="github-discovery-modal">
+      <form
+        className="github-discovery-search"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void runSearch()
+        }}
+      >
+        <input
+          autoFocus
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          aria-label={`GitHub ${kind} 查询`}
+          placeholder={`搜索 ${kind} 名称、仓库或说明`}
+        />
+        <button className="primary-action" type="submit" disabled={busy || !query.trim()}>
+          {busy ? '搜索中...' : '搜索 GitHub'}
+        </button>
+      </form>
+
+      {results.length > 0 ? (
+        <>
+          <div className="github-discovery-summary">
+            <strong>搜索结果</strong>
+            <span>{results.length} 个候选</span>
+          </div>
+          <div className="github-discovery-results">
+            {results.map((result) => {
+              const title = result.name || result.path.split('/').filter(Boolean).pop() || result.repository
+              return (
+                <button key={result.id} className="github-discovery-card" type="button" onClick={() => select(result)}>
+                  <header>
+                    <strong>{title}</strong>
+                    <span>{result.repository}</span>
+                  </header>
+                  <p>{result.description || '无仓库说明'}</p>
+                  <code>{result.path}</code>
+                </button>
+              )
+            })}
+          </div>
+        </>
+      ) : searched && !busy ? (
+        <div className="github-discovery-empty">没有找到匹配的 {kind}</div>
+      ) : null}
+    </Modal>
   )
 }
 

@@ -14,6 +14,7 @@ import type {
   SkillEntryCreateRequest,
   SkillFileWriteRequest,
   SkillItem,
+  TemporaryWordClipboardRequest,
   TemporaryWordCleanupResult,
   TemporaryWordFilesRequest,
   TemporaryWordResult
@@ -82,6 +83,8 @@ const api = {
   revealTemporaryWord: (filePath: string): Promise<void> => ipcRenderer.invoke('temporaryWord:reveal', filePath),
   copyTemporaryWordFiles: (filePaths: string[]): Promise<ExportResult> =>
     ipcRenderer.invoke('temporaryWord:copyFiles', filePaths),
+  copyTemporaryWordPayload: (request: TemporaryWordClipboardRequest): Promise<ExportResult> =>
+    ipcRenderer.invoke('temporaryWord:copyPayload', request),
   removeTemporaryWord: (filePath: string): Promise<TemporaryWordCleanupResult> =>
     ipcRenderer.invoke('temporaryWord:remove', filePath),
   cleanupTemporaryWords: (): Promise<TemporaryWordCleanupResult> => ipcRenderer.invoke('temporaryWord:cleanup'),

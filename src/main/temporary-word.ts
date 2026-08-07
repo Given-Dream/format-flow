@@ -452,14 +452,62 @@ export async function cleanupTemporaryWordAttachments(maxAgeMilliseconds = reten
 }
 
 export async function copyTemporaryWordFiles(filePaths: string[]): Promise<ExportResult> {
-  const managedPaths = Array.from(new Set(filePaths.filter(isManagedTemporaryDocument).filter((filePath) => fsSync.existsSync(filePath))))
-  if (managedPaths.length === 0) return { ok: false, message: '没有可复制的临时 Word 文档。' }
+  const validated = validateTemporaryWordFiles(filePaths)
+  if (!validated.ok) return validated.result
+  return writeTemporaryWordClipboard('', validated.filePaths, false)
+}
+
+export async function copyTemporaryWordPayload(text: string, filePaths: string[]): Promise<ExportResult> {
+  if (!text.trim()) return { ok: false, message: '没有可复制的填充内容。' }
+  const validated = validateTemporaryWordFiles(filePaths)
+  if (!validated.ok) return validated.result
+  return writeTemporaryWordClipboard(text, validated.filePaths, true)
+}
+
+function validateTemporaryWordFiles(
+  filePaths: string[]
+): { ok: true; filePaths: string[] } | { ok: false; result: ExportResult } {
+  const requestedPaths = Array.from(new Set(filePaths.filter(Boolean).map((filePath) => path.resolve(filePath))))
+  if (requestedPaths.length === 0) {
+    return { ok: false, result: { ok: false, message: '没有可复制的临时 Word 文档。' } }
+  }
+  const invalidPath = requestedPaths.find(
+    (filePath) => !isManagedTemporaryDocument(filePath) || !fsSync.existsSync(filePath)
+  )
+  if (invalidPath) {
+    return {
+      ok: false,
+      result: { ok: false, message: `附件不存在或已过期，请重新生成：${path.basename(invalidPath)}` }
+    }
+  }
+  return { ok: true, filePaths: requestedPaths }
+}
+
+async function writeTemporaryWordClipboard(
+  text: string,
+  managedPaths: string[],
+  includeText: boolean
+): Promise<ExportResult> {
+  const textBase64 = Buffer.from(text, 'utf8').toString('base64')
 
   const jsonBase64 = Buffer.from(JSON.stringify(managedPaths), 'utf8').toString('base64')
   const command = [
+    'Add-Type -AssemblyName System.Windows.Forms',
     `$pathsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${jsonBase64}'))`,
     '[string[]]$paths = $pathsJson | ConvertFrom-Json',
-    'Set-Clipboard -LiteralPath $paths'
+    '$data = New-Object System.Windows.Forms.DataObject',
+    ...(includeText
+      ? [
+          `$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${textBase64}'))`,
+          '$data.SetText($text, [System.Windows.Forms.TextDataFormat]::UnicodeText)'
+        ]
+      : []),
+    '$files = New-Object System.Collections.Specialized.StringCollection',
+    '$files.AddRange([string[]]$paths)',
+    '$data.SetFileDropList($files)',
+    '$written = $false',
+    'for ($attempt = 0; $attempt -lt 5 -and -not $written; $attempt++) { try { [System.Windows.Forms.Clipboard]::SetDataObject($data, $true); $written = $true } catch { if ($attempt -ge 4) { throw }; Start-Sleep -Milliseconds 100 } }',
+    'if (-not $written) { throw "FORMAT_FLOW_CLIPBOARD_BUSY" }'
   ].join('; ')
   const encodedCommand = Buffer.from(command, 'utf16le').toString('base64')
   try {
@@ -467,9 +515,21 @@ export async function copyTemporaryWordFiles(filePaths: string[]): Promise<Expor
       windowsHide: true,
       timeout: 15_000
     })
-    return { ok: true, message: managedPaths.length > 1 ? `已复制 ${managedPaths.length} 个临时 Word 文件。` : '已复制临时 Word 文件。' }
+    return {
+      ok: true,
+      message: includeText
+        ? `已复制填充内容和 ${managedPaths.length} 个附件。粘贴时将同时提供文本与文件。`
+        : managedPaths.length > 1
+          ? `已复制 ${managedPaths.length} 个临时 Word 文件。`
+          : '已复制临时 Word 文件。'
+    }
   } catch (error) {
-    return { ok: false, message: `复制临时 Word 文件失败：${errorMessage(error)}` }
+    return {
+      ok: false,
+      message: includeText
+        ? `复制填充内容和附件失败：${errorMessage(error)}`
+        : `复制临时 Word 文件失败：${errorMessage(error)}`
+    }
   }
 }
 

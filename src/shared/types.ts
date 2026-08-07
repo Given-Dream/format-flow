@@ -251,6 +251,11 @@ export type TemporaryWordFilesRequest = {
   filePaths: string[]
 }
 
+export type TemporaryWordClipboardRequest = {
+  text: string
+  filePaths: string[]
+}
+
 export type TemporaryWordCleanupResult = {
   ok: boolean
   message: string

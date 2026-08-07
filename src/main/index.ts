@@ -13,6 +13,7 @@ import {
   captureWordSelection,
   cleanupTemporaryWordAttachments,
   copyTemporaryWordFiles,
+  copyTemporaryWordPayload,
   createTemporaryWordFromFiles,
   removeTemporaryWordAttachment
 } from './temporary-word'
@@ -33,6 +34,7 @@ import type {
   SkillDirectoryNode,
   SkillDirectorySnapshot,
   SkillItem,
+  TemporaryWordClipboardRequest,
   TemporaryWordFilesRequest
 } from '../shared/types'
 
@@ -2016,6 +2018,9 @@ function registerIpc(): void {
   ipcMain.handle('temporaryWord:open', (_event, filePath: string) => shell.openPath(filePath))
   ipcMain.handle('temporaryWord:reveal', (_event, filePath: string) => shell.showItemInFolder(filePath))
   ipcMain.handle('temporaryWord:copyFiles', (_event, filePaths: string[]) => copyTemporaryWordFiles(filePaths))
+  ipcMain.handle('temporaryWord:copyPayload', (_event, request: TemporaryWordClipboardRequest) =>
+    copyTemporaryWordPayload(request.text, request.filePaths)
+  )
   ipcMain.handle('temporaryWord:remove', (_event, filePath: string) => removeTemporaryWordAttachment(filePath))
   ipcMain.handle('temporaryWord:cleanup', () => cleanupTemporaryWordAttachments())
   ipcMain.handle('browserBridge:getStatus', () => getBrowserBridgeStatus())

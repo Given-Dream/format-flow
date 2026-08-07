@@ -151,7 +151,11 @@ type PromptFillDraft = {
   historyKey?: string
   values: Record<string, string>
   attachments: Record<string, TemporaryWordAttachment>
-  submit: (filledContent: string, values: Record<string, string>) => void
+  submit: (
+    filledContent: string,
+    values: Record<string, string>,
+    attachments?: TemporaryWordAttachment[]
+  ) => void
 }
 type LicenseStatus = {
   activated: boolean
@@ -499,14 +503,23 @@ export function App(): JSX.Element {
     setPaths(await formatFlow.getPaths())
   }
 
-  async function pasteQuickCall(text: string, success: string): Promise<void> {
+  async function pasteQuickCall(
+    text: string,
+    success: string,
+    attachments: TemporaryWordAttachment[] = []
+  ): Promise<void> {
     setNotice('正在复制到剪贴板...')
-    const result = await writeClipboardText(text)
+    const result = attachments.length > 0
+      ? await formatFlow.copyTemporaryWordPayload({
+          text,
+          filePaths: attachments.map((attachment) => attachment.path)
+        })
+      : await writeClipboardText(text)
     if (!result.ok) {
       setNotice(result.message)
       throw new Error(result.message)
     }
-    setNotice(success)
+    setNotice(attachments.length > 0 ? `${success}；同时复制 ${attachments.length} 个附件` : success)
   }
 
   if (!store) {
@@ -4048,7 +4061,11 @@ function LauncherModal({
   skills: SkillItem[]
   close: () => void
   setActiveTab: (tab: TabId) => void
-  pasteQuickCall: (text: string, success: string) => Promise<void>
+  pasteQuickCall: (
+    text: string,
+    success: string,
+    attachments?: TemporaryWordAttachment[]
+  ) => Promise<void>
 }): JSX.Element {
   const [mode, setMode] = useState<LauncherMode>(() => readStoredQuickLauncherMode())
   const [query, setQuery] = useState(() => readStoredQuickLauncherQuery(mode))
@@ -4172,9 +4189,9 @@ function LauncherModal({
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
         attachments: {},
-        submit: (filledContent, values) => {
+        submit: (filledContent, values, attachments = []) => {
           rememberQuickCall(prompt.id, prompt.title, values)
-          void pasteQuickCall(filledContent, `已复制提示词：${prompt.title}`)
+          void pasteQuickCall(filledContent, `已复制提示词：${prompt.title}`, attachments)
             .then(close)
             .catch(() => undefined)
         }
@@ -4191,8 +4208,8 @@ function LauncherModal({
     const content = skill.contentPreview || `使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`
     const slots = extractPromptFillSlots(content)
     const historyKey = quickLauncherHistoryKey(mode, skill.id)
-    const copySkill = (filledContent: string) =>
-      pasteQuickCall(filledContent, `已复制 Skill 调用信息：${skill.title}`)
+    const copySkill = (filledContent: string, attachments: TemporaryWordAttachment[] = []) =>
+      pasteQuickCall(filledContent, `已复制 Skill 调用信息：${skill.title}`, attachments)
         .then(close)
         .catch(() => undefined)
     if (slots.length > 0) {
@@ -4203,9 +4220,9 @@ function LauncherModal({
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
         attachments: {},
-        submit: (filledContent, values) => {
+        submit: (filledContent, values, attachments = []) => {
           rememberQuickCall(skill.id, skill.title || skill.name, values)
-          void copySkill(filledContent)
+          void copySkill(filledContent, attachments)
         }
       })
       return
@@ -4221,8 +4238,8 @@ function LauncherModal({
       : `调用工作流：${workflow.title}\n${workflow.description}`
     const slots = extractPromptFillSlots(task)
     const historyKey = quickLauncherHistoryKey(mode, workflow.id)
-    const copyWorkflowTask = (filledTask: string) =>
-      pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务：${workflow.title}`)
+    const copyWorkflowTask = (filledTask: string, attachments: TemporaryWordAttachment[] = []) =>
+      pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务：${workflow.title}`, attachments)
         .then(() => {
           setActiveTab('runner')
           close()
@@ -4236,9 +4253,9 @@ function LauncherModal({
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
         attachments: {},
-        submit: (filledTask, values) => {
+        submit: (filledTask, values, attachments = []) => {
           rememberQuickCall(workflow.id, workflow.title, values)
-          void copyWorkflowTask(filledTask)
+          void copyWorkflowTask(filledTask, attachments)
         }
       })
       return
@@ -4376,7 +4393,9 @@ function LauncherModal({
               className="primary-action"
               type="button"
               disabled={!fillReady}
-              onClick={() => fillDraft.submit(filledPromptContent, fillDraft.values)}
+              onClick={() =>
+                fillDraft.submit(filledPromptContent, fillDraft.values, Object.values(fillDraft.attachments))
+              }
             >
               {fillDraft.submitLabel}
             </button>
@@ -6758,6 +6777,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     openTemporaryWord: async () => '浏览器审查模式不能打开本地 Word 文档。',
     revealTemporaryWord: async () => undefined,
     copyTemporaryWordFiles: async () => ({ ok: false, message: '浏览器审查模式不能复制本地 Word 文件。' }),
+    copyTemporaryWordPayload: async () => ({ ok: false, message: '浏览器审查模式不能复制本地 Word 附件。' }),
     removeTemporaryWord: async () => ({ ok: false, message: '浏览器审查模式不能删除本地 Word 文件。', removed: 0 }),
     cleanupTemporaryWords: async () => ({ ok: true, message: '浏览器审查模式没有临时 Word 文件。', removed: 0 }),
     getBrowserBridgeStatus: async () => ({

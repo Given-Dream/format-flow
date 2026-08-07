@@ -52,7 +52,8 @@ param(
   [Parameter(Mandatory=$true)][string]$OutputPath,
   [Parameter(Mandatory=$true)][string]$AttachmentId,
   [Parameter(Mandatory=$true)][string]$VariableName,
-  [string]$FilesBase64 = ''
+  [string]$FilesBase64,
+  [string]$PreferredWindowHandle = '0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,16 +71,214 @@ function Add-Paragraph($doc, [string]$text) {
   $range.InsertAfter($text + [Environment]::NewLine)
 }
 
+function Initialize-WordWindowResolver {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class FormatFlowWordWindowResolver
+{
+    private const uint OBJID_NATIVEOM = 0xFFFFFFF0;
+    private const uint GA_ROOT = 2;
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hwnd, StringBuilder className, int maximumCount);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
+
+    [DllImport("oleacc.dll")]
+    private static extern int AccessibleObjectFromWindow(
+        IntPtr hwnd,
+        uint objectId,
+        ref Guid interfaceId,
+        [MarshalAs(UnmanagedType.Interface)] out object nativeObject);
+
+    public static bool IsWordWindow(long rawHandle)
+    {
+        IntPtr hwnd = new IntPtr(rawHandle);
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return false;
+        IntPtr root = GetAncestor(hwnd, GA_ROOT);
+        return IsWordProcess(root == IntPtr.Zero ? hwnd : root);
+    }
+
+    public static object Resolve(long rawHandle)
+    {
+        IntPtr hwnd = new IntPtr(rawHandle);
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return null;
+        IntPtr root = GetAncestor(hwnd, GA_ROOT);
+        if (root != IntPtr.Zero) hwnd = root;
+        if (!IsWordProcess(hwnd)) return null;
+
+        object nativeObject = ResolveCandidate(hwnd);
+        if (nativeObject != null) return nativeObject;
+        foreach (IntPtr child in Descendants(hwnd))
+        {
+            nativeObject = ResolveCandidate(child);
+            if (nativeObject != null) return nativeObject;
+        }
+        return null;
+    }
+
+    public static long[] EnumerateWordWindows()
+    {
+        var handles = new List<long>();
+        EnumWindows(delegate(IntPtr hwnd, IntPtr lParam)
+        {
+            if (IsWordProcess(hwnd)) handles.Add(hwnd.ToInt64());
+            return true;
+        }, IntPtr.Zero);
+        return handles.ToArray();
+    }
+
+    private static object ResolveCandidate(IntPtr hwnd)
+    {
+        var className = new StringBuilder(256);
+        GetClassName(hwnd, className, className.Capacity);
+        if (!String.Equals(className.ToString(), "_WwG", StringComparison.OrdinalIgnoreCase)) return null;
+
+        Guid dispatchId = new Guid("00020400-0000-0000-C000-000000000046");
+        object nativeObject;
+        int result = AccessibleObjectFromWindow(hwnd, OBJID_NATIVEOM, ref dispatchId, out nativeObject);
+        return result == 0 ? nativeObject : null;
+    }
+
+    private static List<IntPtr> Descendants(IntPtr parent)
+    {
+        var handles = new List<IntPtr>();
+        EnumChildWindows(parent, delegate(IntPtr hwnd, IntPtr lParam)
+        {
+            var className = new StringBuilder(256);
+            GetClassName(hwnd, className, className.Capacity);
+            if (String.Equals(className.ToString(), "_WwG", StringComparison.OrdinalIgnoreCase)) handles.Add(hwnd);
+            return true;
+        }, IntPtr.Zero);
+        return handles;
+    }
+
+    private static bool IsWordProcess(IntPtr hwnd)
+    {
+        uint processId;
+        GetWindowThreadProcessId(hwnd, out processId);
+        if (processId == 0) return false;
+        try
+        {
+            return String.Equals(Process.GetProcessById((int)processId).ProcessName, "WINWORD", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+}
+'@
+}
+
+function Get-ComProperty($instance, [string]$propertyName) {
+  if ($null -eq $instance) { return $null }
+  try { return $instance.$propertyName } catch { return $null }
+}
+
+function Resolve-WordCaptureContext($nativeObject) {
+  if ($null -eq $nativeObject) { return $null }
+
+  $applicationCandidates = @(
+    $nativeObject,
+    (Get-ComProperty $nativeObject 'Application'),
+    (Get-ComProperty (Get-ComProperty $nativeObject 'Document') 'Application'),
+    (Get-ComProperty (Get-ComProperty $nativeObject 'Parent') 'Application')
+  )
+  $application = $null
+  foreach ($candidate in $applicationCandidates) {
+    if ($null -eq $candidate) { continue }
+    $documents = Get-ComProperty $candidate 'Documents'
+    $protectedViewWindows = Get-ComProperty $candidate 'ProtectedViewWindows'
+    if ($null -ne $documents -or $null -ne $protectedViewWindows) {
+      $application = $candidate
+      break
+    }
+  }
+  if ($null -eq $application) { return $null }
+
+  $documentCandidates = @(
+    (Get-ComProperty $nativeObject 'Document'),
+    (Get-ComProperty $application 'ActiveDocument'),
+    (Get-ComProperty (Get-ComProperty $application 'ActiveProtectedViewWindow') 'Document')
+  )
+  $selectionCandidates = @(
+    (Get-ComProperty $nativeObject 'Selection'),
+    (Get-ComProperty $application 'Selection'),
+    (Get-ComProperty (Get-ComProperty $nativeObject 'ActiveWindow') 'Selection'),
+    (Get-ComProperty (Get-ComProperty $documentCandidates[0] 'ActiveWindow') 'Selection'),
+    (Get-ComProperty (Get-ComProperty $documentCandidates[1] 'ActiveWindow') 'Selection'),
+    (Get-ComProperty (Get-ComProperty $documentCandidates[2] 'ActiveWindow') 'Selection')
+  )
+
+  $document = $documentCandidates | Where-Object { $null -ne $_ } | Select-Object -First 1
+  $selection = $selectionCandidates | Where-Object { $null -ne $_ } | Select-Object -First 1
+  if ($null -eq $document -and $null -eq $selection) { return $null }
+
+  return [PSCustomObject]@{
+    Application = $application
+    Document = $document
+    Selection = $selection
+  }
+}
+
+function Resolve-WordContextFromWindow([Int64]$windowHandle) {
+  if ($windowHandle -le 0) { return $null }
+  $nativeObject = [FormatFlowWordWindowResolver]::Resolve($windowHandle)
+  return Resolve-WordCaptureContext $nativeObject
+}
+
 try {
   if ($Mode -eq 'capture-selection') {
-    try {
-      $word = [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
-    } catch {
+    Initialize-WordWindowResolver
+    $preferredHandle = 0L
+    [void][Int64]::TryParse($PreferredWindowHandle, [ref]$preferredHandle)
+    $preferredWasWord = $preferredHandle -gt 0 -and [FormatFlowWordWindowResolver]::IsWordWindow($preferredHandle)
+    $context = Resolve-WordContextFromWindow $preferredHandle
+
+    if ($null -eq $context) {
+      try {
+        $activeWord = [Runtime.InteropServices.Marshal]::GetActiveObject('Word.Application')
+        $context = Resolve-WordCaptureContext $activeWord
+      } catch {}
+    }
+
+    if ($null -eq $context) {
+      foreach ($wordWindowHandle in [FormatFlowWordWindowResolver]::EnumerateWordWindows()) {
+        $context = Resolve-WordContextFromWindow $wordWindowHandle
+        if ($null -ne $context -and $null -ne $context.Selection) { break }
+      }
+    }
+
+    if ($null -eq $context) {
+      if ($preferredHandle -gt 0 -and -not $preferredWasWord) { throw 'FORMAT_FLOW_PREVIOUS_WINDOW_NOT_WORD' }
+      if ([FormatFlowWordWindowResolver]::EnumerateWordWindows().Count -gt 0) { throw 'FORMAT_FLOW_NO_ACTIVE_DOCUMENT' }
       throw 'FORMAT_FLOW_NO_ACTIVE_WORD'
     }
-    if ($null -eq $word.ActiveDocument) { throw 'FORMAT_FLOW_NO_ACTIVE_DOCUMENT' }
-    $selection = $word.Selection
-    if ($null -eq $selection -or $selection.Range.Start -eq $selection.Range.End) {
+
+    $word = $context.Application
+    $selection = $context.Selection
+    $selectionRange = Get-ComProperty $selection 'Range'
+    if ($null -eq $selectionRange -or $selectionRange.Start -eq $selectionRange.End) {
       throw 'FORMAT_FLOW_EMPTY_SELECTION'
     }
   } else {
@@ -168,13 +367,16 @@ export function getTemporaryWordRoot(): string {
   return path.join(os.tmpdir(), 'Format Flow', 'word-attachments')
 }
 
-export async function captureWordSelection(variableName: string): Promise<TemporaryWordResult> {
+export async function captureWordSelection(
+  variableName: string,
+  preferredWindowHandle = '0'
+): Promise<TemporaryWordResult> {
   if (process.platform !== 'win32') {
     return { ok: false, message: '读取 Word 当前选区目前仅支持 Windows。' }
   }
 
   const attachment = await createAttachmentRecord(variableName, 'word-selection', ['Word 当前选区'], [])
-  return runWordAutomation('capture-selection', attachment, [])
+  return runWordAutomation('capture-selection', attachment, [], preferredWindowHandle)
 }
 
 export async function createTemporaryWordFromFiles(variableName: string, filePaths: string[]): Promise<TemporaryWordResult> {
@@ -314,7 +516,8 @@ async function uniqueAttachmentId(root: string): Promise<string> {
 async function runWordAutomation(
   mode: 'capture-selection' | 'files',
   attachment: TemporaryWordAttachment,
-  filePaths: string[]
+  filePaths: string[],
+  preferredWindowHandle = '0'
 ): Promise<TemporaryWordResult> {
   const root = getTemporaryWordRoot()
   const scriptPath = path.join(root, '.format-flow-word-automation.ps1')
@@ -341,7 +544,9 @@ async function runWordAutomation(
         '-VariableName',
         attachment.variableName,
         '-FilesBase64',
-        filesBase64
+        filesBase64,
+        '-PreferredWindowHandle',
+        preferredWindowHandle
       ],
       { windowsHide: true, timeout: mode === 'capture-selection' ? 30_000 : 120_000, maxBuffer: 2 * 1024 * 1024 }
     )
@@ -359,6 +564,7 @@ async function runWordAutomation(
 
 function wordAutomationErrorMessage(error: unknown): string {
   const detail = errorMessage(error)
+  if (detail.includes('FORMAT_FLOW_PREVIOUS_WINDOW_NOT_WORD')) return '快捷调用前的窗口不是 Microsoft Word，已无法确定要读取的 Word 选区。请先在 Word 中选中内容，再打开快捷调用。'
   if (detail.includes('FORMAT_FLOW_NO_ACTIVE_WORD')) return '没有检测到正在运行的 Microsoft Word。请先打开文档并选中内容。'
   if (detail.includes('FORMAT_FLOW_NO_ACTIVE_DOCUMENT')) return 'Microsoft Word 中没有打开的文档。'
   if (detail.includes('FORMAT_FLOW_EMPTY_SELECTION')) return 'Word 当前选区为空。请先选中需要保留的文字、公式、表格或图片。'

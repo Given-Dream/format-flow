@@ -1992,7 +1992,9 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('clipboard:writeTextAndPaste', (_event, text: string) => writeClipboardTextAndPasteWithFeedback(text))
-  ipcMain.handle('temporaryWord:captureSelection', (_event, variableName: string) => captureWordSelection(variableName))
+  ipcMain.handle('temporaryWord:captureSelection', (_event, variableName: string) =>
+    captureWordSelection(variableName, lastExternalForegroundWindow)
+  )
   ipcMain.handle('temporaryWord:chooseFiles', async (_event, variableName: string) => {
     const selection = mainWindow
       ? await dialog.showOpenDialog(mainWindow, {

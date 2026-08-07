@@ -1678,6 +1678,92 @@ label {
   width: min(1120px, calc(100vw - 48px));
 }
 
+.library-dedup-modal {
+  width: min(1200px, calc(100vw - 48px));
+}
+
+.library-dedup-groups {
+  display: grid;
+  gap: 22px;
+}
+
+.library-dedup-group {
+  display: grid;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.library-dedup-group > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.library-dedup-group > header > div,
+.library-dedup-option-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.library-dedup-group > header span,
+.library-dedup-option-meta span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.library-dedup-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.library-dedup-options label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: start;
+  gap: 8px 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.library-dedup-options label.active {
+  border-color: rgba(37, 99, 235, 0.5);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.library-dedup-options input[type="radio"] {
+  margin-top: 3px;
+}
+
+.library-dedup-option-meta code {
+  color: var(--text);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.library-dedup-options pre {
+  grid-column: 2;
+  max-height: 190px;
+  margin: 0;
+  overflow: auto;
+  padding: 9px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--panel-strong);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .import-review-summary,
 .github-preview-meta,
 .recovery-item,
@@ -2400,6 +2486,10 @@ label {
   }
 
   .github-target-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .library-dedup-options {
     grid-template-columns: 1fr;
   }
 

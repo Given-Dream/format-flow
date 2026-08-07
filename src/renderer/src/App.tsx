@@ -24,6 +24,8 @@ import {
   createRunSteps,
   createWorkflow,
   defaultStore,
+  findPromptDuplicateGroups,
+  findSkillDuplicateGroups,
   groupFromTag,
   matchesTextAndTags,
   mergeSkillMetadata,
@@ -51,10 +53,12 @@ import type {
   McpServer,
   NodeKind,
   PromptItem,
+  PromptDuplicateGroup,
   PromptImportAnalysis,
   RunStep,
   SkillDirectoryNode,
   SkillDirectorySnapshot,
+  SkillDuplicateGroup,
   SkillItem,
   SkillImportAnalysis,
   SkillMetadata,
@@ -673,6 +677,7 @@ function PromptPanel({
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
   const [promptImportReview, setPromptImportReview] = useState<PromptImportReview | null>(null)
+  const [promptDuplicateGroups, setPromptDuplicateGroups] = useState<PromptDuplicateGroup[] | null>(null)
   const [tagRecoveryOpen, setTagRecoveryOpen] = useState(false)
   const [tagRecoveryBusy, setTagRecoveryBusy] = useState(false)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
@@ -916,6 +921,74 @@ function PromptPanel({
     void finishPromptImport({ ...analysis, source, forceConfirm }, {})
   }
 
+  function scanPromptLibraryDuplicates(): void {
+    const groups = findPromptDuplicateGroups(store.prompts)
+    if (groups.length === 0) {
+      setNotice('历史提示词扫描完成：没有发现标题和摘要相同的重复项')
+      return
+    }
+    setPromptDuplicateGroups(groups)
+    setNotice(`发现 ${groups.length} 组历史重复提示词，请选择每组要保留的版本`)
+  }
+
+  async function cleanPromptLibraryDuplicates(
+    groups: PromptDuplicateGroup[],
+    choices: Record<string, string>
+  ): Promise<void> {
+    const replacementById = new Map<string, string>()
+    const mergedById = new Map<string, PromptItem>()
+
+    for (const group of groups) {
+      const kept = group.items.find((item) => item.id === choices[group.id]) || group.items[0]
+      mergedById.set(kept.id, {
+        ...kept,
+        tags: mergeTags([], group.items.flatMap((item) => item.tags)),
+        favorite: group.items.some((item) => item.favorite),
+        updatedAt: nowIso()
+      })
+      for (const item of group.items) {
+        if (item.id !== kept.id) replacementById.set(item.id, kept.id)
+      }
+    }
+
+    const nextPrompts = store.prompts
+      .filter((prompt) => !replacementById.has(prompt.id))
+      .map((prompt) => mergedById.get(prompt.id) || prompt)
+    const nextRecoveries = store.tagRecoveries
+      .map((recovery) => {
+        const promptTags: Record<string, string[]> = {}
+        for (const [promptId, tags] of Object.entries(recovery.promptTags)) {
+          const targetId = replacementById.get(promptId) || promptId
+          promptTags[targetId] = mergeTags(promptTags[targetId] || [], tags)
+        }
+        return { ...recovery, promptTags }
+      })
+      .filter((recovery) => Object.keys(recovery.promptTags).length > 0)
+    const nextWorkflows = store.workflows.map((workflow) => {
+      let changed = false
+      const nodes = workflow.nodes.map((node) => {
+        if (node.type !== 'prompt' || !node.refId || !replacementById.has(node.refId)) return node
+        changed = true
+        return { ...node, refId: replacementById.get(node.refId) }
+      })
+      return changed ? { ...workflow, nodes, updatedAt: nowIso() } : workflow
+    })
+
+    await commit({ ...store, prompts: nextPrompts, workflows: nextWorkflows, tagRecoveries: nextRecoveries })
+    setPromptDuplicateGroups(null)
+    setPromptClipboard((current) => {
+      if (!current) return null
+      const targetId = replacementById.get(current.id) || current.id
+      return nextPrompts.find((prompt) => prompt.id === targetId) || null
+    })
+    setEditing((current) => {
+      if (!current) return null
+      const targetId = replacementById.get(current.id) || current.id
+      return nextPrompts.find((prompt) => prompt.id === targetId) || null
+    })
+    setNotice(`历史提示词去重完成：保留 ${groups.length} 组代表条目，删除 ${replacementById.size} 个重复项`)
+  }
+
   async function runPromptImport(loader: () => Promise<ImportResult<PromptItem>>): Promise<void> {
     try {
       const result = await loader()
@@ -1075,6 +1148,9 @@ function PromptPanel({
           <button type="button" disabled={store.tagRecoveries.length === 0} onClick={() => setTagRecoveryOpen(true)}>
             恢复误删标签{store.tagRecoveries.length > 0 ? `（${store.tagRecoveries.length}）` : ''}
           </button>
+          <button type="button" onClick={scanPromptLibraryDuplicates}>
+            扫描并清理重复项
+          </button>
           <input
             ref={restoreInputRef}
             className="hidden-file-input"
@@ -1171,6 +1247,13 @@ function PromptPanel({
           finish={finishPromptImport}
         />
       )}
+      {promptDuplicateGroups && (
+        <PromptLibraryDedupModal
+          groups={promptDuplicateGroups}
+          close={() => setPromptDuplicateGroups(null)}
+          clean={cleanPromptLibraryDuplicates}
+        />
+      )}
       {tagRecoveryOpen && (
         <Modal title="恢复误删标签" close={() => setTagRecoveryOpen(false)}>
           <p className="hint">只恢复仍存在的提示词标签；已经删除的提示词正文不会恢复。</p>
@@ -1228,6 +1311,7 @@ function SkillPanel({
   const [githubBusy, setGithubBusy] = useState(false)
   const [githubPreview, setGithubPreview] = useState<GithubSkillPreview | null>(null)
   const [skillImportReview, setSkillImportReview] = useState<SkillImportReview | null>(null)
+  const [skillDuplicateGroups, setSkillDuplicateGroups] = useState<SkillDuplicateGroup[] | null>(null)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const [skillClipboard, setSkillClipboard] = useState<SkillItem | null>(null)
   const skillGroups = mergeSkillGroups(store.groups.skills, skills)
@@ -1435,6 +1519,87 @@ function SkillPanel({
     await finishSkillImport(review, {})
   }
 
+  function scanSkillLibraryDuplicates(): void {
+    const groups = findSkillDuplicateGroups(skills)
+    if (groups.length === 0) {
+      setNotice('历史 Skill 扫描完成：没有发现名称相同的重复项')
+      return
+    }
+    setSkillDuplicateGroups(groups)
+    setNotice(`发现 ${groups.length} 组历史重复 Skill，请选择每组要保留的目录`)
+  }
+
+  async function cleanSkillLibraryDuplicates(
+    groups: SkillDuplicateGroup[],
+    choices: Record<string, string>
+  ): Promise<void> {
+    const replacementById = new Map<string, string>()
+    const keptItems = new Map<string, SkillItem>()
+    const failures: string[] = []
+
+    for (const group of groups) {
+      const kept = group.items.find((item) => item.id === choices[group.id]) || group.items[0]
+      keptItems.set(kept.id, kept)
+      for (const skill of group.items) {
+        if (skill.id === kept.id) continue
+        if (isBrowserReviewMode()) {
+          failures.push(`浏览器审查模式不能删除 ${skill.path}`)
+          continue
+        }
+        const result = await formatFlow.deleteSkill(skill)
+        if (result.ok) replacementById.set(skill.id, kept.id)
+        else failures.push(result.message)
+      }
+    }
+
+    let nextSkillIndex = { ...store.skillIndex }
+    for (const removedId of replacementById.keys()) delete nextSkillIndex[removedId]
+    for (const group of groups) {
+      const kept = group.items.find((item) => item.id === choices[group.id]) || group.items[0]
+      const metadata = group.items.map((item) => store.skillIndex[item.id]).filter(Boolean)
+      const keptMetadata = store.skillIndex[kept.id] || { tags: kept.tags }
+      nextSkillIndex[kept.id] = {
+        ...keptMetadata,
+        tags: mergeTags(
+          group.items.flatMap((item) => item.tags),
+          metadata.flatMap((item) => item.tags || [])
+        ),
+        assignedTags: mergeTags([], metadata.flatMap((item) => item.assignedTags || [])),
+        summaryOverride: keptMetadata.summaryOverride || metadata.find((item) => item.summaryOverride)?.summaryOverride,
+        favorite: group.items.some((item) => item.favorite) || metadata.some((item) => item.favorite),
+        variables: Array.from(new Set([
+          ...group.items.flatMap((item) => item.variables),
+          ...metadata.flatMap((item) => item.variables || [])
+        ]))
+      }
+    }
+    const nextWorkflows = store.workflows.map((workflow) => {
+      let changed = false
+      const nodes = workflow.nodes.map((node) => {
+        const refId = node.type === 'skill' && node.refId ? replacementById.get(node.refId) : undefined
+        const skillRefId = node.skillRefId ? replacementById.get(node.skillRefId) : undefined
+        if (!refId && !skillRefId) return node
+        changed = true
+        return { ...node, refId: refId || node.refId, skillRefId: skillRefId || node.skillRefId }
+      })
+      return changed ? { ...workflow, nodes, updatedAt: nowIso() } : workflow
+    })
+
+    await commit({ ...store, skillIndex: nextSkillIndex, workflows: nextWorkflows })
+    setSkillDuplicateGroups(null)
+    setSkillClipboard((current) => {
+      if (!current) return null
+      return keptItems.get(replacementById.get(current.id) || current.id) || current
+    })
+    setEditing((current) => {
+      if (!current) return null
+      return keptItems.get(replacementById.get(current.id) || current.id) || current
+    })
+    await scanSkills()
+    const message = `历史 Skill 去重完成：删除 ${replacementById.size} 个重复目录并移入回收站`
+    setNotice(failures.length > 0 ? `${message}；${failures.length} 个目录处理失败：${failures[0]}` : message)
+  }
+
   async function cancelSkillImport(review: SkillImportReview): Promise<void> {
     const existingIds = new Set(skills.map((skill) => skill.id))
     const failures: string[] = []
@@ -1580,6 +1745,9 @@ function SkillPanel({
           <button type="button" onClick={() => void runSkillImport(formatFlow.importExistingSkills)}>
             导入已有
           </button>
+          <button type="button" onClick={scanSkillLibraryDuplicates}>
+            扫描并清理重复项
+          </button>
           <input value={githubQuery} onChange={(event) => setGithubQuery(event.target.value)} aria-label="GitHub Skill 查询" />
           <button type="button" disabled={githubBusy} onClick={() => void discoverGithubSkills()}>
             {githubBusy ? '搜索中...' : '从 GitHub 发现 Skill'}
@@ -1658,6 +1826,13 @@ function SkillPanel({
           review={skillImportReview}
           close={() => void cancelSkillImport(skillImportReview)}
           finish={finishSkillImport}
+        />
+      )}
+      {skillDuplicateGroups && (
+        <SkillLibraryDedupModal
+          groups={skillDuplicateGroups}
+          close={() => setSkillDuplicateGroups(null)}
+          clean={cleanSkillLibraryDuplicates}
         />
       )}
       {githubPreview && (
@@ -3564,6 +3739,78 @@ function PromptImportReviewModal({
   )
 }
 
+function PromptLibraryDedupModal({
+  groups,
+  close,
+  clean
+}: {
+  groups: PromptDuplicateGroup[]
+  close: () => void
+  clean: (groups: PromptDuplicateGroup[], choices: Record<string, string>) => Promise<void>
+}): JSX.Element {
+  const [choices, setChoices] = useState<Record<string, string>>(() =>
+    Object.fromEntries(groups.map((group) => [group.id, newestItem(group.items).id]))
+  )
+  const [busy, setBusy] = useState(false)
+  const duplicateCount = groups.reduce((total, group) => total + group.items.length - 1, 0)
+
+  async function submit(): Promise<void> {
+    if (busy) return
+    setBusy(true)
+    try {
+      await clean(groups, choices)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="清理历史重复提示词" close={close} className="library-dedup-modal">
+      <div className="import-review-summary">
+        <strong>发现 {groups.length} 组重复提示词</strong>
+        <span>将删除 {duplicateCount} 个重复条目</span>
+      </div>
+      <p className="hint">标题和摘要相同视为同一条目。每组只保留选中的正文，同时合并全部标签和收藏状态，并自动修复工作流引用。</p>
+      <div className="library-dedup-groups">
+        {groups.map((group) => (
+          <article key={group.id} className="library-dedup-group">
+            <header>
+              <div>
+                <strong>{group.items[0].title}</strong>
+                <span>{group.items[0].summary || '无摘要'}</span>
+              </div>
+              <span>{group.items.length} 个版本 · {group.identicalContent ? '正文完全相同' : '正文存在差异'}</span>
+            </header>
+            <div className="library-dedup-options">
+              {group.items.map((prompt) => (
+                <label key={prompt.id} className={choices[group.id] === prompt.id ? 'active' : ''}>
+                  <input
+                    type="radio"
+                    name={group.id}
+                    checked={choices[group.id] === prompt.id}
+                    onChange={() => setChoices((current) => ({ ...current, [group.id]: prompt.id }))}
+                  />
+                  <div className="library-dedup-option-meta">
+                    <strong>保留此版本</strong>
+                    <span>{formatDuplicateTimestamp(prompt.updatedAt)} · {prompt.tags.length > 0 ? prompt.tags.join('、') : '无标签'}</span>
+                  </div>
+                  <pre>{prompt.content || '（正文为空）'}</pre>
+                </label>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button type="button" onClick={close}>取消</button>
+        <button className="primary-action" type="button" disabled={busy} onClick={() => void submit()}>
+          {busy ? '正在清理...' : `确认删除 ${duplicateCount} 个重复项`}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
 function SkillImportReviewModal({
   review,
   close,
@@ -3640,6 +3887,79 @@ function SkillImportReviewModal({
         <button type="button" onClick={close}>取消</button>
         <button className="primary-action" type="button" disabled={busy} onClick={() => void submit()}>
           {busy ? '正在去重...' : '确认去重并导入'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+function SkillLibraryDedupModal({
+  groups,
+  close,
+  clean
+}: {
+  groups: SkillDuplicateGroup[]
+  close: () => void
+  clean: (groups: SkillDuplicateGroup[], choices: Record<string, string>) => Promise<void>
+}): JSX.Element {
+  const [choices, setChoices] = useState<Record<string, string>>(() =>
+    Object.fromEntries(groups.map((group) => [group.id, newestItem(group.items).id]))
+  )
+  const [busy, setBusy] = useState(false)
+  const duplicateCount = groups.reduce((total, group) => total + group.items.length - 1, 0)
+
+  async function submit(): Promise<void> {
+    if (busy) return
+    setBusy(true)
+    try {
+      await clean(groups, choices)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="清理历史重复 Skill" close={close} className="library-dedup-modal">
+      <div className="import-review-summary">
+        <strong>发现 {groups.length} 组同名 Skill</strong>
+        <span>将清理 {duplicateCount} 个重复目录</span>
+      </div>
+      <p className="hint">名称相同视为同一 Skill。每组保留选中的目录，合并全部标签、收藏和变量，其余目录移入系统回收站，并自动修复工作流引用。</p>
+      <div className="library-dedup-groups">
+        {groups.map((group) => (
+          <article key={group.id} className="library-dedup-group">
+            <header>
+              <div>
+                <strong>{group.items[0].title || group.items[0].name}</strong>
+                <span>{group.items[0].name}</span>
+              </div>
+              <span>{group.items.length} 个目录 · {group.identicalContent ? 'SKILL.md 完全相同' : 'SKILL.md 存在差异'}</span>
+            </header>
+            <div className="library-dedup-options">
+              {group.items.map((skill) => (
+                <label key={skill.id} className={choices[group.id] === skill.id ? 'active' : ''}>
+                  <input
+                    type="radio"
+                    name={group.id}
+                    checked={choices[group.id] === skill.id}
+                    onChange={() => setChoices((current) => ({ ...current, [group.id]: skill.id }))}
+                  />
+                  <div className="library-dedup-option-meta">
+                    <strong>保留此目录</strong>
+                    <span>{formatDuplicateTimestamp(skill.updatedAt)}</span>
+                    <code>{skill.path}</code>
+                  </div>
+                  <pre>{skill.contentPreview || '（SKILL.md 为空）'}</pre>
+                </label>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="modal-actions">
+        <button type="button" onClick={close}>取消</button>
+        <button className="primary-action" type="button" disabled={busy} onClick={() => void submit()}>
+          {busy ? '正在清理...' : `确认清理 ${duplicateCount} 个目录`}
         </button>
       </div>
     </Modal>
@@ -6334,6 +6654,15 @@ function addTagToSkillIndex(skillIndex: Record<string, SkillMetadata>, skills: S
 
 function mergeTags(existing: string[], additions: string[]): string[] {
   return Array.from(new Set([...existing, ...additions].map(normalizeTag).filter(Boolean)))
+}
+
+function newestItem<T extends { updatedAt: string }>(items: T[]): T {
+  return items.reduce((latest, item) => item.updatedAt > latest.updatedAt ? item : latest)
+}
+
+function formatDuplicateTimestamp(value: string): string {
+  const timestamp = new Date(value)
+  return Number.isNaN(timestamp.getTime()) ? '更新时间未知' : timestamp.toLocaleString()
 }
 
 function replaceTag(tags: string[], oldTag: string, newTag: string): string[] {

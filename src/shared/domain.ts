@@ -2,11 +2,13 @@ import type {
   AppStore,
   GroupItem,
   McpServer,
+  PromptDuplicateGroup,
   PromptItem,
   PromptImportAnalysis,
   PromptDuplicateConflict,
   ResourceGroups,
   RunStep,
+  SkillDuplicateGroup,
   SkillItem,
   SkillDuplicateConflict,
   SkillImportAnalysis,
@@ -180,6 +182,22 @@ export function analyzePromptImport(existing: PromptItem[], imported: PromptItem
   }
 
   return { additions, identical, conflicts }
+}
+
+export function findPromptDuplicateGroups(prompts: PromptItem[]): PromptDuplicateGroup[] {
+  const grouped = new Map<string, PromptItem[]>()
+  for (const prompt of prompts) {
+    const key = promptDuplicateKey(prompt)
+    grouped.set(key, [...(grouped.get(key) || []), prompt])
+  }
+
+  return Array.from(grouped.values())
+    .filter((items) => items.length > 1)
+    .map((items, index) => ({
+      id: `prompt-duplicate-${index}`,
+      items,
+      identicalContent: new Set(items.map((prompt) => normalizePromptBody(prompt.content))).size === 1
+    }))
 }
 
 function promptDuplicateKey(prompt: Pick<PromptItem, 'title' | 'summary'>): string {
@@ -803,6 +821,22 @@ export function analyzeSkillImport(existing: SkillItem[], imported: SkillItem[])
   }
 
   return { additions, identical, conflicts }
+}
+
+export function findSkillDuplicateGroups(skills: SkillItem[]): SkillDuplicateGroup[] {
+  const grouped = new Map<string, SkillItem[]>()
+  for (const skill of skills) {
+    const key = normalizeTag(skill.name)
+    grouped.set(key, [...(grouped.get(key) || []), skill])
+  }
+
+  return Array.from(grouped.values())
+    .filter((items) => items.length > 1)
+    .map((items, index) => ({
+      id: `skill-duplicate-${index}`,
+      items,
+      identicalContent: new Set(items.map((skill) => skill.contentFingerprint || normalizeSkillBody(skill.contentPreview))).size === 1
+    }))
 }
 
 function normalizeSkillBody(content: string): string {

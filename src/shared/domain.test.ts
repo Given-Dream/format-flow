@@ -6,6 +6,8 @@ import {
   buildExecutionPrompt,
   buildSmartSkillGroups,
   deduplicateSkillGroupTags,
+  findPromptDuplicateGroups,
+  findSkillDuplicateGroups,
   createMcpServer,
   clonePromptToGroup,
   createPrompt,
@@ -115,6 +117,18 @@ describe('tag parsing and search', () => {
     expect(result.additions).toHaveLength(1)
     expect(result.additions[0].title).toBe('测试计划')
   })
+
+  it('groups historical prompt duplicates while preserving every version', () => {
+    const first = createPrompt({ id: 'prompt-first', title: '代码审查', summary: '检查风险', content: '第一版' })
+    const identical = createPrompt({ id: 'prompt-identical', title: ' 代码审查 ', summary: '检查风险 ', content: '第一版\r\n' })
+    const changed = createPrompt({ id: 'prompt-changed', title: '代码审查', summary: '检查风险', content: '第二版' })
+    const unique = createPrompt({ id: 'prompt-unique', title: '测试计划', summary: '覆盖流程', content: '正文' })
+
+    const groups = findPromptDuplicateGroups([first, identical, changed, unique])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].items.map((item) => item.id)).toEqual(['prompt-first', 'prompt-identical', 'prompt-changed'])
+    expect(groups[0].identicalContent).toBe(false)
+  })
 })
 
 describe('skill parsing', () => {
@@ -129,6 +143,17 @@ describe('skill parsing', () => {
     expect(result.conflicts).toHaveLength(1)
     expect(result.conflicts[0].existing.path).toBe('C:/skills/review/SKILL.md')
     expect(result.additions).toEqual([added])
+  })
+
+  it('groups historical Skills by normalized name', () => {
+    const first = parseSkillMarkdown('---\nname: review-skill\n---\n# Review\nSame', 'C:/skills/review/SKILL.md')
+    const duplicate = parseSkillMarkdown('---\nname: REVIEW-SKILL\n---\n# Review\nSame', 'C:/imports/review/SKILL.md')
+    const unique = parseSkillMarkdown('---\nname: another-skill\n---\n# Another', 'C:/skills/another/SKILL.md')
+
+    const groups = findSkillDuplicateGroups([first, duplicate, unique])
+    expect(groups).toHaveLength(1)
+    expect(groups[0].items.map((item) => item.path)).toEqual(['C:/skills/review/SKILL.md', 'C:/imports/review/SKILL.md'])
+    expect(groups[0].identicalContent).toBe(false)
   })
 
   it('extracts skill name, summary and heading from frontmatter', () => {

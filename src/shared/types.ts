@@ -25,6 +25,12 @@ export type PromptImportAnalysis = {
   conflicts: PromptDuplicateConflict[]
 }
 
+export type PromptDuplicateGroup = {
+  id: string
+  items: PromptItem[]
+  identicalContent: boolean
+}
+
 export type SkillItem = {
   id: string
   name: string
@@ -50,6 +56,12 @@ export type SkillImportAnalysis = {
   additions: SkillItem[]
   identical: Array<{ existing: SkillItem; imported: SkillItem }>
   conflicts: SkillDuplicateConflict[]
+}
+
+export type SkillDuplicateGroup = {
+  id: string
+  items: SkillItem[]
+  identicalContent: boolean
 }
 
 export type SkillDirectoryNode = {

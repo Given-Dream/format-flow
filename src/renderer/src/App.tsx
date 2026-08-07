@@ -12,6 +12,8 @@ import {
 } from '@xyflow/react'
 import {
   allTags,
+  analyzePromptImport,
+  analyzeSkillImport,
   approvalNode,
   buildExecutionPrompt,
   buildSmartSkillGroups,
@@ -43,15 +45,18 @@ import type {
   AppStore,
   BackupResult,
   GithubSearchResult,
+  GithubPreviewResult,
   GroupItem,
   ImportResult,
   McpServer,
   NodeKind,
   PromptItem,
+  PromptImportAnalysis,
   RunStep,
   SkillDirectoryNode,
   SkillDirectorySnapshot,
   SkillItem,
+  SkillImportAnalysis,
   SkillMetadata,
   TemporaryWordAttachment,
   Workflow,
@@ -156,6 +161,22 @@ type PromptFillDraft = {
     values: Record<string, string>,
     attachments?: TemporaryWordAttachment[]
   ) => void
+}
+type PromptImportReview = PromptImportAnalysis & {
+  source: string
+  forceConfirm: boolean
+  githubResult?: GithubSearchResult
+}
+type GithubSkillPreview = {
+  result: GithubSearchResult
+  content: string
+}
+type SkillImportReview = SkillImportAnalysis & {
+  result: ImportResult<SkillItem>
+  source: string
+  extraTags: string[]
+  newGroup?: GroupItem
+  includeActiveGroup: boolean
 }
 type LicenseStatus = {
   activated: boolean
@@ -651,6 +672,9 @@ function PromptPanel({
   const [githubQuery, setGithubQuery] = useState('codex prompt')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
+  const [promptImportReview, setPromptImportReview] = useState<PromptImportReview | null>(null)
+  const [tagRecoveryOpen, setTagRecoveryOpen] = useState(false)
+  const [tagRecoveryBusy, setTagRecoveryBusy] = useState(false)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const [promptClipboard, setPromptClipboard] = useState<PromptItem | null>(null)
   const restoreInputRef = useRef<HTMLInputElement | null>(null)
@@ -705,7 +729,18 @@ function PromptPanel({
 
   async function deletePrompt(prompt: PromptItem): Promise<void> {
     if (!confirmDestructiveAction(`确认删除提示词“${prompt.title}”？`, ['此操作会从提示词库移除该条目。'])) return
-    await commit({ ...store, prompts: store.prompts.filter((item) => item.id !== prompt.id) })
+    const nextRecoveries = store.tagRecoveries
+      .map((recovery) => {
+        const promptTags = { ...recovery.promptTags }
+        delete promptTags[prompt.id]
+        return { ...recovery, promptTags }
+      })
+      .filter((recovery) => Object.keys(recovery.promptTags).length > 0)
+    await commit({
+      ...store,
+      prompts: store.prompts.filter((item) => item.id !== prompt.id),
+      tagRecoveries: nextRecoveries
+    })
     if (promptClipboard?.id === prompt.id) setPromptClipboard(null)
     setEditing(null)
     setNotice(`已删除提示词：${prompt.title}`)
@@ -771,6 +806,20 @@ function PromptPanel({
     ) {
       return
     }
+    const promptTags = Object.fromEntries(
+      store.prompts
+        .filter((prompt) => prompt.tags.some((tag) => tags.includes(tag)))
+        .map((prompt) => [prompt.id, prompt.tags.filter((tag) => tags.includes(tag))])
+    )
+    const recovery = Object.keys(promptTags).length > 0
+      ? {
+          id: newId('tag-recovery'),
+          resource: 'prompts' as const,
+          group,
+          promptTags,
+          deletedAt: nowIso()
+        }
+      : null
     await commit({
       ...store,
       prompts: store.prompts.map((prompt) => ({
@@ -781,9 +830,90 @@ function PromptPanel({
       groups: {
         ...store.groups,
         prompts: removeGroupById(store.groups.prompts, group.id)
-      }
+      },
+      tagRecoveries: recovery ? [...store.tagRecoveries, recovery] : store.tagRecoveries
     })
     if (tags.includes(selectedGroup)) setSelectedGroup('all')
+  }
+
+  async function restoreTagRecovery(recoveryId: string): Promise<void> {
+    if (tagRecoveryBusy) return
+    const recovery = store.tagRecoveries.find((item) => item.id === recoveryId)
+    if (!recovery) return
+    setTagRecoveryBusy(true)
+    try {
+      const remapped = remapRecoveryGroup(recovery.group, store.groups.prompts)
+      const existingPromptIds = new Set(store.prompts.map((prompt) => prompt.id))
+      const restoredCount = Object.keys(recovery.promptTags).filter((id) => existingPromptIds.has(id)).length
+      const nextPrompts = store.prompts.map((prompt) => {
+        const originalTags = recovery.promptTags[prompt.id]
+        if (!originalTags) return prompt
+        const mappedTags = originalTags.map((tag) => remapped.tagMap[normalizeTag(tag)] || tag)
+        return { ...prompt, tags: mergeTags(prompt.tags, mappedTags), updatedAt: nowIso() }
+      })
+      await commit({
+        ...store,
+        prompts: nextPrompts,
+        groups: { ...store.groups, prompts: [...store.groups.prompts, remapped.group] },
+        tagRecoveries: store.tagRecoveries.filter((item) => item.id !== recoveryId)
+      })
+      setSelectedGroup(remapped.group.tag)
+      setTagRecoveryOpen(false)
+      setNotice(`已恢复标签“${recovery.group.name}”，恢复 ${restoredCount} 个仍存在的提示词；已删除的提示词无法恢复`)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '恢复标签失败')
+    } finally {
+      setTagRecoveryBusy(false)
+    }
+  }
+
+  async function finishPromptImport(
+    review: PromptImportReview,
+    choices: Record<string, 'existing' | 'imported'>,
+    target?: { tag: string; newGroupName: string }
+  ): Promise<void> {
+    let targetTag = normalizeTag(target?.tag || '')
+    let nextPromptGroups = store.groups.prompts
+    if (target?.newGroupName.trim()) {
+      const group = createGroupFromName(target.newGroupName, store.groups.prompts)
+      targetTag = group.tag
+      nextPromptGroups = [...store.groups.prompts, group]
+    }
+    const withTargetTag = (prompt: PromptItem): PromptItem =>
+      targetTag ? { ...prompt, tags: mergeTags(prompt.tags, [targetTag]), updatedAt: nowIso() } : prompt
+    const replacements = review.conflicts
+      .filter((conflict) => choices[conflict.id] === 'imported')
+      .map((conflict) => withTargetTag({ ...conflict.imported, id: conflict.existing.id, updatedAt: nowIso() }))
+    const replacementById = new Map(replacements.map((prompt) => [prompt.id, prompt]))
+    const additionIds = new Set(review.additions.map((prompt) => prompt.id))
+    const matchedExistingIds = new Set([
+      ...review.identical.map((item) => item.existing.id),
+      ...review.conflicts.map((item) => item.existing.id)
+    ])
+    const nextPrompts = [
+      ...review.additions.map((prompt) => withTargetTag(replacementById.get(prompt.id) || prompt)),
+      ...store.prompts
+        .map((prompt) => {
+          const replacement = replacementById.get(prompt.id)
+          if (replacement && !additionIds.has(prompt.id)) return replacement
+          return review.forceConfirm && matchedExistingIds.has(prompt.id) ? withTargetTag(prompt) : prompt
+        })
+    ]
+    await commit({ ...store, prompts: nextPrompts, groups: { ...store.groups, prompts: nextPromptGroups } })
+    setPromptImportReview(null)
+    const skipped = review.identical.length + review.conflicts.length - replacements.length
+    setNotice(`${review.source}：新增 ${review.additions.length} 个，替换 ${replacements.length} 个，跳过 ${skipped} 个重复项`)
+    if (review.additions[0] || replacements[0]) setEditing(review.additions[0] || replacements[0])
+  }
+
+  function stagePromptImport(items: PromptItem[], source: string, forceConfirm = false, githubResult?: GithubSearchResult): void {
+    const preparedItems = forceConfirm ? items : addTagToPrompts(items, activePromptGroupTag)
+    const analysis = analyzePromptImport(store.prompts, preparedItems)
+    if (forceConfirm || analysis.conflicts.length > 0) {
+      setPromptImportReview({ ...analysis, source, forceConfirm, githubResult })
+      return
+    }
+    void finishPromptImport({ ...analysis, source, forceConfirm }, {})
   }
 
   async function runPromptImport(loader: () => Promise<ImportResult<PromptItem>>): Promise<void> {
@@ -791,9 +921,7 @@ function PromptPanel({
       const result = await loader()
       setNotice(result.message)
       if (!result.ok) return
-      const { merged, added } = mergePromptItems(store.prompts, addTagToPrompts(result.items, activePromptGroupTag))
-      await commit({ ...store, prompts: merged })
-      if (added[0]) setEditing(added[0])
+      stagePromptImport(result.items, '导入提示词')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Prompt 导入失败')
     }
@@ -806,10 +934,12 @@ function PromptPanel({
       for (const file of Array.from(files)) {
         imported.push(...parsePromptImport(await file.text(), file.name))
       }
-      const { merged, added } = mergePromptItems(store.prompts, addTagToPrompts(imported, activePromptGroupTag))
-      await commit({ ...store, prompts: merged })
-      setNotice(`${label}：导入 ${added.length} 个提示词${activePromptGroupTag ? `到“${activePromptGroupTag}”分组` : ''}`)
-      if (added[0]) setEditing(added[0])
+      const analysis = analyzePromptImport(store.prompts, addTagToPrompts(imported, activePromptGroupTag))
+      if (analysis.conflicts.length > 0) {
+        setPromptImportReview({ ...analysis, source: label, forceConfirm: false })
+      } else {
+        await finishPromptImport({ ...analysis, source: label, forceConfirm: false }, {})
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : `${label}失败`)
     }
@@ -831,10 +961,11 @@ function PromptPanel({
   async function importGithubPrompt(result: GithubSearchResult): Promise<void> {
     try {
       const imported = await formatFlow.importGithubPrompt(result)
-      setNotice(imported.message)
-      const { merged, added } = mergePromptItems(store.prompts, addTagToPrompts(imported.items, activePromptGroupTag))
-      await commit({ ...store, prompts: merged })
-      if (added[0]) setEditing(added[0])
+      if (!imported.ok) {
+        setNotice(imported.message)
+        return
+      }
+      stagePromptImport(imported.items, `GitHub：${result.repository}/${result.path}`, true, result)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'GitHub Prompt 导入失败')
     }
@@ -941,6 +1072,9 @@ function PromptPanel({
           <button type="button" onClick={() => (isBrowserReviewMode() ? importInputRef.current?.click() : void runPromptImport(formatFlow.importExistingPrompts))}>
             导入已有
           </button>
+          <button type="button" disabled={store.tagRecoveries.length === 0} onClick={() => setTagRecoveryOpen(true)}>
+            恢复误删标签{store.tagRecoveries.length > 0 ? `（${store.tagRecoveries.length}）` : ''}
+          </button>
           <input
             ref={restoreInputRef}
             className="hidden-file-input"
@@ -1028,6 +1162,44 @@ function PromptPanel({
           deletePrompt={deletePrompt}
         />
       )}
+      {promptImportReview && (
+        <PromptImportReviewModal
+          review={promptImportReview}
+          groups={promptGroups}
+          initialTag={activePromptGroupTag}
+          close={() => setPromptImportReview(null)}
+          finish={finishPromptImport}
+        />
+      )}
+      {tagRecoveryOpen && (
+        <Modal title="恢复误删标签" close={() => setTagRecoveryOpen(false)}>
+          <p className="hint">只恢复仍存在的提示词标签；已经删除的提示词正文不会恢复。</p>
+          <div className="recovery-list">
+            {store.tagRecoveries.map((recovery) => {
+              const linkedCount = Object.keys(recovery.promptTags).length
+              const recoverableCount = store.prompts.filter((prompt) => recovery.promptTags[prompt.id]).length
+              return (
+                <article key={recovery.id} className="recovery-item">
+                  <div>
+                    <strong>{recovery.group.name}</strong>
+                    <span>
+                      {new Date(recovery.deletedAt).toLocaleString()} · 可恢复 {recoverableCount} 个
+                      {linkedCount > recoverableCount ? ` · 已删除 ${linkedCount - recoverableCount} 个` : ''}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={tagRecoveryBusy || recoverableCount === 0}
+                    onClick={() => void restoreTagRecovery(recovery.id)}
+                  >
+                    {recoverableCount > 0 ? '恢复' : '无法恢复'}
+                  </button>
+                </article>
+              )
+            })}
+          </div>
+        </Modal>
+      )}
     </section>
   )
 }
@@ -1054,6 +1226,8 @@ function SkillPanel({
   const [githubQuery, setGithubQuery] = useState('codex skill')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
+  const [githubPreview, setGithubPreview] = useState<GithubSkillPreview | null>(null)
+  const [skillImportReview, setSkillImportReview] = useState<SkillImportReview | null>(null)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const [skillClipboard, setSkillClipboard] = useState<SkillItem | null>(null)
   const skillGroups = mergeSkillGroups(store.groups.skills, skills)
@@ -1162,29 +1336,123 @@ function SkillPanel({
     if (tags.includes(selectedGroup)) setSelectedGroup('all')
   }
 
-  async function applySkillImport(result: ImportResult<SkillItem>, extraTags: string[] = []): Promise<void> {
+  async function applySkillImport(
+    result: ImportResult<SkillItem>,
+    extraTags: string[] = [],
+    newGroup?: GroupItem,
+    includeActiveGroup = true,
+    removedSkillIds: string[] = []
+  ): Promise<void> {
     setNotice(result.message)
     if (!result.ok) return
     const directories = Array.from(
       new Set([...store.settings.skillDirectories, result.managedDirectory || '', ...(result.installedPaths || [])].filter(Boolean))
     )
-    const importTags = mergeTags(activeSkillGroupTag ? [activeSkillGroupTag] : [], extraTags)
-    let nextSkillIndex = store.skillIndex
+    const importTags = mergeTags(includeActiveGroup && activeSkillGroupTag ? [activeSkillGroupTag] : [], extraTags)
+    let nextSkillIndex = { ...store.skillIndex }
+    for (const id of removedSkillIds) delete nextSkillIndex[id]
     for (const tag of importTags) {
       nextSkillIndex = addTagToSkillIndex(nextSkillIndex, result.items, tag)
     }
     await commit({
       ...store,
       skillIndex: nextSkillIndex,
+      groups: newGroup ? { ...store.groups, skills: [...store.groups.skills, newGroup] } : store.groups,
       settings: { ...store.settings, skillDirectories: directories }
     })
     await scanSkills(directories)
     if (importTags.length > 0) setNotice(`${result.message}；已加入 ${importTags.map((tag) => `“${tag}”`).join('、')} 分组`)
   }
 
+  async function finishSkillImport(
+    review: SkillImportReview,
+    choices: Record<string, 'existing' | 'imported'>
+  ): Promise<void> {
+    const discardedImported = [
+      ...review.identical.map((item) => item.imported),
+      ...review.conflicts.filter((item) => choices[item.id] !== 'imported').map((item) => item.imported)
+    ]
+    const discardedExisting = review.conflicts
+      .filter((item) => choices[item.id] === 'imported')
+      .map((item) => item.existing)
+    const cleanupFailures: string[] = []
+    const removedSkillIds: string[] = []
+
+    for (const skill of discardedImported) {
+      const sharesExistingPath = [...review.identical, ...review.conflicts].some(
+        (item) => item.imported.id === skill.id && item.existing.id === skill.id
+      )
+      if (sharesExistingPath || isBrowserReviewMode()) continue
+      const result = await formatFlow.deleteSkill(skill)
+      if (!result.ok) cleanupFailures.push(result.message)
+    }
+    for (const skill of discardedExisting) {
+      const imported = review.conflicts.find((item) => item.existing.id === skill.id)?.imported
+      if (imported?.id === skill.id || isBrowserReviewMode()) continue
+      const result = await formatFlow.deleteSkill(skill)
+      if (result.ok) removedSkillIds.push(skill.id)
+      else cleanupFailures.push(result.message)
+    }
+
+    const chosenItems = Array.from(new Map([
+      ...review.additions,
+      ...review.identical.map((item) => item.existing),
+      ...review.conflicts.map((item) => choices[item.id] === 'imported' ? item.imported : item.existing)
+    ].map((skill) => [skill.id, skill])).values())
+    const importedCount = review.additions.length + review.conflicts.filter((item) => choices[item.id] === 'imported').length
+    const skippedCount = review.identical.length + review.conflicts.length - (importedCount - review.additions.length)
+    await applySkillImport(
+      {
+        ...review.result,
+        message: `${review.source}：新增或替换 ${importedCount} 个，跳过 ${skippedCount} 个重复项`,
+        items: chosenItems,
+        installedPaths: []
+      },
+      review.extraTags,
+      review.newGroup,
+      review.includeActiveGroup,
+      removedSkillIds
+    )
+    setSkillImportReview(null)
+    if (cleanupFailures.length > 0) setNotice(`Skill 已去重，但有 ${cleanupFailures.length} 个重复目录清理失败：${cleanupFailures[0]}`)
+  }
+
+  async function stageSkillImport(
+    result: ImportResult<SkillItem>,
+    source: string,
+    extraTags: string[] = [],
+    newGroup?: GroupItem,
+    includeActiveGroup = true
+  ): Promise<void> {
+    setNotice(result.message)
+    if (!result.ok) return
+    const analysis = analyzeSkillImport(skills, result.items)
+    const review = { ...analysis, result, source, extraTags, newGroup, includeActiveGroup }
+    if (analysis.conflicts.length > 0) {
+      setSkillImportReview(review)
+      return
+    }
+    await finishSkillImport(review, {})
+  }
+
+  async function cancelSkillImport(review: SkillImportReview): Promise<void> {
+    const existingIds = new Set(skills.map((skill) => skill.id))
+    const failures: string[] = []
+    if (!isBrowserReviewMode()) {
+      for (const skill of review.result.items) {
+        if (existingIds.has(skill.id)) continue
+        const result = await formatFlow.deleteSkill(skill)
+        if (!result.ok) failures.push(result.message)
+      }
+    }
+    setSkillImportReview(null)
+    await scanSkills()
+    setNotice(failures.length > 0 ? `已取消导入，但有 ${failures.length} 个临时 Skill 目录清理失败` : '已取消 Skill 导入并清理本次副本')
+  }
+
   async function runSkillImport(loader: () => Promise<ImportResult<SkillItem>>): Promise<void> {
     try {
-      await applySkillImport(await loader())
+      await stageSkillImport(await loader(), 'Skill 导入')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Skill 导入失败')
     }
@@ -1203,9 +1471,30 @@ function SkillPanel({
     }
   }
 
-  async function installGithubSkill(result: GithubSearchResult): Promise<void> {
+  async function previewGithubSkill(result: GithubSearchResult): Promise<void> {
     try {
-      await applySkillImport(await formatFlow.installGithubSkill(result))
+      const preview = await formatFlow.previewGithubSkill(result)
+      if (!preview.ok) {
+        setNotice(preview.message)
+        return
+      }
+      setGithubPreview({ result, content: preview.content })
+      setNotice(preview.message)
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'GitHub Skill 预览失败')
+    }
+  }
+
+  async function installGithubSkill(result: GithubSearchResult, targetTag: string, newGroupName: string): Promise<void> {
+    try {
+      const newGroup = newGroupName.trim() ? createGroupFromName(newGroupName, store.groups.skills) : undefined
+      const tag = newGroup?.tag || normalizeTag(targetTag)
+      if (!tag) {
+        setNotice('请选择已有标签或填写新标签')
+        return
+      }
+      await stageSkillImport(await formatFlow.installGithubSkill(result), `GitHub：${result.repository}/${result.path}`, [tag], newGroup, false)
+      setGithubPreview(null)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'GitHub Skill 安装失败')
     }
@@ -1314,7 +1603,7 @@ function SkillPanel({
         {githubResults.length > 0 && (
           <div className="github-results horizontal">
             {githubResults.map((result) => (
-              <button key={result.id} type="button" onClick={() => void installGithubSkill(result)}>
+              <button key={result.id} type="button" onClick={() => void previewGithubSkill(result)}>
                 <strong>{result.repository}</strong>
                 <span>{result.path}</span>
               </button>
@@ -1362,6 +1651,22 @@ function SkillPanel({
           close={() => setEditing(null)}
           save={saveMetadata}
           deleteSkill={deleteSkill}
+        />
+      )}
+      {skillImportReview && (
+        <SkillImportReviewModal
+          review={skillImportReview}
+          close={() => void cancelSkillImport(skillImportReview)}
+          finish={finishSkillImport}
+        />
+      )}
+      {githubPreview && (
+        <GithubSkillPreviewModal
+          preview={githubPreview}
+          groups={skillGroups}
+          initialTag={activeSkillGroupTag}
+          close={() => setGithubPreview(null)}
+          install={installGithubSkill}
         />
       )}
       {manualSkillOpen && (
@@ -3126,6 +3431,285 @@ function SettingsPanel({
         </p>
       </div>
     </section>
+  )
+}
+
+function PromptImportReviewModal({
+  review,
+  groups,
+  initialTag,
+  close,
+  finish
+}: {
+  review: PromptImportReview
+  groups: GroupItem[]
+  initialTag: string
+  close: () => void
+  finish: (
+    review: PromptImportReview,
+    choices: Record<string, 'existing' | 'imported'>,
+    target?: { tag: string; newGroupName: string }
+  ) => Promise<void>
+}): JSX.Element {
+  const [choices, setChoices] = useState<Record<string, 'existing' | 'imported'>>(() =>
+    Object.fromEntries(review.conflicts.map((conflict) => [conflict.id, conflict.existing.id === conflict.imported.id ? 'imported' : 'existing']))
+  )
+  const groupOptions = flattenGroupTargets(groups)
+  const [targetTag, setTargetTag] = useState(initialTag || groupOptions[0]?.group.tag || '')
+  const [newGroupName, setNewGroupName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const canFinish = !review.forceConfirm || Boolean(newGroupName.trim() || targetTag)
+
+  async function submit(): Promise<void> {
+    if (!canFinish || busy) return
+    setBusy(true)
+    try {
+      await finish(review, choices, review.forceConfirm ? { tag: targetTag, newGroupName } : undefined)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={review.forceConfirm ? 'GitHub Prompt 发现预览' : '处理重复提示词'} close={close} className="import-review-modal">
+      <div className="import-review-summary">
+        <strong>{review.source}</strong>
+        <span>新增 {review.additions.length} · 完全相同 {review.identical.length} · 正文冲突 {review.conflicts.length}</span>
+      </div>
+
+      {review.githubResult && (
+        <div className="github-preview-meta">
+          <span>仓库：{review.githubResult.repository}</span>
+          <span>路径：{review.githubResult.path}</span>
+          <a href={review.githubResult.htmlUrl} target="_blank" rel="noreferrer">在 GitHub 查看</a>
+        </div>
+      )}
+      {review.forceConfirm && (
+        <fieldset className="github-target-picker">
+          <legend>添加到标签</legend>
+          <label>
+            已有标签
+            <select value={targetTag} disabled={Boolean(newGroupName.trim())} onChange={(event) => setTargetTag(event.target.value)}>
+              <option value="">请选择</option>
+              {groupOptions.map(({ group, depth }) => (
+                <option key={group.id} value={group.tag}>{`${'· '.repeat(depth)}${group.name}`}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            新建标签
+            <input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} placeholder="填写后优先新建标签" />
+          </label>
+        </fieldset>
+      )}
+
+      {review.additions.map((prompt) => (
+        <article key={prompt.id} className="github-content-preview">
+          <header><strong>{prompt.title}</strong><span>{prompt.summary}</span></header>
+          <pre>{prompt.content}</pre>
+        </article>
+      ))}
+
+      {review.identical.length > 0 && (
+        <div className="identical-list">
+          <strong>正文完全相同，将跳过重复条目</strong>
+          {review.identical.map(({ existing }, index) => <span key={`${existing.id}-${index}`}>{existing.title}</span>)}
+        </div>
+      )}
+
+      <div className="prompt-conflict-list">
+        {review.conflicts.map((conflict) => {
+          const difference = describePromptDifference(conflict.existing.content, conflict.imported.content)
+          return (
+            <article key={conflict.id} className="prompt-conflict-card">
+              <header>
+                <div><strong>{conflict.existing.title}</strong><span>{conflict.existing.summary}</span></div>
+                <span>{difference.summary}</span>
+              </header>
+              <div className="prompt-diff-view" aria-label="正文差异">
+                {difference.lines.map((line, index) => (
+                  <code key={`${line.kind}-${index}`} className={`diff-line ${line.kind}`}>
+                    <span>{line.kind === 'removed' ? '-' : line.kind === 'added' ? '+' : ' '}</span>{line.text || ' '}
+                  </code>
+                ))}
+              </div>
+              <div className="conflict-choice" role="group" aria-label={`选择 ${conflict.existing.title} 的版本`}>
+                <button
+                  type="button"
+                  className={choices[conflict.id] === 'existing' ? 'active' : ''}
+                  onClick={() => setChoices((current) => ({ ...current, [conflict.id]: 'existing' }))}
+                >
+                  保留现有，放弃导入
+                </button>
+                <button
+                  type="button"
+                  className={choices[conflict.id] === 'imported' ? 'active' : ''}
+                  onClick={() => setChoices((current) => ({ ...current, [conflict.id]: 'imported' }))}
+                >
+                  使用导入，替换现有
+                </button>
+              </div>
+            </article>
+          )
+        })}
+      </div>
+
+      <div className="modal-actions">
+        <button type="button" onClick={close}>取消</button>
+        <button className="primary-action" type="button" disabled={!canFinish || busy} onClick={() => void submit()}>
+          {busy ? '正在保存...' : '确认添加'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+function SkillImportReviewModal({
+  review,
+  close,
+  finish
+}: {
+  review: SkillImportReview
+  close: () => void
+  finish: (review: SkillImportReview, choices: Record<string, 'existing' | 'imported'>) => Promise<void>
+}): JSX.Element {
+  const [choices, setChoices] = useState<Record<string, 'existing' | 'imported'>>(() =>
+    Object.fromEntries(review.conflicts.map((conflict) => [conflict.id, 'existing']))
+  )
+  const [busy, setBusy] = useState(false)
+
+  async function submit(): Promise<void> {
+    if (busy) return
+    setBusy(true)
+    try {
+      await finish(review, choices)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="处理重复 Skill" close={close} className="import-review-modal">
+      <div className="import-review-summary">
+        <strong>{review.source}</strong>
+        <span>新增 {review.additions.length} · 完全相同 {review.identical.length} · 内容冲突 {review.conflicts.length}</span>
+      </div>
+      <p className="hint">同名 Skill 视为同一条目。选择导入版本时，现有 Skill 目录会移到系统回收站。</p>
+      <div className="prompt-conflict-list">
+        {review.conflicts.map((conflict) => {
+          const difference = describePromptDifference(conflict.existing.contentPreview, conflict.imported.contentPreview)
+          return (
+            <article key={conflict.id} className="prompt-conflict-card">
+              <header>
+                <div><strong>{conflict.existing.title || conflict.existing.name}</strong><span>{conflict.existing.summary}</span></div>
+                <span>{difference.summary}</span>
+              </header>
+              <div className="skill-duplicate-paths">
+                <span>现有：<code>{conflict.existing.path}</code></span>
+                <span>导入：<code>{conflict.imported.path}</code></span>
+              </div>
+              <div className="prompt-diff-view" aria-label="Skill 内容差异">
+                {difference.lines.map((line, index) => (
+                  <code key={`${line.kind}-${index}`} className={`diff-line ${line.kind}`}>
+                    <span>{line.kind === 'removed' ? '-' : line.kind === 'added' ? '+' : ' '}</span>{line.text || ' '}
+                  </code>
+                ))}
+              </div>
+              <div className="conflict-choice" role="group" aria-label={`选择 ${conflict.existing.name} 的版本`}>
+                <button
+                  type="button"
+                  disabled={conflict.existing.id === conflict.imported.id}
+                  className={choices[conflict.id] === 'existing' ? 'active' : ''}
+                  onClick={() => setChoices((current) => ({ ...current, [conflict.id]: 'existing' }))}
+                >
+                  {conflict.existing.id === conflict.imported.id ? '同一路径已更新' : '保留现有，删除导入副本'}
+                </button>
+                <button
+                  type="button"
+                  className={choices[conflict.id] === 'imported' ? 'active' : ''}
+                  onClick={() => setChoices((current) => ({ ...current, [conflict.id]: 'imported' }))}
+                >
+                  使用导入，删除现有 Skill
+                </button>
+              </div>
+            </article>
+          )
+        })}
+      </div>
+      <div className="modal-actions">
+        <button type="button" onClick={close}>取消</button>
+        <button className="primary-action" type="button" disabled={busy} onClick={() => void submit()}>
+          {busy ? '正在去重...' : '确认去重并导入'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+function GithubSkillPreviewModal({
+  preview,
+  groups,
+  initialTag,
+  close,
+  install
+}: {
+  preview: GithubSkillPreview
+  groups: GroupItem[]
+  initialTag: string
+  close: () => void
+  install: (result: GithubSearchResult, targetTag: string, newGroupName: string) => Promise<void>
+}): JSX.Element {
+  const groupOptions = flattenGroupTargets(groups)
+  const [targetTag, setTargetTag] = useState(initialTag || groupOptions[0]?.group.tag || '')
+  const [newGroupName, setNewGroupName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const canInstall = Boolean(newGroupName.trim() || targetTag)
+
+  async function submit(): Promise<void> {
+    if (!canInstall || busy) return
+    setBusy(true)
+    try {
+      await install(preview.result, targetTag, newGroupName)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="GitHub Skill 发现预览" close={close} className="import-review-modal">
+      <div className="github-preview-meta">
+        <strong>{preview.result.name}</strong>
+        <span>仓库：{preview.result.repository}</span>
+        <span>路径：{preview.result.path}</span>
+        <a href={preview.result.htmlUrl} target="_blank" rel="noreferrer">在 GitHub 查看</a>
+      </div>
+      <fieldset className="github-target-picker">
+        <legend>添加到标签</legend>
+        <label>
+          已有标签
+          <select value={targetTag} disabled={Boolean(newGroupName.trim())} onChange={(event) => setTargetTag(event.target.value)}>
+            <option value="">请选择</option>
+            {groupOptions.map(({ group, depth }) => (
+              <option key={group.id} value={group.tag}>{`${'· '.repeat(depth)}${group.name}`}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          新建标签
+          <input value={newGroupName} onChange={(event) => setNewGroupName(event.target.value)} placeholder="填写后优先新建标签" />
+        </label>
+      </fieldset>
+      <article className="github-content-preview">
+        <header><strong>SKILL.md</strong><span>{preview.result.description || '无仓库摘要'}</span></header>
+        <pre>{preview.content}</pre>
+      </article>
+      <div className="modal-actions">
+        <button type="button" onClick={close}>取消</button>
+        <button className="primary-action" type="button" disabled={!canInstall || busy} onClick={() => void submit()}>
+          {busy ? '正在安装...' : '添加 Skill'}
+        </button>
+      </div>
+    </Modal>
   )
 }
 
@@ -6013,14 +6597,69 @@ function exportTimestamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-')
 }
 
-function mergePromptItems(existing: PromptItem[], imported: PromptItem[]): { merged: PromptItem[]; added: PromptItem[] } {
-  const existingIds = new Set(existing.map((prompt) => prompt.id))
-  const added = imported.map((prompt) => {
-    const id = existingIds.has(prompt.id) ? newId('prompt') : prompt.id
-    existingIds.add(id)
-    return { ...prompt, id, updatedAt: nowIso() }
-  })
-  return { merged: [...added, ...existing], added }
+function describePromptDifference(
+  existingContent: string,
+  importedContent: string
+): { summary: string; lines: Array<{ kind: 'context' | 'removed' | 'added'; text: string }> } {
+  const existingLines = existingContent.replace(/\r\n/g, '\n').split('\n')
+  const importedLines = importedContent.replace(/\r\n/g, '\n').split('\n')
+  let prefix = 0
+  while (
+    prefix < existingLines.length &&
+    prefix < importedLines.length &&
+    existingLines[prefix] === importedLines[prefix]
+  ) {
+    prefix += 1
+  }
+  let suffix = 0
+  while (
+    suffix < existingLines.length - prefix &&
+    suffix < importedLines.length - prefix &&
+    existingLines[existingLines.length - 1 - suffix] === importedLines[importedLines.length - 1 - suffix]
+  ) {
+    suffix += 1
+  }
+
+  const removed = existingLines.slice(prefix, existingLines.length - suffix)
+  const added = importedLines.slice(prefix, importedLines.length - suffix)
+  const contextBefore = existingLines.slice(Math.max(0, prefix - 2), prefix)
+  const contextAfter = existingLines.slice(existingLines.length - suffix, existingLines.length - suffix + 2)
+  const limitedRemoved = removed.slice(0, 80)
+  const limitedAdded = added.slice(0, 80)
+  const lines = [
+    ...contextBefore.map((text) => ({ kind: 'context' as const, text })),
+    ...limitedRemoved.map((text) => ({ kind: 'removed' as const, text })),
+    ...(removed.length > limitedRemoved.length ? [{ kind: 'removed' as const, text: `... 省略 ${removed.length - limitedRemoved.length} 行` }] : []),
+    ...limitedAdded.map((text) => ({ kind: 'added' as const, text })),
+    ...(added.length > limitedAdded.length ? [{ kind: 'added' as const, text: `... 省略 ${added.length - limitedAdded.length} 行` }] : []),
+    ...contextAfter.map((text) => ({ kind: 'context' as const, text }))
+  ]
+  return {
+    summary: `从第 ${prefix + 1} 行开始不同：现有 ${removed.length} 行，导入 ${added.length} 行`,
+    lines
+  }
+}
+
+function remapRecoveryGroup(
+  recoveryGroup: GroupItem,
+  existingGroups: GroupItem[]
+): { group: GroupItem; tagMap: Record<string, string> } {
+  const usedTags = new Set(flattenGroups(existingGroups).map((group) => normalizeTag(group.tag)))
+  const usedIds = new Set(flattenGroups(existingGroups).map((group) => group.id))
+  const tagMap: Record<string, string> = {}
+
+  function visit(group: GroupItem): GroupItem {
+    const oldTag = normalizeTag(group.tag)
+    const baseTag = oldTag || normalizeTag(group.name) || 'group'
+    const tag = nextAvailableGroupTag(baseTag, usedTags)
+    usedTags.add(tag)
+    tagMap[oldTag] = tag
+    const id = usedIds.has(group.id) ? newId('group') : group.id
+    usedIds.add(id)
+    return { ...group, id, tag, children: group.children.map(visit) }
+  }
+
+  return { group: visit(recoveryGroup), tagMap }
 }
 
 function mergeMcpItems(existing: McpServer[], imported: McpServer[]): { merged: McpServer[]; added: McpServer[] } {
@@ -6830,6 +7469,11 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
         updatedAt: nowIso()
       }
       return { ok: true, message: `已导入 GitHub Skill 预览：${skill.title}`, items: [skill] }
+    },
+    previewGithubSkill: async (result: GithubSearchResult): Promise<GithubPreviewResult> => {
+      const response = await fetch(result.rawUrl)
+      if (!response.ok) throw new Error(`下载失败：${response.status}`)
+      return { ok: true, message: `已读取 GitHub Skill：${result.path}`, content: await response.text() }
     },
     importExistingPrompts: async () => desktopOnly('浏览器审查模式不能读取本地 Prompt 文件'),
     restorePromptsFromBackup: async () => desktopOnly('浏览器审查模式不能读取本地 Prompt 备份'),

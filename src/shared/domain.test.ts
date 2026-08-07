@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   approvalNode,
+  analyzePromptImport,
+  analyzeSkillImport,
   buildExecutionPrompt,
   buildSmartSkillGroups,
   deduplicateSkillGroupTags,
@@ -86,9 +88,49 @@ describe('tag parsing and search', () => {
       normalizeStore({ settings: { shortcut: 'Alt+Space', skillDirectories: [] } }).settings.temporaryWordRetentionHours
     ).toBe(24)
   })
+
+  it('keeps deleted prompt tag recovery records and initializes older stores', () => {
+    expect(normalizeStore({}).tagRecoveries).toEqual([])
+
+    const recovery = {
+      id: 'tag-recovery-1',
+      resource: 'prompts' as const,
+      group: { id: 'group-1', name: '研究', tag: '研究', children: [] },
+      promptTags: { 'prompt-1': ['研究'] },
+      deletedAt: '2026-08-07T00:00:00.000Z'
+    }
+    expect(normalizeStore({ tagRecoveries: [recovery] }).tagRecoveries).toEqual([recovery])
+  })
+
+  it('deduplicates imported prompts by title and summary and reports body conflicts', () => {
+    const existing = createPrompt({ id: 'prompt-existing', title: '代码审查', summary: '检查风险', content: '现有正文' })
+    const same = createPrompt({ id: 'prompt-same', title: '代码审查', summary: '检查风险', content: '现有正文\r\n' })
+    const changed = createPrompt({ id: 'prompt-changed', title: '代码审查', summary: '检查风险', content: '导入正文' })
+    const newPrompt = createPrompt({ id: 'prompt-new', title: '测试计划', summary: '覆盖主要流程', content: '新正文' })
+
+    const result = analyzePromptImport([existing], [same, changed, newPrompt])
+    expect(result.identical).toHaveLength(1)
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0]).toMatchObject({ existing: { id: 'prompt-existing' }, imported: { content: '导入正文' } })
+    expect(result.additions).toHaveLength(1)
+    expect(result.additions[0].title).toBe('测试计划')
+  })
 })
 
 describe('skill parsing', () => {
+  it('deduplicates imported Skills by name and reports changed SKILL.md content', () => {
+    const existing = parseSkillMarkdown('---\nname: review-skill\ndescription: Review work.\n---\n# Review\nOld', 'C:/skills/review/SKILL.md')
+    const same = parseSkillMarkdown('---\nname: review-skill\ndescription: Review work.\n---\n# Review\nOld', 'C:/imports/same/SKILL.md')
+    const changed = parseSkillMarkdown('---\nname: review-skill\ndescription: Review work.\n---\n# Review\nNew', 'C:/imports/changed/SKILL.md')
+    const added = parseSkillMarkdown('---\nname: new-skill\ndescription: New work.\n---\n# New', 'C:/imports/new/SKILL.md')
+
+    const result = analyzeSkillImport([existing], [same, changed, added])
+    expect(result.identical).toHaveLength(1)
+    expect(result.conflicts).toHaveLength(1)
+    expect(result.conflicts[0].existing.path).toBe('C:/skills/review/SKILL.md')
+    expect(result.additions).toEqual([added])
+  })
+
   it('extracts skill name, summary and heading from frontmatter', () => {
     const skill = parseSkillMarkdown(
       [

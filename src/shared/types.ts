@@ -13,6 +13,18 @@ export type PromptItem = {
   updatedAt: string
 }
 
+export type PromptDuplicateConflict = {
+  id: string
+  existing: PromptItem
+  imported: PromptItem
+}
+
+export type PromptImportAnalysis = {
+  additions: PromptItem[]
+  identical: Array<{ existing: PromptItem; imported: PromptItem }>
+  conflicts: PromptDuplicateConflict[]
+}
+
 export type SkillItem = {
   id: string
   name: string
@@ -24,7 +36,20 @@ export type SkillItem = {
   path: string
   source: 'codex' | 'custom'
   contentPreview: string
+  contentFingerprint?: string
   updatedAt: string
+}
+
+export type SkillDuplicateConflict = {
+  id: string
+  existing: SkillItem
+  imported: SkillItem
+}
+
+export type SkillImportAnalysis = {
+  additions: SkillItem[]
+  identical: Array<{ existing: SkillItem; imported: SkillItem }>
+  conflicts: SkillDuplicateConflict[]
 }
 
 export type SkillDirectoryNode = {
@@ -74,6 +99,14 @@ export type GroupItem = {
 }
 
 export type ResourceGroups = Record<ResourceKind, GroupItem[]>
+
+export type DeletedTagRecovery = {
+  id: string
+  resource: 'prompts'
+  group: GroupItem
+  promptTags: Record<string, string[]>
+  deletedAt: string
+}
 
 export type McpServer = {
   id: string
@@ -175,6 +208,7 @@ export type AppStore = {
   mcpServers: McpServer[]
   workflows: Workflow[]
   runs: WorkflowRun[]
+  tagRecoveries: DeletedTagRecovery[]
   settings: AppSettings
 }
 
@@ -229,6 +263,12 @@ export type ExportResult = {
   ok: boolean
   message: string
   path?: string
+}
+
+export type GithubPreviewResult = {
+  ok: boolean
+  message: string
+  content: string
 }
 
 export type TemporaryWordAttachment = {

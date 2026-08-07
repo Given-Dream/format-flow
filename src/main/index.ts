@@ -27,6 +27,7 @@ import type {
   BackupResult,
   ExportResult,
   ExportTextFileRequest,
+  GithubPreviewResult,
   GithubSearchResult,
   ImportResult,
   McpServer,
@@ -1814,6 +1815,11 @@ function createWindow(): void {
   }
 }
 
+async function previewGithubSkill(result: GithubSearchResult): Promise<GithubPreviewResult> {
+  const content = await fetchText(result.rawUrl)
+  return { ok: true, message: `已读取 GitHub Skill：${result.path}`, content }
+}
+
 async function chooseTemporaryWordDirectory(): Promise<{ ok: boolean; path: string; message: string }> {
   const selection = await dialog.showOpenDialog({
     title: '选择临时 Word 文档目录',
@@ -2003,6 +2009,7 @@ function registerIpc(): void {
   ipcMain.handle('skills:createEntry', (_event, request: SkillEntryCreateRequest) => createSkillEntry(request))
   ipcMain.handle('github:searchSkills', (_event, query: string) => searchGithub('skill', query))
   ipcMain.handle('github:installSkill', (_event, result: GithubSearchResult) => installGithubSkill(result))
+  ipcMain.handle('github:previewSkill', (_event, result: GithubSearchResult) => previewGithubSkill(result))
   ipcMain.handle('prompts:importExisting', () => importPromptFiles())
   ipcMain.handle('prompts:restoreBackup', () => restorePromptsFromBackup())
   ipcMain.handle('github:searchPrompts', (_event, query: string) => searchGithub('prompt', query))

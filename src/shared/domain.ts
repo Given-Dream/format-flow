@@ -3,9 +3,13 @@ import type {
   GroupItem,
   McpServer,
   PromptItem,
+  PromptImportAnalysis,
+  PromptDuplicateConflict,
   ResourceGroups,
   RunStep,
   SkillItem,
+  SkillDuplicateConflict,
+  SkillImportAnalysis,
   SkillMetadata,
   Workflow,
   WorkflowEdge,
@@ -147,6 +151,43 @@ export function parsePromptImport(content: string, sourceName = 'backup'): Promp
   if (markdownPrompts.length > 0) return markdownPrompts
 
   return [createPromptFromText(trimmed, sourceName)]
+}
+
+export function analyzePromptImport(existing: PromptItem[], imported: PromptItem[]): PromptImportAnalysis {
+  const usedIds = new Set(existing.map((prompt) => prompt.id))
+  const knownByKey = new Map(existing.map((prompt) => [promptDuplicateKey(prompt), prompt]))
+  const additions: PromptItem[] = []
+  const identical: PromptImportAnalysis['identical'] = []
+  const conflicts: PromptDuplicateConflict[] = []
+
+  for (const rawPrompt of imported) {
+    let id = rawPrompt.id
+    if (!id || usedIds.has(id)) id = newId('prompt')
+    usedIds.add(id)
+    const prompt = { ...rawPrompt, id, updatedAt: nowIso() }
+    const key = promptDuplicateKey(prompt)
+    const duplicate = knownByKey.get(key)
+    if (!duplicate) {
+      additions.push(prompt)
+      knownByKey.set(key, prompt)
+      continue
+    }
+    if (normalizePromptBody(duplicate.content) === normalizePromptBody(prompt.content)) {
+      identical.push({ existing: duplicate, imported: prompt })
+      continue
+    }
+    conflicts.push({ id: newId('prompt-conflict'), existing: duplicate, imported: prompt })
+  }
+
+  return { additions, identical, conflicts }
+}
+
+function promptDuplicateKey(prompt: Pick<PromptItem, 'title' | 'summary'>): string {
+  return `${prompt.title.trim()}\u0000${prompt.summary.trim()}`
+}
+
+function normalizePromptBody(content: string): string {
+  return content.replace(/\r\n/g, '\n').trim()
 }
 
 function promptItemsFromRecords(candidates: unknown[], sourceName: string): PromptItem[] {
@@ -342,6 +383,7 @@ export function defaultStore(): AppStore {
       })
     ],
     runs: [],
+    tagRecoveries: [],
     settings: {
       shortcut: DEFAULT_SHORTCUT,
       skillDirectories: [],
@@ -371,6 +413,9 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
     mcpServers: Array.isArray(value.mcpServers) ? value.mcpServers : [],
     workflows: Array.isArray(value.workflows) ? value.workflows.map(normalizeWorkflow) : base.workflows,
     runs: Array.isArray(value.runs) ? value.runs : [],
+    tagRecoveries: Array.isArray(value.tagRecoveries)
+      ? value.tagRecoveries.filter((item): item is AppStore['tagRecoveries'][number] => Boolean(item && typeof item === 'object'))
+      : [],
     settings: {
       shortcut: value.settings?.shortcut || DEFAULT_SHORTCUT,
       skillDirectories: Array.isArray(value.settings?.skillDirectories) ? value.settings.skillDirectories : [],
@@ -729,8 +774,39 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
     path: filePath,
     source: /[\\/]\.codex[\\/]skills[\\/]/.test(filePath) ? 'codex' : 'custom',
     contentPreview: content.slice(0, 12000),
+    contentFingerprint: hashText(content.replace(/\r\n/g, '\n').trim()),
     updatedAt: timestamp
   }
+}
+
+export function analyzeSkillImport(existing: SkillItem[], imported: SkillItem[]): SkillImportAnalysis {
+  const knownByName = new Map(existing.map((skill) => [normalizeTag(skill.name), skill]))
+  const additions: SkillItem[] = []
+  const identical: SkillImportAnalysis['identical'] = []
+  const conflicts: SkillDuplicateConflict[] = []
+
+  for (const skill of imported) {
+    const duplicate = knownByName.get(normalizeTag(skill.name))
+    if (!duplicate) {
+      additions.push(skill)
+      knownByName.set(normalizeTag(skill.name), skill)
+      continue
+    }
+    const sameContent = duplicate.contentFingerprint && skill.contentFingerprint
+      ? duplicate.contentFingerprint === skill.contentFingerprint
+      : normalizeSkillBody(duplicate.contentPreview) === normalizeSkillBody(skill.contentPreview)
+    if (sameContent) {
+      identical.push({ existing: duplicate, imported: skill })
+      continue
+    }
+    conflicts.push({ id: newId('skill-conflict'), existing: duplicate, imported: skill })
+  }
+
+  return { additions, identical, conflicts }
+}
+
+function normalizeSkillBody(content: string): string {
+  return content.replace(/\r\n/g, '\n').trim()
 }
 
 export function mergeSkillMetadata(

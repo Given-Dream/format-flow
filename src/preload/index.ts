@@ -6,6 +6,7 @@ import type {
   ExportResult,
   ExportTextFileRequest,
   GithubSearchResult,
+  GithubPreviewResult,
   ImportResult,
   McpServer,
   PromptItem,
@@ -63,6 +64,8 @@ const api = {
   searchGithubSkills: (query: string): Promise<GithubSearchResult[]> => ipcRenderer.invoke('github:searchSkills', query),
   installGithubSkill: (result: GithubSearchResult): Promise<ImportResult<SkillItem>> =>
     ipcRenderer.invoke('github:installSkill', result),
+  previewGithubSkill: (result: GithubSearchResult): Promise<GithubPreviewResult> =>
+    ipcRenderer.invoke('github:previewSkill', result),
   importExistingPrompts: (): Promise<ImportResult<PromptItem>> => ipcRenderer.invoke('prompts:importExisting'),
   restorePromptsFromBackup: (): Promise<ImportResult<PromptItem>> => ipcRenderer.invoke('prompts:restoreBackup'),
   searchGithubPrompts: (query: string): Promise<GithubSearchResult[]> => ipcRenderer.invoke('github:searchPrompts', query),

@@ -677,13 +677,32 @@ label {
   min-height: 150px;
   padding: 15px;
   text-align: left;
+  color: var(--text);
   background: #ffffff;
+  text-decoration: none;
 }
 
 .github-discovery-card header {
   display: grid;
   gap: 4px;
   min-width: 0;
+}
+
+.github-discovery-source-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.github-discovery-source-badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  color: #17543a !important;
+  background: #e9f7ef;
+  border: 1px solid #bde5cc;
+  border-radius: 4px;
+  font-weight: 700;
 }
 
 .github-discovery-card header strong,
@@ -1671,6 +1690,115 @@ label {
   grid-row: 3;
 }
 
+.discovery-source-settings-card {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.discovery-source-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+}
+
+.recommended-discovery-section {
+  display: grid;
+  gap: 8px;
+}
+
+.recommended-discovery-list {
+  display: grid;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.recommended-discovery-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 2px;
+}
+
+.recommended-discovery-row + .recommended-discovery-row {
+  border-top: 1px solid var(--line);
+}
+
+.recommended-discovery-row > div {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 8px;
+  min-width: 0;
+}
+
+.recommended-discovery-row span,
+.recommended-discovery-row small,
+.recommended-discovery-row a {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.recommended-discovery-row small,
+.recommended-discovery-row a {
+  grid-column: 1 / -1;
+}
+
+.recommended-discovery-row a {
+  overflow: hidden;
+  color: var(--accent);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discovery-source-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.65fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.discovery-source-row.fixed {
+  grid-template-columns: minmax(150px, 0.65fr) minmax(180px, 1fr);
+}
+
+.discovery-source-row > div,
+.discovery-source-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.discovery-source-row span,
+.discovery-source-row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.discovery-source-row code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discovery-source-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
 .backup-settings-card {
   grid-column: 2;
   grid-row: 3;
@@ -2526,6 +2654,7 @@ label {
 
   .skill-directory-card,
   .data-location-card,
+  .discovery-source-settings-card,
   .temporary-word-settings-card,
   .backup-settings-card {
     grid-column: auto;
@@ -2593,6 +2722,15 @@ label {
 
   .github-discovery-card {
     min-height: 132px;
+  }
+
+  .discovery-source-row,
+  .discovery-source-row.fixed {
+    grid-template-columns: 1fr;
+  }
+
+  .recommended-discovery-row {
+    grid-template-columns: 1fr;
   }
 
   .library-dedup-options {

@@ -41,11 +41,20 @@ import {
   rebuildLinearEdges,
   tagsToText
 } from '@shared/domain'
+import {
+  buildGithubRepositorySearchUrl,
+  createWebsiteSearchPageResult,
+  discoverySourceSupports,
+  isValidDiscoverySearchTemplate,
+  normalizeDiscoverySources,
+  RECOMMENDED_DISCOVERY_SOURCES
+} from '@shared/github-discovery'
 import { temporaryWordMarker } from '@shared/temporary-word'
 import type {
   AppPaths,
   AppStore,
   BackupResult,
+  DiscoverySource,
   GithubSearchResult,
   GithubPreviewResult,
   GroupItem,
@@ -697,6 +706,9 @@ function PromptPanel({
   const promptSections =
     selectedPromptGroup && selectedPromptGroup.children.length > 0 ? buildPromptGroupSections(selectedPromptGroup, visiblePrompts) : []
   const activePromptGroupTag = selectedGroup === 'all' ? '' : selectedGroup
+  const promptDiscoverySources = normalizeDiscoverySources(store.settings.discoverySources).filter((source) =>
+    discoverySourceSupports(source, 'prompt')
+  )
 
   async function savePrompt(prompt: PromptItem): Promise<void> {
     try {
@@ -1022,11 +1034,11 @@ function PromptPanel({
   async function discoverGithubPrompts(): Promise<void> {
     setGithubBusy(true)
     try {
-      const results = await formatFlow.searchGithubPrompts(githubQuery)
+      const results = await formatFlow.searchGithubPrompts(githubQuery, promptDiscoverySources)
       setGithubResults(results)
-      setNotice(`GitHub 找到 ${results.length} 个 Prompt 候选`)
+      setNotice(`发现 ${results.length} 个 Prompt 候选，已检索 ${1 + promptDiscoverySources.length} 个来源`)
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'GitHub Prompt 搜索失败')
+      setNotice(error instanceof Error ? error.message : 'Prompt 搜索失败')
     } finally {
       setGithubBusy(false)
     }
@@ -1176,7 +1188,7 @@ function PromptPanel({
             }}
           />
           <button type="button" onClick={() => setGithubDiscoveryOpen(true)}>
-            从 GitHub 发现 Prompt
+            发现 Prompt
           </button>
         </div>
 
@@ -1235,6 +1247,7 @@ function PromptPanel({
           setQuery={setGithubQuery}
           busy={githubBusy}
           results={githubResults}
+          sourceNames={['GitHub', ...promptDiscoverySources.map((source) => source.name)]}
           close={() => setGithubDiscoveryOpen(false)}
           search={discoverGithubPrompts}
           select={(result) => void importGithubPrompt(result)}
@@ -1318,6 +1331,9 @@ function SkillPanel({
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const [skillClipboard, setSkillClipboard] = useState<SkillItem | null>(null)
   const skillGroups = mergeSkillGroups(store.groups.skills, skills)
+  const skillDiscoverySources = normalizeDiscoverySources(store.settings.discoverySources).filter((source) =>
+    discoverySourceSupports(source, 'skill')
+  )
   const selectedSkillGroup = selectedGroup === 'all' ? undefined : findGroupByTag(skillGroups, selectedGroup)
   const effectiveTags = selectedSkillGroup ? collectGroupTags(selectedSkillGroup) : selectedGroup === 'all' ? [] : [selectedGroup]
   const effectiveTagSet = new Set(effectiveTags.map(normalizeTag))
@@ -1629,11 +1645,11 @@ function SkillPanel({
   async function discoverGithubSkills(): Promise<void> {
     setGithubBusy(true)
     try {
-      const results = await formatFlow.searchGithubSkills(githubQuery)
+      const results = await formatFlow.searchGithubSkills(githubQuery, skillDiscoverySources)
       setGithubResults(results)
-      setNotice(`GitHub 找到 ${results.length} 个 Skill 候选`)
+      setNotice(`发现 ${results.length} 个 Skill 候选，已检索 ${1 + skillDiscoverySources.length} 个来源`)
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'GitHub Skill 搜索失败')
+      setNotice(error instanceof Error ? error.message : 'Skill 搜索失败')
     } finally {
       setGithubBusy(false)
     }
@@ -1753,7 +1769,7 @@ function SkillPanel({
             扫描并清理重复项
           </button>
           <button type="button" onClick={() => setGithubDiscoveryOpen(true)}>
-            从 GitHub 发现 Skill
+            发现 Skill
           </button>
         </div>
 
@@ -1820,6 +1836,7 @@ function SkillPanel({
           setQuery={setGithubQuery}
           busy={githubBusy}
           results={githubResults}
+          sourceNames={['GitHub', ...skillDiscoverySources.map((source) => source.name)]}
           close={() => setGithubDiscoveryOpen(false)}
           search={discoverGithubSkills}
           select={(result) => void previewGithubSkill(result)}
@@ -3228,6 +3245,11 @@ function SettingsPanel({
   const [gitBackupRemote, setGitBackupRemote] = useState(store.settings.gitBackupRemote || '')
   const [gitBackupBranch, setGitBackupBranch] = useState(store.settings.gitBackupBranch || 'main')
   const [gitBackupUserEmail, setGitBackupUserEmail] = useState(store.settings.gitBackupUserEmail || '2878705044@qq.com')
+  const [discoverySources, setDiscoverySources] = useState(() => normalizeDiscoverySources(store.settings.discoverySources))
+  const [discoverySourceName, setDiscoverySourceName] = useState('')
+  const [discoverySourceKind, setDiscoverySourceKind] = useState<DiscoverySource['kind']>('both')
+  const [discoverySearchUrl, setDiscoverySearchUrl] = useState('')
+  const [discoveryResultLinkMatch, setDiscoveryResultLinkMatch] = useState('')
   const [capturing, setCapturing] = useState(false)
   const [recommendationsOpen, setRecommendationsOpen] = useState(false)
 
@@ -3413,6 +3435,67 @@ function SettingsPanel({
     setNotice(result.message)
   }
 
+  function addDiscoverySource(): void {
+    const name = discoverySourceName.trim()
+    const searchUrlTemplate = discoverySearchUrl.trim()
+    if (!name) {
+      setNotice('请填写发现来源名称')
+      return
+    }
+    if (!isValidDiscoverySearchTemplate(searchUrlTemplate)) {
+      setNotice('搜索地址必须是 HTTP(S) URL，并包含 {query} 占位符')
+      return
+    }
+    const duplicate = discoverySources.some(
+      (source) => source.name.toLowerCase() === name.toLowerCase() || source.searchUrlTemplate.toLowerCase() === searchUrlTemplate.toLowerCase()
+    )
+    if (duplicate) {
+      setNotice('这个发现来源已经存在')
+      return
+    }
+    setDiscoverySources([
+      ...discoverySources,
+      {
+        id: newId('discovery-source'),
+        name,
+        kind: discoverySourceKind,
+        searchUrlTemplate,
+        resultLinkMatch: discoveryResultLinkMatch.trim(),
+        enabled: true
+      }
+    ])
+    setDiscoverySourceName('')
+    setDiscoverySearchUrl('')
+    setDiscoveryResultLinkMatch('')
+    setNotice(`已添加发现来源：${name}；保存后参与综合检索`)
+  }
+
+  function addRecommendedDiscoverySource(source: DiscoverySource): void {
+    const exists = discoverySources.some(
+      (item) =>
+        item.name.toLowerCase() === source.name.toLowerCase() ||
+        item.searchUrlTemplate.toLowerCase() === source.searchUrlTemplate.toLowerCase()
+    )
+    if (exists) {
+      setNotice(`发现来源已存在：${source.name}`)
+      return
+    }
+    setDiscoverySources([...discoverySources, { ...source }])
+    setNotice(`已添加推荐来源：${source.name}；保存后参与综合检索`)
+  }
+
+  function removeDiscoverySource(source: DiscoverySource): void {
+    if (!confirmDestructiveAction(`确认删除发现来源“${source.name}”？`, ['只删除来源配置，不会删除已导入的 Prompt 或 Skill。'])) return
+    setDiscoverySources(discoverySources.filter((item) => item.id !== source.id))
+  }
+
+  async function saveDiscoverySources(): Promise<void> {
+    const normalized = normalizeDiscoverySources(discoverySources)
+    await commit({ ...store, settings: { ...store.settings, discoverySources: normalized } })
+    setDiscoverySources(normalized)
+    setNotice(`发现来源已保存：GitHub + ${normalized.filter((source) => source.enabled).length} 个自定义网站`)
+  }
+
   return (
     <section className="panel settings-layout">
       <div className="settings-card">
@@ -3486,6 +3569,104 @@ function SettingsPanel({
         <button className="primary-action" type="button" onClick={() => void saveDirectories()}>
           保存并重新扫描
         </button>
+      </div>
+
+      <div className="settings-card discovery-source-settings-card">
+        <PanelHeader title="发现来源" detail="GitHub 为默认来源；自定义网站通过搜索地址模板参与综合检索" />
+        <div className="recommended-discovery-section">
+          <strong>推荐接口</strong>
+          <div className="recommended-discovery-list">
+            {RECOMMENDED_DISCOVERY_SOURCES.map((recommendation) => {
+              const added = discoverySources.some(
+                (source) =>
+                  source.name.toLowerCase() === recommendation.source.name.toLowerCase() ||
+                  source.searchUrlTemplate.toLowerCase() === recommendation.source.searchUrlTemplate.toLowerCase()
+              )
+              return (
+                <div className="recommended-discovery-row" key={recommendation.source.id}>
+                  <div>
+                    <strong>{recommendation.source.name}</strong>
+                    <span>{discoveryKindLabel(recommendation.source.kind)}</span>
+                    <small>{recommendation.description}</small>
+                    <a href={recommendation.websiteUrl} target="_blank" rel="noreferrer">{recommendation.websiteUrl}</a>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={added}
+                    onClick={() => addRecommendedDiscoverySource(recommendation.source)}
+                  >
+                    {added ? '已添加' : '添加接口'}
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+        <div className="discovery-source-list" aria-label="发现来源列表">
+          <div className="discovery-source-row fixed">
+            <div>
+              <strong>GitHub</strong>
+              <span>Prompt 与 Skill · 默认启用</span>
+            </div>
+            <code>github.com</code>
+          </div>
+          {discoverySources.map((source) => (
+            <div className="discovery-source-row" key={source.id}>
+              <label className="discovery-source-toggle">
+                <input
+                  type="checkbox"
+                  checked={source.enabled}
+                  onChange={(event) =>
+                    setDiscoverySources(
+                      discoverySources.map((item) => item.id === source.id ? { ...item, enabled: event.target.checked } : item)
+                    )
+                  }
+                />
+                <span>
+                  <strong>{source.name}</strong>
+                  <small>{discoveryKindLabel(source.kind)}</small>
+                </span>
+              </label>
+              <code title={source.searchUrlTemplate}>{source.searchUrlTemplate}</code>
+              <button type="button" onClick={() => removeDiscoverySource(source)}>删除</button>
+            </div>
+          ))}
+        </div>
+        <div className="two-column compact">
+          <label>
+            网站名称
+            <input value={discoverySourceName} onChange={(event) => setDiscoverySourceName(event.target.value)} placeholder="例如：prompts.chat" />
+          </label>
+          <label>
+            适用类型
+            <select value={discoverySourceKind} onChange={(event) => setDiscoverySourceKind(event.target.value as DiscoverySource['kind'])}>
+              <option value="both">Prompt 与 Skill</option>
+              <option value="prompt">仅 Prompt</option>
+              <option value="skill">仅 Skill</option>
+            </select>
+          </label>
+        </div>
+        <label>
+          搜索地址模板
+          <input
+            value={discoverySearchUrl}
+            onChange={(event) => setDiscoverySearchUrl(event.target.value)}
+            placeholder="https://example.com/search?q={query}"
+          />
+        </label>
+        <label>
+          结果链接包含（可选）
+          <input
+            value={discoveryResultLinkMatch}
+            onChange={(event) => setDiscoveryResultLinkMatch(event.target.value)}
+            placeholder="例如：/prompts/ 或 /creators/"
+          />
+        </label>
+        <p className="hint">地址中的 <code>{'{query}'}</code> 会替换为检索词。结果链接规则留空时会按 Prompt/Skill 常见路径自动识别。</p>
+        <div className="inline-actions wrap">
+          <button type="button" onClick={addDiscoverySource}>添加来源</button>
+          <button className="primary-action" type="button" onClick={() => void saveDiscoverySources()}>保存发现来源</button>
+        </div>
       </div>
 
       <div className="settings-card data-location-card">
@@ -3619,6 +3800,7 @@ function GithubDiscoveryModal({
   setQuery,
   busy,
   results,
+  sourceNames,
   close,
   search,
   select
@@ -3628,6 +3810,7 @@ function GithubDiscoveryModal({
   setQuery: (query: string) => void
   busy: boolean
   results: GithubSearchResult[]
+  sourceNames: string[]
   close: () => void
   search: () => Promise<void>
   select: (result: GithubSearchResult) => void
@@ -3641,7 +3824,7 @@ function GithubDiscoveryModal({
   }
 
   return (
-    <Modal title={`从 GitHub 发现 ${kind}`} close={close} className="github-discovery-modal">
+    <Modal title={`发现 ${kind}`} close={close} className="github-discovery-modal">
       <form
         className="github-discovery-search"
         onSubmit={(event) => {
@@ -3653,11 +3836,11 @@ function GithubDiscoveryModal({
           autoFocus
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          aria-label={`GitHub ${kind} 查询`}
-          placeholder={`搜索 ${kind} 名称、仓库或说明`}
+          aria-label={`${kind} 发现查询`}
+          placeholder={`综合搜索 ${kind} 名称、来源或说明`}
         />
         <button className="primary-action" type="submit" disabled={busy || !query.trim()}>
-          {busy ? '搜索中...' : '搜索 GitHub'}
+          {busy ? '搜索中...' : '搜索全部来源'}
         </button>
       </form>
 
@@ -3665,19 +3848,31 @@ function GithubDiscoveryModal({
         <>
           <div className="github-discovery-summary">
             <strong>搜索结果</strong>
-            <span>{results.length} 个候选</span>
+            <span>{results.length} 个候选 · {sourceNames.join('、')}</span>
           </div>
           <div className="github-discovery-results">
             {results.map((result) => {
               const title = result.name || result.path.split('/').filter(Boolean).pop() || result.repository
-              return (
-                <button key={result.id} className="github-discovery-card" type="button" onClick={() => select(result)}>
+              const content = (
+                <>
                   <header>
                     <strong>{title}</strong>
-                    <span>{result.repository}</span>
+                    <div className="github-discovery-source-line">
+                      <span className="github-discovery-source-badge">{result.sourceName || 'GitHub'}</span>
+                      <span>{result.repository}</span>
+                    </div>
                   </header>
                   <p>{result.description || '无仓库说明'}</p>
                   <code>{result.path}</code>
+                </>
+              )
+              return result.resultType === 'search-page' ? (
+                <a key={result.id} className="github-discovery-card" href={result.htmlUrl} target="_blank" rel="noreferrer">
+                  {content}
+                </a>
+              ) : (
+                <button key={result.id} className="github-discovery-card" type="button" onClick={() => select(result)}>
+                  {content}
                 </button>
               )
             })}
@@ -7163,6 +7358,12 @@ function fillPromptPlaceholders(content: string, values: Record<string, string>)
   return content.replace(/【\s*请填写\s*[:：]\s*([^】]+?)\s*】/g, (_token, rawLabel: string) => values[normalizeFillLabel(rawLabel)] || '')
 }
 
+function discoveryKindLabel(kind: DiscoverySource['kind']): string {
+  if (kind === 'prompt') return '仅 Prompt'
+  if (kind === 'skill') return '仅 Skill'
+  return 'Prompt 与 Skill'
+}
+
 function fillValuesWithAttachments(
   values: Record<string, string>,
   attachments: Record<string, TemporaryWordAttachment>
@@ -7882,7 +8083,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     installSkillZip: async () => desktopOnly('浏览器审查模式不能安装本地 ZIP'),
     installGeneratedSkill: async () => desktopOnly('浏览器审查模式不能保存生成的 Skill，请在桌面版中保存'),
     deleteSkill: async () => ({ ok: false, message: '浏览器审查模式不能删除本地 Skill' }),
-    searchGithubSkills: (query: string) => searchGithubFallback('skill', query),
+    searchGithubSkills: (query: string, sources: DiscoverySource[] = []) => searchGithubFallback('skill', query, sources),
     installGithubSkill: async (result: GithubSearchResult) => {
       const content = await fetchText(result.rawUrl)
       const skill: SkillItem = {
@@ -7907,7 +8108,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     },
     importExistingPrompts: async () => desktopOnly('浏览器审查模式不能读取本地 Prompt 文件'),
     restorePromptsFromBackup: async () => desktopOnly('浏览器审查模式不能读取本地 Prompt 备份'),
-    searchGithubPrompts: (query: string) => searchGithubFallback('prompt', query),
+    searchGithubPrompts: (query: string, sources: DiscoverySource[] = []) => searchGithubFallback('prompt', query, sources),
     importGithubPrompt: async (result: GithubSearchResult) => {
       const content = await fetchText(result.rawUrl)
       return { ok: true, message: `已导入 GitHub Prompt：${result.path}`, items: [createPromptFromText(content, result.path)] }
@@ -8031,12 +8232,12 @@ async function desktopOnly<T>(message: string): Promise<ImportResult<T>> {
   return { ok: false, message, items: [] }
 }
 
-async function searchGithubFallback(kind: 'skill' | 'prompt', query: string): Promise<GithubSearchResult[]> {
-  const repoQuery =
-    kind === 'skill'
-      ? `${query || 'codex skill'} codex skill in:name,description,readme`
-      : `${query || 'prompt template'} prompt template in:name,description,readme`
-  const response = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(repoQuery)}&sort=updated&per_page=8`, {
+async function searchGithubFallback(
+  kind: 'skill' | 'prompt',
+  query: string,
+  sourceInput: DiscoverySource[] = []
+): Promise<GithubSearchResult[]> {
+  const response = await fetch(buildGithubRepositorySearchUrl(kind, query), {
     headers: { Accept: 'application/vnd.github+json' }
   })
   if (!response.ok) throw new Error(`GitHub search failed: ${response.status} ${response.statusText}`)
@@ -8061,12 +8262,19 @@ async function searchGithubFallback(kind: 'skill' | 'prompt', query: string): Pr
         description: repo.description || file.path,
         path: file.path,
         htmlUrl: `${repo.html_url}/blob/${branch}/${file.path}`,
-        rawUrl: `https://raw.githubusercontent.com/${repo.full_name}/${branch}/${file.path}`
+        rawUrl: `https://raw.githubusercontent.com/${repo.full_name}/${branch}/${file.path}`,
+        sourceId: 'github',
+        sourceName: 'GitHub',
+        sourceType: 'github',
+        resultType: 'document'
       })
     }
     if (results.length >= 20) break
   }
-  return results.slice(0, 20)
+  const websiteEntries = normalizeDiscoverySources(sourceInput)
+    .filter((source) => discoverySourceSupports(source, kind))
+    .map((source) => createWebsiteSearchPageResult(source, kind, query, '浏览器预览模式请在原网站查看搜索结果。'))
+  return [...results.slice(0, 20), ...websiteEntries]
 }
 
 async function fetchText(url: string): Promise<string> {

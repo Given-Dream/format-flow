@@ -17,6 +17,7 @@ import type {
   WorkflowEdge,
   WorkflowNode
 } from './types'
+import { normalizeDiscoverySources } from './github-discovery'
 
 export const STORE_VERSION = 2
 export const DEFAULT_SHORTCUT = 'CommandOrControl+Alt+F'
@@ -411,7 +412,8 @@ export function defaultStore(): AppStore {
       temporaryWordRetentionHours: 24,
       gitBackupRemote: '',
       gitBackupBranch: 'main',
-      gitBackupUserEmail: '2878705044@qq.com'
+      gitBackupUserEmail: '2878705044@qq.com',
+      discoverySources: []
     }
   }
 }
@@ -447,7 +449,8 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
       gitBackupRemote: typeof value.settings?.gitBackupRemote === 'string' ? value.settings.gitBackupRemote : '',
       gitBackupBranch: typeof value.settings?.gitBackupBranch === 'string' ? value.settings.gitBackupBranch : 'main',
       gitBackupUserEmail:
-        typeof value.settings?.gitBackupUserEmail === 'string' ? value.settings.gitBackupUserEmail : '2878705044@qq.com'
+        typeof value.settings?.gitBackupUserEmail === 'string' ? value.settings.gitBackupUserEmail : '2878705044@qq.com',
+      discoverySources: normalizeDiscoverySources(value.settings?.discoverySources)
     }
   }
 }

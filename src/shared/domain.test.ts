@@ -91,6 +91,50 @@ describe('tag parsing and search', () => {
     ).toBe(24)
   })
 
+  it('preserves valid custom discovery sources and removes invalid duplicates', () => {
+    const settings = normalizeStore({
+      settings: {
+        shortcut: 'Alt+Space',
+        skillDirectories: [],
+        discoverySources: [
+          {
+            id: 'prompts-chat',
+            name: 'prompts.chat',
+            kind: 'prompt',
+            searchUrlTemplate: 'https://prompts.chat/prompts?q={query}',
+            resultLinkMatch: '/prompts/',
+            enabled: true
+          },
+          {
+            id: 'duplicate',
+            name: 'prompts.chat',
+            kind: 'prompt',
+            searchUrlTemplate: 'https://prompts.chat/prompts?q={query}',
+            enabled: true
+          },
+          {
+            id: 'invalid',
+            name: 'Invalid',
+            kind: 'both',
+            searchUrlTemplate: 'https://example.com/search',
+            enabled: true
+          }
+        ]
+      }
+    }).settings
+
+    expect(settings.discoverySources).toEqual([
+      {
+        id: 'prompts-chat',
+        name: 'prompts.chat',
+        kind: 'prompt',
+        searchUrlTemplate: 'https://prompts.chat/prompts?q={query}',
+        resultLinkMatch: '/prompts/',
+        enabled: true
+      }
+    ])
+  })
+
   it('keeps deleted prompt tag recovery records and initializes older stores', () => {
     expect(normalizeStore({}).tagRecoveries).toEqual([])
 

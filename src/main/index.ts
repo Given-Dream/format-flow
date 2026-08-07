@@ -7,6 +7,7 @@ import os from 'node:os'
 import { execFile as execFileCallback, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import AdmZip from 'adm-zip'
+import { parse as parseHtml } from 'node-html-parser'
 import { migrateTemplateDirectory, syncTemplateDirectory } from './builtin-skills'
 import { activateLicense, getLicenseStatus } from './license'
 import {
@@ -21,10 +22,19 @@ import {
   removeTemporaryWordAttachment
 } from './temporary-word'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
+import {
+  buildGithubRepositorySearchUrl,
+  buildWebsiteSearchUrl,
+  createWebsiteSearchPageResult,
+  discoverySourceSupports,
+  normalizeDiscoverySources
+} from '../shared/github-discovery'
 import type {
   AppPaths,
   AppStore,
   BackupResult,
+  DiscoveryKind,
+  DiscoverySource,
   ExportResult,
   ExportTextFileRequest,
   GithubPreviewResult,
@@ -1366,7 +1376,8 @@ async function buildBackupPayload(normalized: AppStore, timestamp: string): Prom
       temporaryWordRetentionHours: normalized.settings.temporaryWordRetentionHours,
       gitBackupRemote: normalized.settings.gitBackupRemote,
       gitBackupBranch: normalized.settings.gitBackupBranch,
-      gitBackupUserEmail: normalized.settings.gitBackupUserEmail
+      gitBackupUserEmail: normalized.settings.gitBackupUserEmail,
+      discoverySources: normalized.settings.discoverySources
     }
   }
 }
@@ -1603,14 +1614,7 @@ async function collectSkillBackups(directories: string[]): Promise<Array<{ name:
 }
 
 async function searchGithub(kind: 'skill' | 'prompt', query: string): Promise<GithubSearchResult[]> {
-  const trimmed = query.trim()
-  const repoQuery =
-    kind === 'skill'
-      ? `${trimmed || 'codex skill'} codex skill in:name,description,readme`
-      : `${trimmed || 'prompt template'} prompt template in:name,description,readme`
-  const response = await githubFetch(
-    `https://api.github.com/search/repositories?q=${encodeURIComponent(repoQuery)}&sort=updated&per_page=8`
-  )
+  const response = await githubFetch(buildGithubRepositorySearchUrl(kind, query))
   if (!response.ok) throw new Error(`GitHub search failed: ${response.status} ${response.statusText}`)
 
   const payload = (await response.json()) as {
@@ -1647,7 +1651,11 @@ async function searchGithub(kind: 'skill' | 'prompt', query: string): Promise<Gi
           description: repo.description || file.path,
           path: file.path,
           htmlUrl: `${repo.html_url}/blob/${branch}/${file.path}`,
-          rawUrl: `https://raw.githubusercontent.com/${repo.full_name}/${branch}/${file.path}`
+          rawUrl: `https://raw.githubusercontent.com/${repo.full_name}/${branch}/${file.path}`,
+          sourceId: 'github',
+          sourceName: 'GitHub',
+          sourceType: 'github',
+          resultType: 'document'
         })
       }
     } catch {
@@ -1657,6 +1665,114 @@ async function searchGithub(kind: 'skill' | 'prompt', query: string): Promise<Gi
   }
 
   return results.slice(0, 20)
+}
+
+async function searchDiscovery(
+  kind: DiscoveryKind,
+  query: string,
+  sourceInput: DiscoverySource[] = []
+): Promise<GithubSearchResult[]> {
+  const sources = normalizeDiscoverySources(sourceInput).filter((source) => discoverySourceSupports(source, kind))
+  const settled = await Promise.allSettled([
+    searchGithub(kind, query),
+    ...sources.map((source) => searchWebsiteSource(source, kind, query))
+  ])
+  const successful = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+  if (successful.length === 0 && settled[0]?.status === 'rejected') throw settled[0].reason
+  const seen = new Set<string>()
+  return successful.filter((result) => {
+    const key = result.htmlUrl.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+async function searchWebsiteSource(
+  source: DiscoverySource,
+  kind: DiscoveryKind,
+  query: string
+): Promise<GithubSearchResult[]> {
+  const searchUrl = buildWebsiteSearchUrl(source, query)
+  try {
+    const response = await fetch(searchUrl, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'Mozilla/5.0 Format-Flow/0.1'
+      },
+      redirect: 'follow'
+    })
+    if (!response.ok) {
+      return [createWebsiteSearchPageResult(source, kind, query, `该网站返回 ${response.status}，点击后在原网站继续查看。`)]
+    }
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+      return [createWebsiteSearchPageResult(source, kind, query, '该网站没有返回可解析的 HTML 搜索结果。')]
+    }
+
+    const root = parseHtml(await response.text())
+    const results: GithubSearchResult[] = []
+    const seen = new Set<string>()
+    for (const anchor of root.querySelectorAll('a[href]')) {
+      const href = anchor.getAttribute('href')?.trim()
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) continue
+      let url: URL
+      try {
+        url = new URL(href, searchUrl)
+      } catch {
+        continue
+      }
+      if (!['https:', 'http:'].includes(url.protocol) || url.href === searchUrl || seen.has(url.href)) continue
+      const text = normalizeWebsiteResultText(anchor.textContent || anchor.getAttribute('aria-label') || anchor.getAttribute('title') || '')
+      if (!isWebsiteResultCandidate(source, kind, url, text)) continue
+      seen.add(url.href)
+      const title = websiteResultTitle(text, url)
+      results.push({
+        id: `website:${source.id}:${url.href}`,
+        name: title,
+        repository: url.hostname,
+        description: text && text !== title ? text.slice(0, 260) : `来自 ${source.name} 的公开搜索结果`,
+        path: `${url.pathname}${url.search}`,
+        htmlUrl: url.href,
+        rawUrl: url.href,
+        sourceId: source.id,
+        sourceName: source.name,
+        sourceType: 'website',
+        resultType: 'search-page'
+      })
+      if (results.length >= 6) break
+    }
+    return results.length > 0 ? results : [createWebsiteSearchPageResult(source, kind, query)]
+  } catch (error) {
+    return [
+      createWebsiteSearchPageResult(
+        source,
+        kind,
+        query,
+        `无法直接读取该网站：${errorMessage(error)}。点击后在原网站继续查看。`
+      )
+    ]
+  }
+}
+
+function isWebsiteResultCandidate(source: DiscoverySource, kind: DiscoveryKind, url: URL, text: string): boolean {
+  const pathAndQuery = `${url.pathname}${url.search}`.toLowerCase()
+  if (/\/(login|sign-in|signup|auth|pricing|docs?|about|new|create|submit)(\/|$)/.test(pathAndQuery)) return false
+  if (source.resultLinkMatch) return pathAndQuery.includes(source.resultLinkMatch.toLowerCase())
+  if (kind === 'prompt') return /\/prompts?\//.test(pathAndQuery) && !/^\/prompts?\/?$/.test(url.pathname)
+  if (/\/creators\//.test(pathAndQuery)) return true
+  return /\/skills?\//.test(pathAndQuery) && !/^\/skills?\/?$/.test(url.pathname) && text.length > 0
+}
+
+function normalizeWebsiteResultText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function websiteResultTitle(text: string, url: URL): string {
+  const beforeDate = text.split(/\d{4}-\d{2}-\d{2}/)[0]?.trim()
+  if (beforeDate && beforeDate.length <= 100) return beforeDate
+  const segment = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || url.hostname)
+  return segment.replace(/[-_]+/g, ' ').slice(0, 100)
 }
 
 function isGithubCandidate(kind: 'skill' | 'prompt', filePath: string): boolean {
@@ -2007,12 +2123,12 @@ function registerIpc(): void {
   ipcMain.handle('skills:openPath', (_event, skillPath: string, targetRelativePath?: string) => openSkillPath(skillPath, targetRelativePath))
   ipcMain.handle('skills:writeTextFile', (_event, request: SkillFileWriteRequest) => writeSkillTextFile(request))
   ipcMain.handle('skills:createEntry', (_event, request: SkillEntryCreateRequest) => createSkillEntry(request))
-  ipcMain.handle('github:searchSkills', (_event, query: string) => searchGithub('skill', query))
+  ipcMain.handle('github:searchSkills', (_event, query: string, sources: DiscoverySource[] = []) => searchDiscovery('skill', query, sources))
   ipcMain.handle('github:installSkill', (_event, result: GithubSearchResult) => installGithubSkill(result))
   ipcMain.handle('github:previewSkill', (_event, result: GithubSearchResult) => previewGithubSkill(result))
   ipcMain.handle('prompts:importExisting', () => importPromptFiles())
   ipcMain.handle('prompts:restoreBackup', () => restorePromptsFromBackup())
-  ipcMain.handle('github:searchPrompts', (_event, query: string) => searchGithub('prompt', query))
+  ipcMain.handle('github:searchPrompts', (_event, query: string, sources: DiscoverySource[] = []) => searchDiscovery('prompt', query, sources))
   ipcMain.handle('github:importPrompt', (_event, result: GithubSearchResult) => importGithubPrompt(result))
   ipcMain.handle('mcps:importConfig', () => importMcpConfig())
   ipcMain.handle('mcps:restoreBackup', () => restoreMcpFromBackup())

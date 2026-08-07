@@ -91,6 +91,21 @@ export type GithubSearchResult = {
   path: string
   htmlUrl: string
   rawUrl: string
+  sourceId?: string
+  sourceName?: string
+  sourceType?: 'github' | 'website'
+  resultType?: 'document' | 'search-page'
+}
+
+export type DiscoveryKind = 'prompt' | 'skill'
+
+export type DiscoverySource = {
+  id: string
+  name: string
+  kind: DiscoveryKind | 'both'
+  searchUrlTemplate: string
+  resultLinkMatch?: string
+  enabled: boolean
 }
 
 export type SkillMetadata = {
@@ -210,6 +225,7 @@ export type AppSettings = {
   gitBackupRemote?: string
   gitBackupBranch?: string
   gitBackupUserEmail?: string
+  discoverySources?: DiscoverySource[]
 }
 
 export type AppStore = {

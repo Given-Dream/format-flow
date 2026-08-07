@@ -3,6 +3,7 @@ import type {
   AppPaths,
   AppStore,
   BackupResult,
+  DiscoverySource,
   ExportResult,
   ExportTextFileRequest,
   GithubSearchResult,
@@ -61,14 +62,16 @@ const api = {
   createSkillEntry: (request: SkillEntryCreateRequest): Promise<ExportResult> =>
     ipcRenderer.invoke('skills:createEntry', request),
   deleteSkill: (skill: SkillItem): Promise<ExportResult> => ipcRenderer.invoke('skills:delete', skill),
-  searchGithubSkills: (query: string): Promise<GithubSearchResult[]> => ipcRenderer.invoke('github:searchSkills', query),
+  searchGithubSkills: (query: string, sources: DiscoverySource[] = []): Promise<GithubSearchResult[]> =>
+    ipcRenderer.invoke('github:searchSkills', query, sources),
   installGithubSkill: (result: GithubSearchResult): Promise<ImportResult<SkillItem>> =>
     ipcRenderer.invoke('github:installSkill', result),
   previewGithubSkill: (result: GithubSearchResult): Promise<GithubPreviewResult> =>
     ipcRenderer.invoke('github:previewSkill', result),
   importExistingPrompts: (): Promise<ImportResult<PromptItem>> => ipcRenderer.invoke('prompts:importExisting'),
   restorePromptsFromBackup: (): Promise<ImportResult<PromptItem>> => ipcRenderer.invoke('prompts:restoreBackup'),
-  searchGithubPrompts: (query: string): Promise<GithubSearchResult[]> => ipcRenderer.invoke('github:searchPrompts', query),
+  searchGithubPrompts: (query: string, sources: DiscoverySource[] = []): Promise<GithubSearchResult[]> =>
+    ipcRenderer.invoke('github:searchPrompts', query, sources),
   importGithubPrompt: (result: GithubSearchResult): Promise<ImportResult<PromptItem>> =>
     ipcRenderer.invoke('github:importPrompt', result),
   importMcpConfig: (): Promise<ImportResult<McpServer>> => ipcRenderer.invoke('mcps:importConfig'),

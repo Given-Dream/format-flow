@@ -121,6 +121,10 @@ let lastLauncherOpenAt = 0
 let releaseForegroundTimer: NodeJS.Timeout | null = null
 let temporaryWordCleanupTimer: NodeJS.Timeout | null = null
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
+const browserBridgeTaskWaiters = new Map<string, {
+  resolve: (result: Record<string, unknown> | null) => void
+  timer: NodeJS.Timeout
+}>()
 
 function getDataDirectoryPreferencePath(): string {
   return path.join(app.getPath('userData'), 'data-location.json')
@@ -363,15 +367,34 @@ async function queueBrowserBridgeTask(payload: Record<string, unknown>): Promise
     }
   }
 
+  const taskId = `bridge_task_${Date.now()}_${Math.random().toString(16).slice(2)}`
   browserBridgeTasks.push({
-    id: `bridge_task_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    id: taskId,
     payload: taskPayload,
     createdAt: Date.now()
   })
 
+  const result = await new Promise<Record<string, unknown> | null>((resolve) => {
+    const timer = setTimeout(() => {
+      browserBridgeTaskWaiters.delete(taskId)
+      resolve(null)
+    }, 10_000)
+    browserBridgeTaskWaiters.set(taskId, { resolve, timer })
+  })
+  if (result) {
+    const status = typeof result.status === 'object' && result.status && !Array.isArray(result.status)
+      ? (result.status as Record<string, unknown>)
+      : getBrowserBridgeStatus()
+    return {
+      ok: result.ok !== false,
+      message: typeof result.message === 'string' ? result.message : '浏览器插件已处理任务。',
+      status
+    }
+  }
+
   return {
-    ok: true,
-    message: '任务已加入浏览器扩展队列；扩展检测到后会自动发送到已打开的 AI 页面。',
+    ok: false,
+    message: '任务已加入浏览器扩展队列，暂未收到插件处理结果。请检查插件是否已重载。',
     status: getBrowserBridgeStatus()
   }
 }
@@ -798,7 +821,14 @@ async function handleBrowserBridgeRequest(request: http.IncomingMessage, respons
     if (request.method === 'POST' && url.pathname === '/format-flow-bridge/tasks/result') {
       const payload = await readJsonRequest(request)
       browserBridgeLastSeen = Date.now()
+      const taskId = typeof payload.taskId === 'string' ? payload.taskId : ''
       const result = typeof payload.result === 'object' && payload.result && !Array.isArray(payload.result) ? (payload.result as Record<string, unknown>) : {}
+      const waiter = taskId ? browserBridgeTaskWaiters.get(taskId) : undefined
+      if (waiter) {
+        clearTimeout(waiter.timer)
+        browserBridgeTaskWaiters.delete(taskId)
+        waiter.resolve(result)
+      }
       const status = typeof result.status === 'object' && result.status && !Array.isArray(result.status) ? (result.status as Record<string, unknown>) : undefined
       browserBridgeStatus = normalizeBrowserBridgeStatus({
         ...(status || browserBridgeStatus),

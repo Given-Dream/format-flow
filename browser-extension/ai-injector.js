@@ -63,8 +63,6 @@
     if (!text.trim()) return { ok: false, message: '任务内容为空' }
     const target = detectTarget()
     if (!target) return { ok: false, message: '当前页面不是 Format Flow 支持的 AI 页面。' }
-    const attachmentResult = await injectAttachments(target, payload && typeof payload === 'object' ? payload.attachments : [])
-    if (!attachmentResult.ok) return attachmentResult
     const input = findInput(target)
     if (!input) {
       return {
@@ -80,6 +78,15 @@
         message: fillResult.message || `未能填入 ${target?.name || 'AI 页面'} 输入框。`
       }
     }
+
+    // Text input can rerender the composer. Attach files afterward so the selected
+    // FileList is assigned to the current upload input and is not discarded.
+    const attachmentResult = await injectAttachments(
+      target,
+      payload && typeof payload === 'object' ? payload.attachments : [],
+      input
+    )
+    if (!attachmentResult.ok) return attachmentResult
 
     if (!shouldSubmit) {
       return {
@@ -121,18 +128,32 @@
     return null
   }
 
-  function findFileInput(target) {
+  function findFileInput(target, textInput) {
     const selectors = target?.fileSelectors || ['input[type="file"]']
     const candidates = selectors.flatMap((selector) => safeQueryAll(document, selector))
       .filter((element) => element instanceof HTMLInputElement && element.type === 'file' && !element.disabled)
-    return candidates.at(-1) || null
+    if (candidates.length === 0) return null
+
+    const roots = textInput ? candidateRoots(textInput).filter((root) => root !== document) : []
+    return candidates
+      .map((candidate, index) => {
+        const rootIndex = roots.findIndex((root) => root.contains(candidate))
+        const usable = isUsable(candidate) ? 1 : 0
+        const sameForm = textInput && candidate.form && textInput.form && candidate.form === textInput.form ? 1 : 0
+        const sameRoot = rootIndex >= 0 ? roots.length - rootIndex : 0
+        return { candidate, score: sameForm * 10000 + sameRoot * 100 + usable * 10 - index / 1000 }
+      })
+      .sort((left, right) => right.score - left.score)[0].candidate
   }
 
-  async function injectAttachments(target, attachments) {
+  async function injectAttachments(target, attachments, textInput) {
     if (!Array.isArray(attachments) || attachments.length === 0) return { ok: true }
-    const input = findFileInput(target)
+    const input = await waitForFileInput(target, textInput)
     if (!input) {
-      return { ok: false, message: `未找到 ${target?.name || '当前 AI 页面'} 的文件上传控件。` }
+      return {
+        ok: false,
+        message: `未找到 ${target?.name || '当前 AI 页面'} 当前对话的文件上传控件。请先打开网页的附件菜单后重试。`
+      }
     }
     try {
       if (attachments.length > 1 && !input.multiple) input.multiple = true
@@ -149,10 +170,27 @@
       input.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
       input.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
       await sleep(200)
-      return { ok: true, count: attachments.length }
+      const currentInput = findFileInput(target, textInput)
+      const currentCount = currentInput?.files?.length || input.files?.length || 0
+      if (currentCount < attachments.length) {
+        return {
+          ok: false,
+          message: `网页只接收了 ${currentCount}/${attachments.length} 个附件。请先打开当前对话的附件菜单后重试。`
+        }
+      }
+      return { ok: true, count: currentCount }
     } catch (error) {
       return { ok: false, message: `注入附件失败：${error?.message || String(error)}` }
     }
+  }
+
+  async function waitForFileInput(target, textInput) {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const input = findFileInput(target, textInput)
+      if (input) return input
+      await sleep(150)
+    }
+    return null
   }
 
   function isUsable(element) {

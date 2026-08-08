@@ -1808,12 +1808,12 @@ function SkillPanel({
                 <button
                   type="button"
                   onClick={() =>
-                    void writeClipboardText(formatSkillInvocationText(skill)).then((result) =>
-                      setNotice(result.ok ? `已复制 Skill 调用条件：${skill.title}` : result.message)
+                    void writeClipboardText(formatSkillReferenceText(skill)).then((result) =>
+                      setNotice(result.ok ? `已复制 Skill 名称和本地路径：${skill.title}` : result.message)
                     )
                   }
                 >
-                  复制调用条件
+                  复制 Skill 名称
                 </button>
                 <button type="button" onClick={() => copySkillItem(skill)}>
                   复制条目
@@ -3154,12 +3154,12 @@ function LearningPanel({
                   <button
                     type="button"
                     onClick={() =>
-                      void writeClipboardText(formatSkillInvocationText(skill)).then((result) =>
-                        setNotice(result.ok ? `已复制 Skill 调用条件：${skill.title}` : result.message)
+                      void writeClipboardText(formatSkillReferenceText(skill)).then((result) =>
+                        setNotice(result.ok ? `已复制 Skill 名称和本地路径：${skill.title}` : result.message)
                       )
                     }
                   >
-                    复制调用条件
+                    复制 Skill 名称
                   </button>
                 </div>
               </article>
@@ -5443,7 +5443,7 @@ function LauncherModal({
   const skillLibraryCategories = ['all', ...allTags(skills).sort((left, right) => left.localeCompare(right))]
   const filledPromptContent = fillDraft
     ? fillDraft.skillCall?.enabled
-      ? appendSkillInvocationConditions(filledPromptBase, selectedSkillCallItems, fillDraft.skillCall.timings)
+      ? appendSkillReferences(filledPromptBase, selectedSkillCallItems, fillDraft.skillCall.timings)
       : filledPromptBase
     : ''
   const fillReady = fillDraft
@@ -5620,11 +5620,11 @@ function LauncherModal({
   }
 
   function callSkill(skill: SkillItem): void {
-    const content = formatSkillInvocationText(skill)
+    const content = formatSkillReferenceText(skill)
     const slots = extractPromptFillSlots(content)
     const historyKey = quickLauncherHistoryKey(mode, skill.id)
     const copySkill = (filledContent: string, attachments: TemporaryWordAttachment[] = []) =>
-      pasteQuickCall(filledContent, `已复制 Skill 调用条件：${skill.title}`)
+      pasteQuickCall(filledContent, `已复制 Skill 名称和本地路径：${skill.title}`)
         .then(() => {
           if (attachments.length === 0) close()
         })
@@ -5808,7 +5808,7 @@ function LauncherModal({
                 />
                 <span>
                   <strong>调用 Skill</strong>
-                  <small>将选中 Skill 的显式触发条件追加到复制内容</small>
+                  <small>将选中 Skill 的名称和本地路径追加到复制内容</small>
                 </span>
               </label>
               {fillDraft.skillCall.enabled && (
@@ -6996,21 +6996,21 @@ function skillInvocationCondition(skill: SkillItem): string {
     : `当任务需要使用“${skill.title || skill.name}”所定义的方法时。`
 }
 
-function formatSkillInvocationText(skill: SkillItem): string {
-  return [`调用 Skill：${skill.title || skill.name}`, `显式触发条件：${skillInvocationCondition(skill)}`].join('\n')
+function formatSkillReferenceText(skill: SkillItem): string {
+  return [`Skill 名称：${skill.title || skill.name}`, `本地路径：${skill.path}`].join('\n')
 }
 
-function appendSkillInvocationConditions(content: string, skills: SkillItem[], timings: Record<string, string> = {}): string {
+function appendSkillReferences(content: string, skills: SkillItem[], timings: Record<string, string> = {}): string {
   if (skills.length === 0) return content
-  const conditions = skills
+  const references = skills
     .map((skill) => {
       const timing = timings[skill.id]?.trim()
-      return [`- ${skill.title || skill.name}：${skillInvocationCondition(skill)}`, timing ? `  调用时机：${timing}` : '']
+      return [`- ${skill.title || skill.name}`, `  本地路径：${skill.path}`, timing ? `  调用时机：${timing}` : '']
         .filter(Boolean)
         .join('\n')
     })
     .join('\n')
-  return `${content.trimEnd()}\n\n需要考虑以下 Skill 的显式触发条件：\n${conditions}`
+  return `${content.trimEnd()}\n\n需要考虑以下 Skill：\n${references}`
 }
 
 function suggestSkillsForPrompt(content: string, skills: SkillItem[]): SkillItem[] {

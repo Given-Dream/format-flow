@@ -542,22 +542,15 @@ export function App(): JSX.Element {
 
   async function pasteQuickCall(
     text: string,
-    success: string,
-    attachments: TemporaryWordAttachment[] = []
+    success: string
   ): Promise<void> {
     setNotice('正在复制到剪贴板...')
-    const attachmentPaths = attachments.flatMap((attachment) => attachment.filePaths || [attachment.path])
-    const result = attachments.length > 0
-      ? await formatFlow.copyTemporaryWordPayload({
-          text,
-          filePaths: attachmentPaths
-        })
-      : await writeClipboardText(text)
+    const result = await writeClipboardText(text)
     if (!result.ok) {
       setNotice(result.message)
       throw new Error(result.message)
     }
-    setNotice(attachments.length > 0 ? `${success}；同时复制 ${attachmentPaths.length} 个附件` : success)
+    setNotice(success)
   }
 
   if (!store) {
@@ -5511,8 +5504,10 @@ function LauncherModal({
         attachments: {},
         submit: (filledContent, values, attachments = []) => {
           rememberQuickCall(prompt.id, prompt.title, values)
-          void pasteQuickCall(filledContent, `已复制提示词：${prompt.title}`, attachments)
-            .then(close)
+          void pasteQuickCall(filledContent, `已复制提示词文本：${prompt.title}`)
+            .then(() => {
+              if (attachments.length === 0) close()
+            })
             .catch(() => undefined)
         }
       })
@@ -5529,8 +5524,10 @@ function LauncherModal({
     const slots = extractPromptFillSlots(content)
     const historyKey = quickLauncherHistoryKey(mode, skill.id)
     const copySkill = (filledContent: string, attachments: TemporaryWordAttachment[] = []) =>
-      pasteQuickCall(filledContent, `已复制 Skill 调用信息：${skill.title}`, attachments)
-        .then(close)
+      pasteQuickCall(filledContent, `已复制 Skill 调用文本：${skill.title}`)
+        .then(() => {
+          if (attachments.length === 0) close()
+        })
         .catch(() => undefined)
     if (slots.length > 0) {
       setFillDraft({
@@ -5559,10 +5556,10 @@ function LauncherModal({
     const slots = extractPromptFillSlots(task)
     const historyKey = quickLauncherHistoryKey(mode, workflow.id)
     const copyWorkflowTask = (filledTask: string, attachments: TemporaryWordAttachment[] = []) =>
-      pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务：${workflow.title}`, attachments)
+      pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务文本：${workflow.title}`)
         .then(() => {
           setActiveTab('runner')
-          close()
+          if (attachments.length === 0) close()
         })
         .catch(() => undefined)
     if (slots.length > 0) {
@@ -5672,7 +5669,6 @@ function LauncherModal({
                       <div className="inline-actions wrap">
                         <button type="button" onClick={() => void formatFlow.openTemporaryWord(attachment.path)}>打开</button>
                         <button type="button" onClick={() => void formatFlow.revealTemporaryWord(attachment.path)}>位置</button>
-                        <button type="button" onClick={() => void copyAttachmentFiles([attachment])}>复制文件</button>
                         <button className="danger" type="button" onClick={() => void removeVariableAttachment(slot.label, attachment)}>删除</button>
                       </div>
                     </div>
@@ -5690,9 +5686,6 @@ function LauncherModal({
                   const attachment = fillDraft.attachments[slot.label]
                   return <span key={slot.label}>{slot.label} → {attachment.id} → {attachment.fileName}</span>
                 })}
-              <div className="inline-actions wrap">
-                <button type="button" onClick={() => void copyAttachmentFiles(Object.values(fillDraft.attachments))}>复制全部附件文件</button>
-              </div>
             </div>
           )}
           {attachmentNotice && <p className="temporary-word-notice">{attachmentNotice}</p>}
@@ -5709,8 +5702,16 @@ function LauncherModal({
                 fillDraft.submit(filledPromptContent, fillDraft.values, Object.values(fillDraft.attachments))
               }
             >
-              {fillDraft.submitLabel}
+              {Object.keys(fillDraft.attachments).length > 0 ? '复制填充后文本' : fillDraft.submitLabel}
             </button>
+            {Object.keys(fillDraft.attachments).length > 0 && (
+              <button
+                type="button"
+                onClick={() => void copyAttachmentFiles(Object.values(fillDraft.attachments))}
+              >
+                复制附件
+              </button>
+            )}
             <button type="button" onClick={() => setFillDraft(null)}>
               {fillDraft.cancelLabel || '返回列表'}
             </button>

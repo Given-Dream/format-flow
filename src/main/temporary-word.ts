@@ -15,7 +15,8 @@ import type {
 
 const execFile = promisify(execFileCallback)
 const defaultRetentionHours = 24
-const temporaryWordFilePattern = /^FFV-[A-F0-9]{6}__.+\.[A-Z0-9]+$/i
+const legacyTemporaryWordFilePattern = /^FFV-[A-F0-9]{6}__.+\.[A-Z0-9]+$/i
+const temporaryAttachmentDirectoryPattern = /^FFV-[A-F0-9]{6}$/i
 let configuredRootDirectory = ''
 let configuredRetentionHours = defaultRetentionHours
 const maximumFileBytes = 100 * 1024 * 1024
@@ -495,11 +496,11 @@ export async function createTemporaryWordFromFiles(variableName: string, filePat
   )
   const copiedPaths: string[] = []
   try {
-    for (const [index, sourcePath] of uniquePaths.entries()) {
-      const destination = path.join(
-        getTemporaryWordRoot(),
-        `${attachment.id}__${String(index + 1).padStart(2, '0')}-${safeFileName(path.basename(sourcePath))}`
-      )
+    const attachmentDirectory = path.dirname(attachment.path)
+    const usedFileNames = new Set<string>()
+    for (const sourcePath of uniquePaths) {
+      const fileName = uniqueAttachmentFileName(path.basename(sourcePath), usedFileNames)
+      const destination = path.join(attachmentDirectory, fileName)
       await fs.copyFile(sourcePath, destination)
       copiedPaths.push(destination)
     }
@@ -509,7 +510,9 @@ export async function createTemporaryWordFromFiles(variableName: string, filePat
       ...attachment,
       path: primaryPath,
       filePaths: copiedPaths,
-      fileName: uniquePaths.length === 1 ? path.basename(primaryPath) : `${attachment.id}__${uniquePaths.length}-files`
+      fileName: uniquePaths.length === 1
+        ? path.basename(primaryPath)
+        : `${path.basename(primaryPath)} 等 ${uniquePaths.length} 个附件`
     }
     return {
       ok: true,
@@ -520,6 +523,7 @@ export async function createTemporaryWordFromFiles(variableName: string, filePat
     }
   } catch (error) {
     await Promise.all(copiedPaths.map((filePath) => fs.rm(filePath, { force: true }).catch(() => undefined)))
+    await removeEmptyManagedDirectory(path.dirname(attachment.path))
     return { ok: false, message: `保留原始附件失败：${errorMessage(error)}` }
   }
 }
@@ -530,10 +534,11 @@ export async function removeTemporaryWordAttachment(filePath: string): Promise<T
   }
   try {
     await fs.unlink(filePath)
-    return { ok: true, message: '已删除临时 Word 文档。', removed: 1 }
+    await removeEmptyManagedDirectory(path.dirname(filePath))
+    return { ok: true, message: '已删除临时附件。', removed: 1 }
   } catch (error) {
-    if (isNodeError(error) && error.code === 'ENOENT') return { ok: true, message: '临时 Word 文档已经不存在。', removed: 0 }
-    return { ok: false, message: `删除临时 Word 文档失败：${errorMessage(error)}`, removed: 0 }
+    if (isNodeError(error) && error.code === 'ENOENT') return { ok: true, message: '临时附件已经不存在。', removed: 0 }
+    return { ok: false, message: `删除临时附件失败：${errorMessage(error)}`, removed: 0 }
   }
 }
 
@@ -552,18 +557,20 @@ export async function cleanupTemporaryWordAttachments(
   const cutoff = Date.now() - Math.max(0, maxAgeMilliseconds)
   let removed = 0
   for (const entry of entries) {
-    if (!entry.isFile() || !temporaryWordFilePattern.test(entry.name)) continue
-    const filePath = path.join(root, entry.name)
+    const targetPath = path.join(root, entry.name)
     try {
-      const stat = await fs.stat(filePath)
+      const isLegacyFile = entry.isFile() && legacyTemporaryWordFilePattern.test(entry.name)
+      const isManagedDirectory = entry.isDirectory() && temporaryAttachmentDirectoryPattern.test(entry.name)
+      if (!isLegacyFile && !isManagedDirectory) continue
+      const stat = await fs.stat(targetPath)
       if (stat.mtimeMs > cutoff) continue
-      await fs.unlink(filePath)
+      await fs.rm(targetPath, { recursive: isManagedDirectory, force: true })
       removed += 1
     } catch {
-      // Locked documents are retried during the next cleanup pass.
+      // Locked attachments are retried during the next cleanup pass.
     }
   }
-  return { ok: true, message: removed > 0 ? `已清理 ${removed} 个过期临时 Word 文档。` : '没有需要清理的过期文档。', removed }
+  return { ok: true, message: removed > 0 ? `已清理 ${removed} 组过期临时附件。` : '没有需要清理的过期附件。', removed }
 }
 
 export async function copyTemporaryWordFiles(filePaths: string[]): Promise<ExportResult> {
@@ -584,7 +591,7 @@ function validateTemporaryWordFiles(
 ): { ok: true; filePaths: string[] } | { ok: false; result: ExportResult } {
   const requestedPaths = Array.from(new Set(filePaths.filter(Boolean).map((filePath) => path.resolve(filePath))))
   if (requestedPaths.length === 0) {
-    return { ok: false, result: { ok: false, message: '没有可复制的临时 Word 文档。' } }
+    return { ok: false, result: { ok: false, message: '没有可复制的临时附件。' } }
   }
   const invalidPath = requestedPaths.find(
     (filePath) => !isManagedTemporaryDocument(filePath) || !fsSync.existsSync(filePath)
@@ -632,17 +639,17 @@ async function writeTemporaryWordClipboard(
     return {
       ok: true,
       message: includeText
-        ? `已复制填充内容和 ${managedPaths.length} 个附件。粘贴时将同时提供文本与文件。`
+        ? `已复制填充内容和 ${managedPaths.length} 个附件。`
         : managedPaths.length > 1
-          ? `已复制 ${managedPaths.length} 个临时 Word 文件。`
-          : '已复制临时 Word 文件。'
+          ? `已复制 ${managedPaths.length} 个临时附件。`
+          : '已复制临时附件。'
     }
   } catch (error) {
     return {
       ok: false,
       message: includeText
         ? `复制填充内容和附件失败：${errorMessage(error)}`
-        : `复制临时 Word 文件失败：${errorMessage(error)}`
+        : `复制临时附件失败：${errorMessage(error)}`
     }
   } finally {
     await Promise.all([
@@ -668,12 +675,14 @@ async function createAttachmentRecord(
   await fs.mkdir(root, { recursive: true })
   const id = await uniqueAttachmentId(root)
   const cleanVariableName = safeFileName(variableName || 'variable')
-  const fileName = `${id}__${cleanVariableName}.docx`
+  const attachmentDirectory = path.join(root, id)
+  await fs.mkdir(attachmentDirectory, { recursive: true })
+  const fileName = `${cleanVariableName}.docx`
   const createdAt = new Date()
   return {
     id,
     variableName: variableName.trim() || '未命名变量',
-    path: path.join(root, fileName),
+    path: path.join(attachmentDirectory, fileName),
     fileName,
     createdAt: createdAt.toISOString(),
     expiresAt: new Date(createdAt.getTime() + configuredRetentionHours * 60 * 60 * 1000).toISOString(),
@@ -687,7 +696,7 @@ async function uniqueAttachmentId(root: string): Promise<string> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const id = `FFV-${randomBytes(3).toString('hex').toUpperCase()}`
     const entries = await fs.readdir(root)
-    if (!entries.some((entry) => entry.startsWith(`${id}__`))) return id
+    if (!entries.some((entry) => entry === id || entry.startsWith(`${id}__`))) return id
   }
   throw new Error('无法生成唯一的附件 ID。')
 }
@@ -737,6 +746,7 @@ async function runWordAutomation(
     }
   } catch (error) {
     await fs.rm(attachment.path, { force: true }).catch(() => undefined)
+    await removeEmptyManagedDirectory(path.dirname(attachment.path))
     return { ok: false, message: wordAutomationErrorMessage(error) }
   }
 }
@@ -758,7 +768,34 @@ function isManagedTemporaryDocument(filePath: string): boolean {
   const root = path.resolve(getTemporaryWordRoot())
   const resolved = path.resolve(filePath)
   const relative = path.relative(root, resolved)
-  return temporaryWordFilePattern.test(path.basename(resolved)) && relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return false
+  const segments = relative.split(path.sep)
+  return segments.length === 1
+    ? legacyTemporaryWordFilePattern.test(segments[0])
+    : temporaryAttachmentDirectoryPattern.test(segments[0])
+}
+
+function uniqueAttachmentFileName(fileName: string, usedFileNames: Set<string>): string {
+  const extension = path.extname(fileName)
+  const baseName = path.basename(fileName, extension)
+  let candidate = fileName
+  let suffix = 2
+  while (usedFileNames.has(candidate.toLocaleLowerCase())) {
+    candidate = `${baseName} (${suffix})${extension}`
+    suffix += 1
+  }
+  usedFileNames.add(candidate.toLocaleLowerCase())
+  return candidate
+}
+
+async function removeEmptyManagedDirectory(directory: string): Promise<void> {
+  if (!temporaryAttachmentDirectoryPattern.test(path.basename(directory))) return
+  try {
+    const entries = await fs.readdir(directory)
+    if (entries.length === 0) await fs.rmdir(directory)
+  } catch {
+    // Another attachment operation may still be using this directory.
+  }
 }
 
 function safeFileName(value: string): string {

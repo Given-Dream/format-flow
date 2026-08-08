@@ -985,6 +985,36 @@ label {
 
 .prompt-editor-modal .modal-body {
   grid-template-rows: auto auto auto auto minmax(280px, 1fr) auto;
+  overflow: auto;
+}
+
+.prompt-editor-modal .grow {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.prompt-editor-modal .content-editor {
+  height: auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.manual-skill-modal .modal-body {
+  grid-template-rows: auto auto auto auto minmax(280px, 1fr) auto auto;
+  overflow: auto;
+}
+
+.manual-skill-modal .grow {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.manual-skill-modal .content-editor {
+  height: auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .prompt-find-replace {
@@ -2540,6 +2570,212 @@ label {
   min-height: 180px;
 }
 
+.quick-skill-call {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+}
+
+.quick-skill-call-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+}
+
+.quick-skill-call-toggle input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.quick-skill-call-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.quick-skill-call-toggle small,
+.quick-skill-call-item small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.skill-transfer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.skill-transfer-arrows {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+}
+
+.skill-transfer-arrows button {
+  width: 38px;
+  min-height: 38px;
+  padding: 6px;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.skill-transfer-panel {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.skill-transfer-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.skill-transfer-panel > header span,
+.skill-transfer-panel .muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.skill-transfer-search {
+  gap: 6px;
+  font-size: 12px;
+}
+
+.skill-transfer-category-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 78px;
+  overflow: auto;
+}
+
+.skill-transfer-category-picker button {
+  padding: 5px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.skill-transfer-category-picker button.active {
+  color: var(--accent);
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--accent-soft);
+}
+
+.skill-transfer-library {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.skill-transfer-library-list {
+  display: grid;
+  gap: 7px;
+  max-height: 180px;
+  overflow: auto;
+  padding: 2px;
+}
+
+.skill-transfer-list {
+  display: grid;
+  gap: 7px;
+  max-height: 300px;
+  overflow: auto;
+  padding: 2px;
+}
+
+.skill-transfer-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.skill-transfer-option.selected {
+  grid-template-columns: minmax(0, 1fr);
+  cursor: default;
+}
+
+.skill-transfer-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  margin: 0;
+  cursor: pointer;
+}
+
+.skill-transfer-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.skill-transfer-option > span,
+.skill-transfer-select > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.skill-transfer-option strong {
+  overflow-wrap: anywhere;
+}
+
+.skill-transfer-option em {
+  width: max-content;
+  padding: 2px 5px;
+  color: var(--accent);
+  font-size: 11px;
+  font-style: normal;
+  background: var(--accent-soft);
+  border-radius: 4px;
+}
+
+.skill-transfer-option small,
+.skill-transfer-timing {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.skill-transfer-timing {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.skill-transfer-timing textarea {
+  min-height: 64px;
+  resize: vertical;
+  font-size: 12px;
+}
+
 .directory-editor {
   min-height: 220px;
 }
@@ -2707,8 +2943,35 @@ label {
     width: calc(100vw - 24px);
   }
 
+  .skill-editor-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .skill-editor-tree {
+    max-height: none;
+  }
+
+  .skill-tree-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .skill-tree-header > .skill-node-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
   .prompt-find-row {
     grid-template-columns: 1fr;
+  }
+
+  .skill-transfer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .skill-transfer-arrows {
+    flex-direction: row;
+    justify-content: center;
   }
 
   .github-target-picker {

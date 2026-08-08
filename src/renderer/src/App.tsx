@@ -164,6 +164,12 @@ type PromptFillSlot = {
   label: string
   token: string
 }
+type PromptSkillCallSelection = {
+  enabled: boolean
+  selectedIds: string[]
+  suggestedIds: string[]
+  timings: Record<string, string>
+}
 type PromptFillDraft = {
   title: string
   content: string
@@ -172,10 +178,12 @@ type PromptFillDraft = {
   historyKey?: string
   values: Record<string, string>
   attachments: Record<string, TemporaryWordAttachment>
+  skillCall?: PromptSkillCallSelection
   submit: (
     filledContent: string,
     values: Record<string, string>,
-    attachments?: TemporaryWordAttachment[]
+    attachments?: TemporaryWordAttachment[],
+    skillCall?: PromptSkillCallSelection
   ) => void
 }
 type PromptImportReview = PromptImportAnalysis & {
@@ -258,6 +266,7 @@ const quickLauncherModeStorageKey = 'format-flow-quick-launcher-mode'
 const quickLauncherGroupStoragePrefix = 'format-flow-quick-launcher-group'
 const quickLauncherQueryStoragePrefix = 'format-flow-quick-launcher-query'
 const quickLauncherFillStorageKey = 'format-flow-quick-launcher-fill-history'
+const quickLauncherSkillCallStorageKey = 'format-flow-quick-launcher-skill-history'
 const quickLauncherLastCallStorageKey = 'format-flow-quick-launcher-last-call'
 
 function FormatFlowMark(): JSX.Element {
@@ -1799,12 +1808,12 @@ function SkillPanel({
                 <button
                   type="button"
                   onClick={() =>
-                    void writeClipboardText(skill.contentPreview).then((result) =>
-                      setNotice(result.ok ? `已复制 Skill 内容：${skill.title}` : result.message)
+                    void writeClipboardText(formatSkillInvocationText(skill)).then((result) =>
+                      setNotice(result.ok ? `已复制 Skill 调用条件：${skill.title}` : result.message)
                     )
                   }
                 >
-                  复制内容
+                  复制调用条件
                 </button>
                 <button type="button" onClick={() => copySkillItem(skill)}>
                   复制条目
@@ -3145,12 +3154,12 @@ function LearningPanel({
                   <button
                     type="button"
                     onClick={() =>
-                      void writeClipboardText(skill.contentPreview).then((result) =>
-                        setNotice(result.ok ? `已复制 Skill 内容：${skill.title}` : result.message)
+                      void writeClipboardText(formatSkillInvocationText(skill)).then((result) =>
+                        setNotice(result.ok ? `已复制 Skill 调用条件：${skill.title}` : result.message)
                       )
                     }
                   >
-                    复制内容
+                    复制调用条件
                   </button>
                 </div>
               </article>
@@ -5021,7 +5030,7 @@ function ManualSkillModal(
   }
 
   return (
-    <Modal title="新建 Skill" close={close}>
+    <Modal title="新建 Skill" close={close} className="manual-skill-modal">
       <label>
         标题
         <input value={title} onChange={(event) => updateTitle(event.target.value)} />
@@ -5378,6 +5387,12 @@ function LauncherModal({
   const [fillDraft, setFillDraft] = useState<PromptFillDraft | null>(null)
   const [attachmentBusy, setAttachmentBusy] = useState('')
   const [attachmentNotice, setAttachmentNotice] = useState('')
+  const [skillTransferLibraryQuery, setSkillTransferLibraryQuery] = useState('')
+  const [skillTransferLibraryTag, setSkillTransferLibraryTag] = useState('all')
+  const [skillTransferCandidateIds, setSkillTransferCandidateIds] = useState<string[]>([])
+  const [skillTransferLeftIds, setSkillTransferLeftIds] = useState<string[]>([])
+  const [skillTransferRightIds, setSkillTransferRightIds] = useState<string[]>([])
+  const [skillTransferLibraryIds, setSkillTransferLibraryIds] = useState<string[]>([])
   const callablePrompts = store.prompts.filter((prompt) => prompt.content.trim())
   const quickGroupTags =
     mode === 'prompt'
@@ -5402,7 +5417,35 @@ function LauncherModal({
   )
   const fillSlots = fillDraft ? extractPromptFillSlots(fillDraft.content) : []
   const effectiveFillValues = fillDraft ? fillValuesWithAttachments(fillDraft.values, fillDraft.attachments) : {}
-  const filledPromptContent = fillDraft ? fillPromptPlaceholders(fillDraft.content, effectiveFillValues) : ''
+  const filledPromptBase = fillDraft ? fillPromptPlaceholders(fillDraft.content, effectiveFillValues) : ''
+  const selectedSkillCallItems = fillDraft?.skillCall
+    ? skills.filter((skill) => fillDraft.skillCall?.selectedIds.includes(skill.id))
+    : []
+  const availableSkillCallItems = fillDraft?.skillCall
+    ? skills
+        .filter((skill) => skillTransferCandidateIds.includes(skill.id) && !fillDraft.skillCall?.selectedIds.includes(skill.id))
+        .sort((left, right) => {
+          const leftSuggested = fillDraft.skillCall?.suggestedIds.includes(left.id) ? 0 : 1
+          const rightSuggested = fillDraft.skillCall?.suggestedIds.includes(right.id) ? 0 : 1
+          return leftSuggested - rightSuggested || left.title.localeCompare(right.title)
+        })
+    : []
+  const skillLibraryItems = fillDraft?.skillCall
+    ? skills
+        .filter((skill) => !skillTransferCandidateIds.includes(skill.id) && !fillDraft.skillCall?.selectedIds.includes(skill.id))
+        .filter((skill) => matchesTextAndTags(skill, skillTransferLibraryQuery, []))
+        .filter(
+          (skill) =>
+            skillTransferLibraryTag === 'all' || skill.tags.some((tag) => normalizeTag(tag) === skillTransferLibraryTag)
+        )
+        .sort((left, right) => left.title.localeCompare(right.title))
+    : []
+  const skillLibraryCategories = ['all', ...allTags(skills).sort((left, right) => left.localeCompare(right))]
+  const filledPromptContent = fillDraft
+    ? fillDraft.skillCall?.enabled
+      ? appendSkillInvocationConditions(filledPromptBase, selectedSkillCallItems, fillDraft.skillCall.timings)
+      : filledPromptBase
+    : ''
   const fillReady = fillDraft
     ? fillSlots.every((slot) => fillDraft.values[slot.label]?.trim() || fillDraft.attachments[slot.label])
     : false
@@ -5425,9 +5468,17 @@ function LauncherModal({
     setSelectedGroup(readStoredQuickLauncherGroup(nextMode))
     setQuery(readStoredQuickLauncherQuery(nextMode))
   }
-  function rememberQuickCall(itemId: string, title: string, values: Record<string, string> = {}): void {
+  function rememberQuickCall(
+    itemId: string,
+    title: string,
+    values: Record<string, string> = {},
+    skillCall?: PromptSkillCallSelection
+  ): void {
     const cleanValues = Object.fromEntries(Object.entries(values).filter(([, value]) => typeof value === 'string'))
     writeStoredQuickLauncherFillValues(quickLauncherHistoryKey(mode, itemId), cleanValues)
+    if (skillCall?.enabled) {
+      writeStoredQuickLauncherSkillSelection(quickLauncherHistoryKey(mode, itemId), skillCall)
+    }
     writeStoredQuickLauncherLastCall({
       mode,
       itemId,
@@ -5436,6 +5487,39 @@ function LauncherModal({
       query,
       values: cleanValues,
       updatedAt: Date.now()
+    })
+  }
+
+  function addSelectedSkillsToCandidates(): void {
+    if (!fillDraft?.skillCall || skillTransferLibraryIds.length === 0) return
+    setSkillTransferCandidateIds((current) => Array.from(new Set([...current, ...skillTransferLibraryIds])))
+    setSkillTransferLibraryIds([])
+  }
+
+  function moveSelectedSkillsToCall(): void {
+    if (!fillDraft?.skillCall || skillTransferLeftIds.length === 0) return
+    const selectedIds = Array.from(new Set([...fillDraft.skillCall.selectedIds, ...skillTransferLeftIds]))
+    setFillDraft({ ...fillDraft, skillCall: { ...fillDraft.skillCall, selectedIds } })
+    setSkillTransferCandidateIds((current) => current.filter((id) => !skillTransferLeftIds.includes(id)))
+    setSkillTransferLeftIds([])
+  }
+
+  function moveSelectedSkillsToCandidates(): void {
+    if (!fillDraft?.skillCall || skillTransferRightIds.length === 0) return
+    const selectedIds = fillDraft.skillCall.selectedIds.filter((id) => !skillTransferRightIds.includes(id))
+    setFillDraft({ ...fillDraft, skillCall: { ...fillDraft.skillCall, selectedIds } })
+    setSkillTransferCandidateIds((current) => Array.from(new Set([...current, ...skillTransferRightIds])))
+    setSkillTransferRightIds([])
+  }
+
+  function updateSkillCallTiming(skillId: string, timing: string): void {
+    if (!fillDraft?.skillCall) return
+    setFillDraft({
+      ...fillDraft,
+      skillCall: {
+        ...fillDraft.skillCall,
+        timings: { ...fillDraft.skillCall.timings, [skillId]: timing }
+      }
     })
   }
 
@@ -5495,6 +5579,16 @@ function LauncherModal({
     const slots = extractPromptFillSlots(prompt.content)
     const historyKey = quickLauncherHistoryKey(mode, prompt.id)
     if (slots.length > 0) {
+      const suggestedSkills = suggestSkillsForPrompt(prompt.content, skills)
+      const rememberedSkillCall = readStoredQuickLauncherSkillSelection(historyKey)
+      const rememberedIds = rememberedSkillCall?.selectedIds.filter((id) => skills.some((skill) => skill.id === id)) || []
+      const suggestedIds = suggestedSkills.map((skill) => skill.id).filter((id) => !rememberedIds.includes(id))
+      setSkillTransferLibraryQuery('')
+      setSkillTransferLibraryTag('all')
+      setSkillTransferCandidateIds(suggestedIds)
+      setSkillTransferLeftIds([])
+      setSkillTransferRightIds([])
+      setSkillTransferLibraryIds([])
       setFillDraft({
         title: `填写提示词：${prompt.title}`,
         content: prompt.content,
@@ -5502,8 +5596,14 @@ function LauncherModal({
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
         attachments: {},
-        submit: (filledContent, values, attachments = []) => {
-          rememberQuickCall(prompt.id, prompt.title, values)
+        skillCall: {
+          enabled: false,
+          selectedIds: rememberedIds,
+          suggestedIds: suggestedSkills.map((skill) => skill.id),
+          timings: rememberedSkillCall?.timings || {}
+        },
+        submit: (filledContent, values, attachments = [], skillCall) => {
+          rememberQuickCall(prompt.id, prompt.title, values, skillCall)
           void pasteQuickCall(filledContent, `已复制提示词文本：${prompt.title}`)
             .then(() => {
               if (attachments.length === 0) close()
@@ -5520,11 +5620,11 @@ function LauncherModal({
   }
 
   function callSkill(skill: SkillItem): void {
-    const content = skill.contentPreview || `使用 Skill：${skill.name}\n路径：${skill.path}\n摘要：${skill.summary}`
+    const content = formatSkillInvocationText(skill)
     const slots = extractPromptFillSlots(content)
     const historyKey = quickLauncherHistoryKey(mode, skill.id)
     const copySkill = (filledContent: string, attachments: TemporaryWordAttachment[] = []) =>
-      pasteQuickCall(filledContent, `已复制 Skill 调用文本：${skill.title}`)
+      pasteQuickCall(filledContent, `已复制 Skill 调用条件：${skill.title}`)
         .then(() => {
           if (attachments.length === 0) close()
         })
@@ -5693,13 +5793,185 @@ function LauncherModal({
             填充预览
             <textarea className="content-editor readonly" readOnly value={filledPromptContent} />
           </label>
+          {fillDraft.skillCall && (
+            <section className="quick-skill-call" aria-label="调用 Skill">
+              <label className="discovery-source-toggle quick-skill-call-toggle">
+                <input
+                  type="checkbox"
+                  checked={fillDraft.skillCall.enabled}
+                  onChange={(event) =>
+                    setFillDraft({
+                      ...fillDraft,
+                      skillCall: { ...fillDraft.skillCall!, enabled: event.target.checked }
+                    })
+                  }
+                />
+                <span>
+                  <strong>调用 Skill</strong>
+                  <small>将选中 Skill 的显式触发条件追加到复制内容</small>
+                </span>
+              </label>
+              {fillDraft.skillCall.enabled && (
+                <div className="skill-transfer">
+                  <div className="skill-transfer-panel">
+                    <header>
+                      <strong>备选 Skill</strong>
+                      <span>{availableSkillCallItems.length} 个</span>
+                    </header>
+                    {fillDraft.skillCall.suggestedIds.length > 0 && (
+                      <span className="muted">
+                        正文匹配到 {fillDraft.skillCall.suggestedIds.length} 个 Skill，已放入备选框，需要右箭头确认。
+                      </span>
+                    )}
+                    <div className="skill-transfer-list">
+                      {availableSkillCallItems.length > 0 ? (
+                        availableSkillCallItems.map((skill) => {
+                          const suggested = fillDraft.skillCall?.suggestedIds.includes(skill.id)
+                          return (
+                            <label className="skill-transfer-option" key={skill.id}>
+                              <input
+                                type="checkbox"
+                                checked={skillTransferLeftIds.includes(skill.id)}
+                                onChange={(event) =>
+                                  setSkillTransferLeftIds((current) =>
+                                    event.target.checked ? [...current, skill.id] : current.filter((id) => id !== skill.id)
+                                  )
+                                }
+                              />
+                              <span>
+                                <strong>{skill.title || skill.name}</strong>
+                                {suggested && <em>正文匹配</em>}
+                                <small>{skillInvocationCondition(skill)}</small>
+                              </span>
+                            </label>
+                          )
+                        })
+                      ) : (
+                        <span className="muted">暂无备选 Skill，请从下方索引库检索添加。</span>
+                      )}
+                    </div>
+                    <div className="skill-transfer-library">
+                      <strong>从索引库添加</strong>
+                      <label className="skill-transfer-search">
+                        检索 Skill
+                        <input
+                          value={skillTransferLibraryQuery}
+                          placeholder="按名称、摘要或标签检索"
+                          onChange={(event) => setSkillTransferLibraryQuery(event.target.value)}
+                        />
+                      </label>
+                      <div className="skill-transfer-category-picker" aria-label="按 Skill 分类筛选">
+                        {skillLibraryCategories.map((tag) => (
+                          <button
+                            key={tag}
+                            type="button"
+                            className={skillTransferLibraryTag === tag ? 'active' : ''}
+                            onClick={() => setSkillTransferLibraryTag(tag)}
+                          >
+                            {tag === 'all' ? '全部分类' : tag}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="skill-transfer-library-list">
+                        {skillLibraryItems.length > 0 ? (
+                          skillLibraryItems.map((skill) => (
+                            <label className="skill-transfer-option" key={skill.id}>
+                              <input
+                                type="checkbox"
+                                checked={skillTransferLibraryIds.includes(skill.id)}
+                                onChange={(event) =>
+                                  setSkillTransferLibraryIds((current) =>
+                                    event.target.checked ? [...current, skill.id] : current.filter((id) => id !== skill.id)
+                                  )
+                                }
+                              />
+                              <span>
+                                <strong>{skill.title || skill.name}</strong>
+                                <small>{skillInvocationCondition(skill)}</small>
+                              </span>
+                            </label>
+                          ))
+                        ) : (
+                          <span className="muted">没有匹配的索引 Skill。</span>
+                        )}
+                      </div>
+                      <button type="button" disabled={skillTransferLibraryIds.length === 0} onClick={addSelectedSkillsToCandidates}>
+                        添加选中 Skill
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="skill-transfer-arrows" aria-label="Skill 添加和移除">
+                    <button
+                      type="button"
+                      title="将左侧选中的 Skill 加入本次调用"
+                      aria-label="将左侧选中的 Skill 加入本次调用"
+                      disabled={skillTransferLeftIds.length === 0}
+                      onClick={moveSelectedSkillsToCall}
+                    >
+                      →
+                    </button>
+                    <button
+                      type="button"
+                      title="将右侧选中的 Skill 移回备选框"
+                      aria-label="将右侧选中的 Skill 移回备选框"
+                      disabled={skillTransferRightIds.length === 0}
+                      onClick={moveSelectedSkillsToCandidates}
+                    >
+                      ←
+                    </button>
+                  </div>
+
+                  <div className="skill-transfer-panel selected">
+                    <header>
+                      <strong>本次添加的 Skill</strong>
+                      <span>{selectedSkillCallItems.length} 个</span>
+                    </header>
+                    <div className="skill-transfer-list">
+                      {selectedSkillCallItems.length > 0 ? (
+                        selectedSkillCallItems.map((skill) => (
+                          <div className="skill-transfer-option selected" key={skill.id}>
+                            <label className="skill-transfer-select">
+                              <input
+                                type="checkbox"
+                                checked={skillTransferRightIds.includes(skill.id)}
+                                onChange={(event) =>
+                                  setSkillTransferRightIds((current) =>
+                                    event.target.checked ? [...current, skill.id] : current.filter((id) => id !== skill.id)
+                                  )
+                                }
+                              />
+                              <span>
+                                <strong>{skill.title || skill.name}</strong>
+                                <small>{skillInvocationCondition(skill)}</small>
+                              </span>
+                            </label>
+                            <label className="skill-transfer-timing">
+                              调用时机
+                              <textarea
+                                value={fillDraft.skillCall?.timings[skill.id] || ''}
+                                placeholder="例如：先完成需求分析，再调用此 Skill"
+                                onChange={(event) => updateSkillCallTiming(skill.id, event.target.value)}
+                              />
+                            </label>
+                          </div>
+                        ))
+                      ) : (
+                        <span className="muted">尚未添加 Skill。</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
           <div className="inline-actions">
             <button
               className="primary-action"
               type="button"
               disabled={!fillReady}
               onClick={() =>
-                fillDraft.submit(filledPromptContent, fillDraft.values, Object.values(fillDraft.attachments))
+                fillDraft.submit(filledPromptContent, fillDraft.values, Object.values(fillDraft.attachments), fillDraft.skillCall)
               }
             >
               {Object.keys(fillDraft.attachments).length > 0 ? '复制填充后文本' : fillDraft.submitLabel}
@@ -6717,6 +6989,57 @@ function matchesQuickCallFilters(
   return selectedGroup === 'all' || (item.tags || []).some((tag) => selectedTagSet.has(normalizeTag(tag)))
 }
 
+function skillInvocationCondition(skill: SkillItem): string {
+  const summary = skill.summary.trim()
+  return summary && summary !== 'Codex Skill'
+    ? summary
+    : `当任务需要使用“${skill.title || skill.name}”所定义的方法时。`
+}
+
+function formatSkillInvocationText(skill: SkillItem): string {
+  return [`调用 Skill：${skill.title || skill.name}`, `显式触发条件：${skillInvocationCondition(skill)}`].join('\n')
+}
+
+function appendSkillInvocationConditions(content: string, skills: SkillItem[], timings: Record<string, string> = {}): string {
+  if (skills.length === 0) return content
+  const conditions = skills
+    .map((skill) => {
+      const timing = timings[skill.id]?.trim()
+      return [`- ${skill.title || skill.name}：${skillInvocationCondition(skill)}`, timing ? `  调用时机：${timing}` : '']
+        .filter(Boolean)
+        .join('\n')
+    })
+    .join('\n')
+  return `${content.trimEnd()}\n\n需要考虑以下 Skill 的显式触发条件：\n${conditions}`
+}
+
+function suggestSkillsForPrompt(content: string, skills: SkillItem[]): SkillItem[] {
+  const normalizedContent = content.toLocaleLowerCase()
+  const genericSignals = new Set(['skill', 'skills', 'codex', 'use', 'when', 'this', 'current', 'task', 'guide', 'manual'])
+  const extractSignals = (value: string): string[] =>
+    Array.from(value.toLocaleLowerCase().matchAll(/[a-z0-9][a-z0-9_-]{2,}|[\u3400-\u9fff]{2,8}/g))
+      .map((match) => match[0])
+      .filter((signal) => !genericSignals.has(signal))
+
+  return skills
+    .map((skill) => {
+      const exactSignals = [skill.name, skill.title]
+        .map((value) => value.trim().toLocaleLowerCase())
+        .filter((value) => value.length >= 2 && !genericSignals.has(value))
+      const exactMatches = exactSignals.filter((signal) => normalizedContent.includes(signal))
+      const tagMatches = skill.tags
+        .map((tag) => normalizeTag(tag))
+        .filter((tag) => tag.length >= 2 && !genericSignals.has(tag))
+        .filter((tag) => normalizedContent.includes(tag))
+      const summaryMatches = extractSignals(skillInvocationCondition(skill)).filter((signal) => normalizedContent.includes(signal))
+      const score = exactMatches.length * 12 + tagMatches.length * 4 + summaryMatches.length * 2
+      return { skill, score }
+    })
+    .filter(({ score }) => score >= 4)
+    .sort((left, right) => right.score - left.score || left.skill.title.localeCompare(right.skill.title))
+    .map(({ skill }) => skill)
+}
+
 function readStoredQuickLauncherMode(): LauncherMode {
   const storedMode = localStorage.getItem(quickLauncherModeStorageKey)
   return storedMode === 'skill' || storedMode === 'workflow' || storedMode === 'prompt' ? storedMode : 'prompt'
@@ -6769,6 +7092,41 @@ function writeStoredQuickLauncherFillValues(historyKey: string, values: Record<s
     const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
     parsed[historyKey] = values
     localStorage.setItem(quickLauncherFillStorageKey, JSON.stringify(parsed))
+  } catch {
+    // Browser storage can be unavailable in private or restricted contexts.
+  }
+}
+
+function readStoredQuickLauncherSkillSelection(historyKey: string): { selectedIds: string[]; timings: Record<string, string> } | null {
+  try {
+    const raw = localStorage.getItem(quickLauncherSkillCallStorageKey)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const stored = parsed?.[historyKey]
+    if (!stored || typeof stored !== 'object') return null
+    const record = stored as Record<string, unknown>
+    const selectedIds = Array.isArray(record.selectedIds) ? record.selectedIds.filter((id): id is string => typeof id === 'string') : []
+    const rawTimings = record.timings && typeof record.timings === 'object' ? (record.timings as Record<string, unknown>) : {}
+    const timings: Record<string, string> = Object.fromEntries(
+      Object.entries(rawTimings)
+        .filter(([, value]) => typeof value === 'string')
+        .map(([key, value]) => [key, value as string])
+    )
+    return { selectedIds, timings }
+  } catch {
+    return null
+  }
+}
+
+function writeStoredQuickLauncherSkillSelection(historyKey: string, selection: PromptSkillCallSelection): void {
+  try {
+    const raw = localStorage.getItem(quickLauncherSkillCallStorageKey)
+    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {}
+    parsed[historyKey] = {
+      selectedIds: selection.selectedIds,
+      timings: selection.timings
+    }
+    localStorage.setItem(quickLauncherSkillCallStorageKey, JSON.stringify(parsed))
   } catch {
     // Browser storage can be unavailable in private or restricted contexts.
   }

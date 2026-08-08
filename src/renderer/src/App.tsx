@@ -5578,45 +5578,38 @@ function LauncherModal({
   function callPrompt(prompt: PromptItem): void {
     const slots = extractPromptFillSlots(prompt.content)
     const historyKey = quickLauncherHistoryKey(mode, prompt.id)
-    if (slots.length > 0) {
-      const suggestedSkills = suggestSkillsForPrompt(prompt.content, skills)
-      const rememberedSkillCall = readStoredQuickLauncherSkillSelection(historyKey)
-      const rememberedIds = rememberedSkillCall?.selectedIds.filter((id) => skills.some((skill) => skill.id === id)) || []
-      const suggestedIds = suggestedSkills.map((skill) => skill.id).filter((id) => !rememberedIds.includes(id))
-      setSkillTransferLibraryQuery('')
-      setSkillTransferLibraryTag('all')
-      setSkillTransferCandidateIds(suggestedIds)
-      setSkillTransferLeftIds([])
-      setSkillTransferRightIds([])
-      setSkillTransferLibraryIds([])
-      setFillDraft({
-        title: `填写提示词：${prompt.title}`,
-        content: prompt.content,
-        submitLabel: '复制填充后内容',
-        historyKey,
-        values: readStoredQuickLauncherFillValues(historyKey, slots),
-        attachments: {},
-        skillCall: {
-          enabled: false,
-          selectedIds: rememberedIds,
-          suggestedIds: suggestedSkills.map((skill) => skill.id),
-          timings: rememberedSkillCall?.timings || {}
-        },
-        submit: (filledContent, values, attachments = [], skillCall) => {
-          rememberQuickCall(prompt.id, prompt.title, values, skillCall)
-          void pasteQuickCall(filledContent, `已复制提示词文本：${prompt.title}`)
-            .then(() => {
-              if (attachments.length === 0) close()
-            })
-            .catch(() => undefined)
-        }
-      })
-      return
-    }
-    rememberQuickCall(prompt.id, prompt.title)
-    void pasteQuickCall(prompt.content, `已复制提示词：${prompt.title}`)
-      .then(close)
-      .catch(() => undefined)
+    const suggestedSkills = suggestSkillsForPrompt(prompt.content, skills)
+    const rememberedSkillCall = readStoredQuickLauncherSkillSelection(historyKey)
+    const rememberedIds = rememberedSkillCall?.selectedIds.filter((id) => skills.some((skill) => skill.id === id)) || []
+    const suggestedIds = suggestedSkills.map((skill) => skill.id).filter((id) => !rememberedIds.includes(id))
+    setSkillTransferLibraryQuery('')
+    setSkillTransferLibraryTag('all')
+    setSkillTransferCandidateIds(suggestedIds)
+    setSkillTransferLeftIds([])
+    setSkillTransferRightIds([])
+    setSkillTransferLibraryIds([])
+    setFillDraft({
+      title: `填写提示词：${prompt.title}`,
+      content: prompt.content,
+      submitLabel: '复制填充后内容',
+      historyKey,
+      values: readStoredQuickLauncherFillValues(historyKey, slots),
+      attachments: {},
+      skillCall: {
+        enabled: false,
+        selectedIds: rememberedIds,
+        suggestedIds: suggestedSkills.map((skill) => skill.id),
+        timings: rememberedSkillCall?.timings || {}
+      },
+      submit: (filledContent, values, attachments = [], skillCall) => {
+        rememberQuickCall(prompt.id, prompt.title, values, skillCall)
+        void pasteQuickCall(filledContent, `已复制提示词文本：${prompt.title}`)
+          .then(() => {
+            if (attachments.length === 0) close()
+          })
+          .catch(() => undefined)
+      }
+    })
   }
 
   function callSkill(skill: SkillItem): void {

@@ -2,11 +2,11 @@
 
 Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工作流与 MCP 管理器。它将分散在文件、Codex 目录和浏览器中的 AI 工作资产集中管理，并通过快捷调用、变量填充、顺序运行、导入导出和备份形成可复用的个人工作流。
 
-当前版本：`v0.1.54`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
+当前版本：`v0.1.55`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
 
 ## 下载与安装
 
-- [下载 Format Flow v0.1.54 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.54/Format-Flow-Setup-0.1.54.exe)
+- [下载 Format Flow v0.1.55 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.55/Format-Flow-Setup-0.1.55.exe)
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
 - Release 同时提供 `.blockmap` 和 `latest.yml`，便于分发安装包及其版本元数据。

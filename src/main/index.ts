@@ -2342,14 +2342,18 @@ function registerIpc(): void {
     captureWordSelection(variableName, lastExternalForegroundWindow)
   )
   ipcMain.handle('temporaryWord:chooseFiles', async (_event, variableName: string) => {
+    const temporaryDirectory = getTemporaryWordRoot()
+    await fs.mkdir(temporaryDirectory, { recursive: true })
     const selection = mainWindow
       ? await dialog.showOpenDialog(mainWindow, {
-          title: `选择要放入“${variableName}”临时 Word 的文件`,
+          title: `选择要放入“${variableName}”变量的附件`,
+          defaultPath: temporaryDirectory,
           properties: ['openFile', 'multiSelections'],
           filters: [{ name: '所有文件', extensions: ['*'] }]
         })
       : await dialog.showOpenDialog({
-          title: `选择要放入“${variableName}”临时 Word 的文件`,
+          title: `选择要放入“${variableName}”变量的附件`,
+          defaultPath: temporaryDirectory,
           properties: ['openFile', 'multiSelections'],
           filters: [{ name: '所有文件', extensions: ['*'] }]
         })

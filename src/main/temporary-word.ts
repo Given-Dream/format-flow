@@ -15,13 +15,24 @@ import type {
 
 const execFile = promisify(execFileCallback)
 const defaultRetentionHours = 24
-const temporaryWordFilePattern = /^FFV-[A-F0-9]{6}__.+\.docx$/i
+const temporaryWordFilePattern = /^FFV-[A-F0-9]{6}__.+\.[A-Z0-9]+$/i
 let configuredRootDirectory = ''
 let configuredRetentionHours = defaultRetentionHours
 const maximumFileBytes = 100 * 1024 * 1024
 const maximumTotalBytes = 250 * 1024 * 1024
 const wordExtensions = new Set(['.doc', '.docx', '.docm', '.rtf', '.odt'])
 const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tif', '.tiff', '.webp'])
+const officeAttachmentExtensions = new Set([
+  '.xls',
+  '.xlsx',
+  '.xlsm',
+  '.xlsb',
+  '.ppt',
+  '.pptx',
+  '.pptm',
+  '.pps',
+  '.ppsx'
+])
 const textExtensions = new Set([
   '.txt',
   '.md',
@@ -389,9 +400,6 @@ $null = Add-Type -AssemblyName System.Windows.Forms
 $payload = ([IO.File]::ReadAllText($PayloadPath, [Text.Encoding]::UTF8) | ConvertFrom-Json)
 $data = New-Object System.Windows.Forms.DataObject
 $includeText = [bool]$payload.includeText
-if ($includeText) {
-  $data.SetText([string]$payload.text, [System.Windows.Forms.TextDataFormat]::UnicodeText)
-}
 
 [string[]]$paths = @($payload.filePaths | ForEach-Object { [string]$_ })
 if ($paths.Count -eq 0) { throw 'FORMAT_FLOW_CLIPBOARD_FILES_MISSING' }
@@ -401,6 +409,13 @@ $data.SetFileDropList($files)
 $dropEffect = New-Object byte[] 4
 $dropEffect[0] = 5
 $data.SetData('Preferred DropEffect', $dropEffect)
+if ($includeText) {
+  $text = [string]$payload.text
+  $data.SetText($text, [System.Windows.Forms.TextDataFormat]::UnicodeText)
+  $data.SetData([System.Windows.Forms.DataFormats]::Text, $text)
+  $encodedText = [System.Net.WebUtility]::HtmlEncode($text).Replace([Environment]::NewLine, '<br>')
+  $data.SetData([System.Windows.Forms.DataFormats]::Html, "<html><body><div>$encodedText</div></body></html>")
+}
 
 $written = $false
 for ($attempt = 0; $attempt -lt 5 -and -not $written; $attempt++) {
@@ -478,7 +493,35 @@ export async function createTemporaryWordFromFiles(variableName: string, filePat
     uniquePaths.map((filePath) => path.basename(filePath)),
     warnings
   )
-  return runWordAutomation('files', attachment, uniquePaths)
+  const copiedPaths: string[] = []
+  try {
+    for (const [index, sourcePath] of uniquePaths.entries()) {
+      const destination = path.join(
+        getTemporaryWordRoot(),
+        `${attachment.id}__${String(index + 1).padStart(2, '0')}-${safeFileName(path.basename(sourcePath))}`
+      )
+      await fs.copyFile(sourcePath, destination)
+      copiedPaths.push(destination)
+    }
+
+    const primaryPath = copiedPaths[0]
+    const copiedAttachment: TemporaryWordAttachment = {
+      ...attachment,
+      path: primaryPath,
+      filePaths: copiedPaths,
+      fileName: uniquePaths.length === 1 ? path.basename(primaryPath) : `${attachment.id}__${uniquePaths.length}-files`
+    }
+    return {
+      ok: true,
+      message: uniquePaths.length === 1
+        ? `已保留原始附件格式：${path.basename(uniquePaths[0])}`
+        : `已保留 ${uniquePaths.length} 个原始附件格式。`,
+      attachment: copiedAttachment
+    }
+  } catch (error) {
+    await Promise.all(copiedPaths.map((filePath) => fs.rm(filePath, { force: true }).catch(() => undefined)))
+    return { ok: false, message: `保留原始附件失败：${errorMessage(error)}` }
+  }
 }
 
 export async function removeTemporaryWordAttachment(filePath: string): Promise<TemporaryWordCleanupResult> {
@@ -611,8 +654,8 @@ async function writeTemporaryWordClipboard(
 
 function fileWarning(filePath: string): string[] {
   const extension = path.extname(filePath).toLowerCase()
-  if (wordExtensions.has(extension) || imageExtensions.has(extension) || textExtensions.has(extension)) return []
-  return [`${path.basename(filePath)} 将作为嵌入对象放入 Word；部分 AI 网站可能无法解析其中的内容。`]
+  if (wordExtensions.has(extension) || imageExtensions.has(extension) || textExtensions.has(extension) || officeAttachmentExtensions.has(extension)) return []
+  return [`${path.basename(filePath)} 将以原始文件格式保留；目标 AI 网站需要支持该文件类型。`]
 }
 
 async function createAttachmentRecord(

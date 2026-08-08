@@ -74,6 +74,7 @@ import type {
   SkillImportAnalysis,
   SkillMetadata,
   TemporaryWordAttachment,
+  TemporaryWordCleanupResult,
   Workflow,
   WorkflowNode
 } from '@shared/types'
@@ -545,17 +546,18 @@ export function App(): JSX.Element {
     attachments: TemporaryWordAttachment[] = []
   ): Promise<void> {
     setNotice('正在复制到剪贴板...')
+    const attachmentPaths = attachments.flatMap((attachment) => attachment.filePaths || [attachment.path])
     const result = attachments.length > 0
       ? await formatFlow.copyTemporaryWordPayload({
           text,
-          filePaths: attachments.map((attachment) => attachment.path)
+          filePaths: attachmentPaths
         })
       : await writeClipboardText(text)
     if (!result.ok) {
       setNotice(result.message)
       throw new Error(result.message)
     }
-    setNotice(attachments.length > 0 ? `${success}；同时复制 ${attachments.length} 个附件` : success)
+    setNotice(attachments.length > 0 ? `${success}；同时复制 ${attachmentPaths.length} 个附件` : success)
   }
 
   if (!store) {
@@ -3744,7 +3746,7 @@ function SettingsPanel({
       </div>
 
       <div className="settings-card temporary-word-settings-card">
-        <PanelHeader title="临时 Word 文档" detail="管理自定义变量生成的临时附件" />
+        <PanelHeader title="临时附件" detail="Word 选区生成 Word；Excel、PPT 等本地文件保留原始格式" />
         <label>
           存放目录
           <input
@@ -5449,7 +5451,7 @@ function LauncherModal({
     create: () => Promise<{ ok: boolean; message: string; attachment?: TemporaryWordAttachment }>
   ): Promise<void> {
     setAttachmentBusy(label)
-    setAttachmentNotice('正在生成临时 Word 文档...')
+    setAttachmentNotice('正在准备临时附件...')
     try {
       const result = await create()
       setAttachmentNotice(result.message)
@@ -5463,22 +5465,24 @@ function LauncherModal({
             }
           : current
       )
-      if (previous && previous.path !== result.attachment.path) void formatFlow.removeTemporaryWord(previous.path)
+      if (previous && previous.path !== result.attachment.path) {
+        void Promise.all((previous.filePaths || [previous.path]).map((filePath) => formatFlow.removeTemporaryWord(filePath)))
+      }
       if (result.attachment.source === 'word-selection') {
         const openError = await formatFlow.openTemporaryWord(result.attachment.path)
         if (openError) setAttachmentNotice(`临时 Word 文档已生成，但打开最终文件失败：${openError}`)
       }
     } catch (error) {
-      setAttachmentNotice(`生成临时 Word 文档失败：${error instanceof Error ? error.message : String(error)}`)
+      setAttachmentNotice(`准备临时附件失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setAttachmentBusy('')
     }
   }
 
   async function removeVariableAttachment(label: string, attachment: TemporaryWordAttachment): Promise<void> {
-    const result = await formatFlow.removeTemporaryWord(attachment.path)
-    setAttachmentNotice(result.message)
-    if (!result.ok) return
+    const results = await Promise.all((attachment.filePaths || [attachment.path]).map((filePath) => formatFlow.removeTemporaryWord(filePath)))
+    setAttachmentNotice(results.map((result: TemporaryWordCleanupResult) => result.message).join('；'))
+    if (results.some((result: TemporaryWordCleanupResult) => !result.ok)) return
     setFillDraft((current) => {
       if (!current) return current
       const attachments = { ...current.attachments }
@@ -5488,7 +5492,9 @@ function LauncherModal({
   }
 
   async function copyAttachmentFiles(attachments: TemporaryWordAttachment[]): Promise<void> {
-    const result = await formatFlow.copyTemporaryWordFiles(attachments.map((attachment) => attachment.path))
+    const result = await formatFlow.copyTemporaryWordFiles(
+      attachments.flatMap((attachment) => attachment.filePaths || [attachment.path])
+    )
     setAttachmentNotice(result.message)
   }
 

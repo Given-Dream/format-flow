@@ -315,6 +315,7 @@ export type TemporaryWordAttachment = {
   id: string
   variableName: string
   path: string
+  filePaths?: string[]
   fileName: string
   createdAt: string
   expiresAt: string

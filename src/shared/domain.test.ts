@@ -37,6 +37,32 @@ describe('tag parsing and search', () => {
     expect(prompt.variables).toEqual(['source', '摘要草稿'])
   })
 
+  it('preserves preferred Skill references and defaults old prompts to none', () => {
+    const prompt = createPrompt({
+      id: 'prompt-preferred-skill',
+      title: '预设 Skill',
+      preferredSkillIds: ['skill-review', 'skill-format']
+    })
+    expect(normalizeStore({ prompts: [prompt] }).prompts[0].preferredSkillIds).toEqual(['skill-review', 'skill-format'])
+
+    const [jsonImported] = parsePromptImport(JSON.stringify({ prompts: [prompt] }), 'backup.json')
+    expect(jsonImported.preferredSkillIds).toEqual(['skill-review', 'skill-format'])
+
+    const markdown = [
+      '# Format Flow Prompts',
+      '',
+      '## 1. 预设 Skill',
+      '',
+      '- Preferred Skill IDs: skill-review, skill-format',
+      '',
+      '```text',
+      '请执行任务。',
+      '```'
+    ].join('\n')
+    const [markdownImported] = parsePromptImport(markdown, 'backup.md')
+    expect(markdownImported.preferredSkillIds).toEqual(['skill-review', 'skill-format'])
+  })
+
   it('repairs tags that were split from an existing spaced group tag', () => {
     const normalized = normalizeStore({
       prompts: [

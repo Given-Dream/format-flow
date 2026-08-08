@@ -63,6 +63,8 @@
     if (!text.trim()) return { ok: false, message: '任务内容为空' }
     const target = detectTarget()
     if (!target) return { ok: false, message: '当前页面不是 Format Flow 支持的 AI 页面。' }
+    const attachmentResult = await injectAttachments(target, payload && typeof payload === 'object' ? payload.attachments : [])
+    if (!attachmentResult.ok) return attachmentResult
     const input = findInput(target)
     if (!input) {
       return {
@@ -117,6 +119,40 @@
       if (candidate) return candidate
     }
     return null
+  }
+
+  function findFileInput(target) {
+    const selectors = target?.fileSelectors || ['input[type="file"]']
+    const candidates = selectors.flatMap((selector) => safeQueryAll(document, selector))
+      .filter((element) => element instanceof HTMLInputElement && element.type === 'file' && !element.disabled)
+    return candidates.at(-1) || null
+  }
+
+  async function injectAttachments(target, attachments) {
+    if (!Array.isArray(attachments) || attachments.length === 0) return { ok: true }
+    const input = findFileInput(target)
+    if (!input) {
+      return { ok: false, message: `未找到 ${target?.name || '当前 AI 页面'} 的文件上传控件。` }
+    }
+    try {
+      if (attachments.length > 1 && !input.multiple) input.multiple = true
+      const transfer = new DataTransfer()
+      for (const attachment of attachments) {
+        if (!attachment || typeof attachment.name !== 'string' || typeof attachment.data !== 'string') {
+          return { ok: false, message: '浏览器插件收到的附件数据无效。' }
+        }
+        const binary = atob(attachment.data)
+        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+        transfer.items.add(new File([bytes], attachment.name, { type: attachment.mimeType || 'application/octet-stream' }))
+      }
+      input.files = transfer.files
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }))
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
+      await sleep(200)
+      return { ok: true, count: attachments.length }
+    } catch (error) {
+      return { ok: false, message: `注入附件失败：${error?.message || String(error)}` }
+    }
   }
 
   function isUsable(element) {

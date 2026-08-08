@@ -18,7 +18,9 @@ import {
   copyTemporaryWordPayload,
   createTemporaryWordFromFiles,
   getTemporaryWordRoot,
+  getTemporaryWordScriptRoot,
   getTemporaryWordRetentionHours,
+  readTemporaryWordFilesForBrowser,
   removeTemporaryWordAttachment
 } from './temporary-word'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
@@ -337,15 +339,33 @@ function getBrowserBridgeStatus(): Record<string, unknown> {
   }
 }
 
-function queueBrowserBridgeTask(payload: Record<string, unknown>): { ok: boolean; message: string; status: Record<string, unknown> } {
+async function queueBrowserBridgeTask(payload: Record<string, unknown>): Promise<{ ok: boolean; message: string; status: Record<string, unknown> }> {
   const text = typeof payload.text === 'string' ? payload.text.trim() : ''
   if (!text) {
     return { ok: false, message: '任务内容为空', status: getBrowserBridgeStatus() }
   }
 
+  let taskPayload = payload
+  const attachmentPaths = Array.isArray(payload.attachmentPaths)
+    ? payload.attachmentPaths.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : []
+  if (attachmentPaths.length > 0) {
+    try {
+      const attachments = await readTemporaryWordFilesForBrowser(attachmentPaths)
+      const { attachmentPaths: _attachmentPaths, ...payloadWithoutPaths } = payload
+      taskPayload = { ...payloadWithoutPaths, attachments }
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : '无法读取要注入浏览器的附件。',
+        status: getBrowserBridgeStatus()
+      }
+    }
+  }
+
   browserBridgeTasks.push({
     id: `bridge_task_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-    payload,
+    payload: taskPayload,
     createdAt: Date.now()
   })
 
@@ -944,6 +964,7 @@ function getPaths(): AppPaths {
     browserExtensionDirectory: getBrowserExtensionDirectory(),
     dataDirectoryPreferencePath: getDataDirectoryPreferencePath(),
     temporaryWordDirectory: getTemporaryWordRoot(),
+    temporaryWordScriptDirectory: getTemporaryWordScriptRoot(),
     defaultSkillDirectories: defaultSkillDirectories(),
     defaultDataDirectories: getDefaultDataDirectories()
   }

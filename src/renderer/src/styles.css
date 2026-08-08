@@ -2566,6 +2566,155 @@ label {
   margin: 0;
 }
 
+.quick-delivery-stepper {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+}
+
+.quick-delivery-header,
+.quick-delivery-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.quick-delivery-header {
+  justify-content: space-between;
+}
+
+.quick-delivery-header > div,
+.quick-delivery-step > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.quick-delivery-header span,
+.quick-delivery-step small,
+.quick-delivery-modes small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.quick-delivery-memory {
+  flex: 0 0 auto;
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.quick-delivery-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quick-delivery-modes label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.quick-delivery-modes label.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.quick-delivery-modes input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+}
+
+.quick-delivery-modes label > span {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.quick-delivery-modes strong,
+.quick-delivery-modes small {
+  overflow-wrap: anywhere;
+}
+
+.quick-delivery-steps {
+  display: grid;
+  gap: 8px;
+}
+
+.quick-delivery-step,
+.quick-delivery-plugin-step {
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.quick-delivery-step.active,
+.quick-delivery-plugin-step {
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--accent-soft);
+}
+
+.quick-delivery-step.complete {
+  color: var(--muted);
+}
+
+.quick-delivery-step > b {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  color: var(--on-accent);
+  font-size: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.quick-delivery-step > button,
+.quick-delivery-plugin-step > button {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.quick-delivery-plugin-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .quick-delivery-modes {
+    grid-template-columns: 1fr;
+  }
+
+  .quick-delivery-step,
+  .quick-delivery-plugin-step {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .quick-delivery-step > button,
+  .quick-delivery-plugin-step > button {
+    margin-left: 34px;
+  }
+}
+
 .prompt-fill-preview textarea {
   min-height: 180px;
 }
@@ -2604,6 +2753,78 @@ label {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.prompt-preferred-skills {
+  display: grid;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-strong);
+}
+
+.prompt-preferred-skills > header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.prompt-preferred-skills > header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.prompt-preferred-skills > header span,
+.prompt-preferred-skills > header b {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.prompt-preferred-skill-list {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+  padding: 2px;
+}
+
+.prompt-preferred-skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.prompt-preferred-skill-option.active {
+  border-color: rgba(37, 99, 235, 0.45);
+  background: var(--accent-soft);
+}
+
+.prompt-preferred-skill-option input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.prompt-preferred-skill-option span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.prompt-preferred-skill-option small {
+  color: var(--muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .skill-transfer {
@@ -2742,6 +2963,39 @@ label {
   min-width: 0;
 }
 
+.skill-transfer-content {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.skill-transfer-name {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.skill-transfer-name:hover {
+  color: var(--accent);
+}
+
+.skill-transfer-option.library:not(.added) .skill-transfer-name {
+  color: var(--muted);
+}
+
+.skill-transfer-option.library.added .skill-transfer-name {
+  color: var(--ink);
+}
+
 .skill-transfer-option strong {
   overflow-wrap: anywhere;
 }
@@ -2774,6 +3028,30 @@ label {
   min-height: 64px;
   resize: vertical;
   font-size: 12px;
+}
+
+.quick-skill-detail {
+  display: grid;
+  gap: 12px;
+}
+
+.quick-skill-detail > strong {
+  font-size: 18px;
+}
+
+.quick-skill-detail p {
+  margin: 0;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.quick-skill-detail code {
+  display: block;
+  margin-top: 4px;
+  padding: 8px;
+  color: var(--ink);
+  background: var(--panel-soft);
+  overflow-wrap: anywhere;
 }
 
 .directory-editor {

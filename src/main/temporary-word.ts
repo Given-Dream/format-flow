@@ -17,10 +17,12 @@ const execFile = promisify(execFileCallback)
 const defaultRetentionHours = 24
 const legacyTemporaryWordFilePattern = /^FFV-[A-F0-9]{6}__.+\.[A-Z0-9]+$/i
 const temporaryAttachmentDirectoryPattern = /^FFV-[A-F0-9]{6}$/i
+const temporaryAutomationFilePattern = /^\.format-flow-(clipboard|word-automation)-[A-F0-9]{12}\.(ps1|json)$/i
 let configuredRootDirectory = ''
 let configuredRetentionHours = defaultRetentionHours
 const maximumFileBytes = 100 * 1024 * 1024
 const maximumTotalBytes = 250 * 1024 * 1024
+const maximumBrowserTransferBytes = 50 * 1024 * 1024
 const wordExtensions = new Set(['.doc', '.docx', '.docm', '.rtf', '.odt'])
 const imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tif', '.tiff', '.webp'])
 const officeAttachmentExtensions = new Set([
@@ -449,6 +451,12 @@ export function getTemporaryWordRoot(): string {
   return configuredRootDirectory || path.join(os.tmpdir(), 'Format Flow', 'word-attachments')
 }
 
+export function getTemporaryWordScriptRoot(): string {
+  if (!configuredRootDirectory) return path.join(os.tmpdir(), 'Format Flow', 'automation-scripts')
+  const root = getTemporaryWordRoot()
+  return path.join(path.dirname(root), `${path.basename(root)}-scripts`)
+}
+
 export function getTemporaryWordRetentionHours(): number {
   return configuredRetentionHours
 }
@@ -546,12 +554,15 @@ export async function cleanupTemporaryWordAttachments(
   maxAgeMilliseconds = configuredRetentionHours * 60 * 60 * 1000
 ): Promise<TemporaryWordCleanupResult> {
   const root = getTemporaryWordRoot()
-  let entries
+  let entries: import('node:fs').Dirent[] = []
   try {
     entries = await fs.readdir(root, { withFileTypes: true })
   } catch (error) {
-    if (isNodeError(error) && error.code === 'ENOENT') return { ok: true, message: '没有需要清理的临时 Word 文档。', removed: 0 }
-    return { ok: false, message: `读取临时文档目录失败：${errorMessage(error)}`, removed: 0 }
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      entries = []
+    } else {
+      return { ok: false, message: `读取临时文档目录失败：${errorMessage(error)}`, removed: 0 }
+    }
   }
 
   const cutoff = Date.now() - Math.max(0, maxAgeMilliseconds)
@@ -570,7 +581,13 @@ export async function cleanupTemporaryWordAttachments(
       // Locked attachments are retried during the next cleanup pass.
     }
   }
-  return { ok: true, message: removed > 0 ? `已清理 ${removed} 组过期临时附件。` : '没有需要清理的过期附件。', removed }
+  const scriptCleanup = await cleanupTemporaryWordScripts(maxAgeMilliseconds)
+  const totalRemoved = removed + scriptCleanup.removed
+  return {
+    ok: scriptCleanup.ok,
+    message: totalRemoved > 0 ? `已清理 ${totalRemoved} 组过期临时文件。` : '没有需要清理的过期临时文件。',
+    removed: totalRemoved
+  }
 }
 
 export async function copyTemporaryWordFiles(filePaths: string[]): Promise<ExportResult> {
@@ -584,6 +601,33 @@ export async function copyTemporaryWordPayload(text: string, filePaths: string[]
   const validated = validateTemporaryWordFiles(filePaths)
   if (!validated.ok) return validated.result
   return writeTemporaryWordClipboard(text, validated.filePaths, true)
+}
+
+export type TemporaryWordBrowserFile = {
+  name: string
+  mimeType: string
+  data: string
+}
+
+export async function readTemporaryWordFilesForBrowser(filePaths: string[]): Promise<TemporaryWordBrowserFile[]> {
+  const validated = validateTemporaryWordFiles(filePaths)
+  if (!validated.ok) throw new Error(validated.result.message)
+
+  let totalBytes = 0
+  const files: TemporaryWordBrowserFile[] = []
+  for (const filePath of validated.filePaths) {
+    const stat = await fs.stat(filePath)
+    totalBytes += stat.size
+    if (totalBytes > maximumBrowserTransferBytes) {
+      throw new Error('通过浏览器插件传输的附件总大小不能超过 50 MB，请使用复制附件或逐个复制。')
+    }
+    files.push({
+      name: path.basename(filePath),
+      mimeType: mimeTypeForFileName(filePath),
+      data: (await fs.readFile(filePath)).toString('base64')
+    })
+  }
+  return files
 }
 
 function validateTemporaryWordFiles(
@@ -605,12 +649,35 @@ function validateTemporaryWordFiles(
   return { ok: true, filePaths: requestedPaths }
 }
 
+function mimeTypeForFileName(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase()
+  const mimeTypes: Record<string, string> = {
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain',
+    '.md': 'text/markdown',
+    '.csv': 'text/csv',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp'
+  }
+  return mimeTypes[extension] || 'application/octet-stream'
+}
+
 async function writeTemporaryWordClipboard(
   text: string,
   managedPaths: string[],
   includeText: boolean
 ): Promise<ExportResult> {
-  const root = getTemporaryWordRoot()
+  const root = getTemporaryWordScriptRoot()
   const token = randomBytes(6).toString('hex')
   const scriptPath = path.join(root, `.format-flow-clipboard-${token}.ps1`)
   const payloadPath = path.join(root, `.format-flow-clipboard-${token}.json`)
@@ -707,12 +774,13 @@ async function runWordAutomation(
   filePaths: string[],
   preferredWindowHandle = '0'
 ): Promise<TemporaryWordResult> {
-  const root = getTemporaryWordRoot()
-  const scriptPath = path.join(root, '.format-flow-word-automation.ps1')
-  await fs.writeFile(scriptPath, `\uFEFF${wordAutomationScript}\r\n`, 'utf8')
+  const scriptRoot = getTemporaryWordScriptRoot()
+  const scriptPath = path.join(scriptRoot, `.format-flow-word-automation-${randomBytes(6).toString('hex')}.ps1`)
   const filesBase64 = Buffer.from(JSON.stringify(filePaths), 'utf8').toString('base64')
 
   try {
+    await fs.mkdir(scriptRoot, { recursive: true })
+    await fs.writeFile(scriptPath, `\uFEFF${wordAutomationScript}\r\n`, 'utf8')
     await execFile(
       'powershell.exe',
       [
@@ -748,7 +816,36 @@ async function runWordAutomation(
     await fs.rm(attachment.path, { force: true }).catch(() => undefined)
     await removeEmptyManagedDirectory(path.dirname(attachment.path))
     return { ok: false, message: wordAutomationErrorMessage(error) }
+  } finally {
+    await fs.rm(scriptPath, { force: true }).catch(() => undefined)
   }
+}
+
+async function cleanupTemporaryWordScripts(maxAgeMilliseconds: number): Promise<TemporaryWordCleanupResult> {
+  const root = getTemporaryWordScriptRoot()
+  let entries: import('node:fs').Dirent[] = []
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true })
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return { ok: true, message: '没有需要清理的临时脚本。', removed: 0 }
+    return { ok: false, message: `读取临时脚本目录失败：${errorMessage(error)}`, removed: 0 }
+  }
+
+  const cutoff = Date.now() - Math.max(0, maxAgeMilliseconds)
+  let removed = 0
+  for (const entry of entries) {
+    if (!entry.isFile() || !temporaryAutomationFilePattern.test(entry.name)) continue
+    const targetPath = path.join(root, entry.name)
+    try {
+      const stat = await fs.stat(targetPath)
+      if (stat.mtimeMs > cutoff) continue
+      await fs.rm(targetPath, { force: true })
+      removed += 1
+    } catch {
+      // Locked scripts are retried during the next cleanup pass.
+    }
+  }
+  return { ok: true, message: removed > 0 ? `已清理 ${removed} 个临时脚本。` : '没有需要清理的临时脚本。', removed }
 }
 
 function wordAutomationErrorMessage(error: unknown): string {

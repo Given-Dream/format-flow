@@ -88,6 +88,7 @@ export function createPrompt(overrides: Partial<PromptItem> = {}): PromptItem {
     content: '任务目标：\n\n输入材料：\n\n输出要求：\n',
     tags: [],
     variables: [],
+    preferredSkillIds: [],
     version: 1,
     favorite: false,
     createdAt: timestamp,
@@ -220,6 +221,11 @@ function promptItemsFromRecords(candidates: unknown[], sourceName: string): Prom
       content: promptContent,
       tags: Array.isArray(item.tags) ? item.tags.map(String).map(normalizeTag).filter(Boolean) : ['imported'],
       variables: Array.isArray(item.variables) ? item.variables.map(String) : extractPromptVariables(promptContent),
+      preferredSkillIds: Array.isArray(item.preferredSkillIds)
+        ? item.preferredSkillIds.map(String).filter(Boolean)
+        : Array.isArray(item.preselectedSkillIds)
+          ? item.preselectedSkillIds.map(String).filter(Boolean)
+          : [],
       version: numberOr(item.version, 1),
       favorite: Boolean(item.favorite),
       createdAt: stringOr(item.createdAt, nowIso()),
@@ -261,6 +267,7 @@ function parsePromptMarkdownExport(content: string, sourceName: string): PromptI
     const summary = markdownMetaValue(section, 'Summary') || trimSummary(firstPlainParagraph(promptContent) || 'Imported prompt')
     const tags = parseExportedList(markdownMetaValue(section, 'Tags')).map(normalizeTag).filter(Boolean)
     const variables = parseExportedList(markdownMetaValue(section, 'Variables'))
+    const preferredSkillIds = parseExportedList(markdownMetaValue(section, 'Preferred Skill IDs'))
     const versionValue = Number.parseInt(markdownMetaValue(section, 'Version') || '', 10)
     const updatedAt = markdownMetaValue(section, 'Updated')
 
@@ -271,6 +278,7 @@ function parsePromptMarkdownExport(content: string, sourceName: string): PromptI
         content: promptContent,
         tags,
         variables: variables.length > 0 ? variables : extractPromptVariables(promptContent),
+        preferredSkillIds,
         version: Number.isFinite(versionValue) ? versionValue : 1,
         updatedAt: updatedAt || nowIso()
       })
@@ -425,7 +433,13 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
   if (!value) return base
   const rawPrompts = Array.isArray(value.prompts) ? value.prompts : base.prompts
   const groups = normalizeGroups(value.groups, rawPrompts)
-  const prompts = repairSplitGroupTags(rawPrompts, groups.prompts)
+  const prompts = repairSplitGroupTags(
+    rawPrompts.map((prompt) => ({
+      ...prompt,
+      preferredSkillIds: Array.isArray(prompt.preferredSkillIds) ? prompt.preferredSkillIds.map(String).filter(Boolean) : []
+    })),
+    groups.prompts
+  )
 
   return {
     version: STORE_VERSION,

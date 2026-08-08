@@ -81,6 +81,7 @@ import type {
 
 type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'learning' | 'settings'
 type LauncherMode = 'prompt' | 'skill' | 'workflow'
+type QuickDeliveryMode = 'copy-all' | 'copy-one-by-one' | 'browser-plugin'
 type QuickCallType = 'prompt' | 'skill' | 'workflow'
 type WorkflowPickerKind = 'workflow' | 'prompt' | 'skill' | 'mcp'
 type LearningMethod = 'conversation-review' | 'engineering-cybernetics'
@@ -179,6 +180,11 @@ type PromptFillDraft = {
   values: Record<string, string>
   attachments: Record<string, TemporaryWordAttachment>
   skillCall?: PromptSkillCallSelection
+  copyText?: (
+    filledContent: string,
+    values: Record<string, string>,
+    skillCall?: PromptSkillCallSelection
+  ) => Promise<void>
   submit: (
     filledContent: string,
     values: Record<string, string>,
@@ -268,6 +274,7 @@ const quickLauncherQueryStoragePrefix = 'format-flow-quick-launcher-query'
 const quickLauncherFillStorageKey = 'format-flow-quick-launcher-fill-history'
 const quickLauncherSkillCallStorageKey = 'format-flow-quick-launcher-skill-history'
 const quickLauncherLastCallStorageKey = 'format-flow-quick-launcher-last-call'
+const quickLauncherDeliveryModeStorageKey = 'format-flow-quick-launcher-delivery-mode'
 
 function FormatFlowMark(): JSX.Element {
   return <img className="brand-mark" src="./format-flow.svg" alt="Format Flow" />
@@ -623,7 +630,7 @@ export function App(): JSX.Element {
           </div>
         </header>
         <div className="workspace-content">
-          {activeTab === 'prompts' && <PromptPanel store={store} commit={commit} setNotice={setNotice} />}
+          {activeTab === 'prompts' && <PromptPanel store={store} skills={skills} commit={commit} setNotice={setNotice} />}
           {activeTab === 'skills' && (
             <SkillPanel
               store={store}
@@ -670,6 +677,9 @@ export function App(): JSX.Element {
           close={() => setLauncherOpen(false)}
           setActiveTab={setActiveTab}
           pasteQuickCall={pasteQuickCall}
+          setNotice={setNotice}
+          pluginStatus={pluginStatus}
+          requestPluginStatus={requestPluginStatus}
         />
       )}
     </div>
@@ -678,10 +688,12 @@ export function App(): JSX.Element {
 
 function PromptPanel({
   store,
+  skills,
   commit,
   setNotice
 }: {
   store: AppStore
+  skills: SkillItem[]
   commit: (store: AppStore) => Promise<void>
   setNotice: (notice: string) => void
 }): JSX.Element {
@@ -1241,6 +1253,7 @@ function PromptPanel({
       {editing && (
         <PromptEditorModal
           prompt={editing}
+          skills={skills}
           close={() => setEditing(null)}
           save={savePrompt}
           deletePrompt={deletePrompt}
@@ -3748,7 +3761,7 @@ function SettingsPanel({
       </div>
 
       <div className="settings-card temporary-word-settings-card">
-        <PanelHeader title="临时附件" detail="Word 选区生成 Word；Excel、PPT 等本地文件保留原始格式" />
+        <PanelHeader title="临时附件" detail="附件与 PowerShell 自动化脚本分开存放，避免误删；Excel、PPT 等本地文件保留原始格式" />
         <label>
           存放目录
           <input
@@ -3779,8 +3792,11 @@ function SettingsPanel({
             onChange={(event) => setTemporaryWordRetentionHours(Number(event.target.value))}
           />
         </label>
-        <div className="path-box">
+        <div className="path-box temporary-path-box">
+          <span>附件目录</span>
           <code title={paths?.temporaryWordDirectory}>{paths?.temporaryWordDirectory || '尚未加载'}</code>
+          <span>脚本目录</span>
+          <code title={paths?.temporaryWordScriptDirectory}>{paths?.temporaryWordScriptDirectory || '尚未加载'}</code>
         </div>
         <div className="inline-actions wrap">
           <button className="primary-action" type="button" onClick={() => void saveTemporaryWordSettings()}>
@@ -4355,11 +4371,13 @@ function GithubSkillPreviewModal({
 
 function PromptEditorModal({
   prompt,
+  skills,
   close,
   save,
   deletePrompt
 }: {
   prompt: PromptItem
+  skills: SkillItem[]
   close: () => void
   save: (prompt: PromptItem) => Promise<void>
   deletePrompt: (prompt: PromptItem) => Promise<void>
@@ -4370,10 +4388,15 @@ function PromptEditorModal({
   const [replaceText, setReplaceText] = useState('')
   const [caseSensitive, setCaseSensitive] = useState(false)
   const [searchMessage, setSearchMessage] = useState('')
+  const [preferredSkillQuery, setPreferredSkillQuery] = useState('')
   const contentRef = useRef<HTMLTextAreaElement | null>(null)
   const findInputRef = useRef<HTMLInputElement | null>(null)
   const pendingSelection = useRef<{ start: number; end: number } | null>(null)
   const matches = useMemo(() => findTextMatches(draft.content, findText, caseSensitive), [draft.content, findText, caseSensitive])
+  const preferredSkillIds = draft.preferredSkillIds || []
+  const visiblePreferredSkills = skills
+    .filter((skill) => matchesTextAndTags(skill, preferredSkillQuery, []))
+    .sort((left, right) => left.title.localeCompare(right.title))
 
   useEffect(() => {
     const selection = pendingSelection.current
@@ -4483,6 +4506,49 @@ function PromptEditorModal({
         分类标签
         <input value={tagText} onChange={(event) => setTagText(event.target.value)} placeholder="codex, review" />
       </label>
+      <section className="prompt-preferred-skills" aria-label="预先使用的 Skill">
+        <header>
+          <div>
+            <strong>预先使用的 Skill</strong>
+            <span>快捷调用时自动打开 Skill 开关并放入右侧。</span>
+          </div>
+          <b>{preferredSkillIds.length} 个</b>
+        </header>
+        <input
+          value={preferredSkillQuery}
+          placeholder="检索 Skill 名称、摘要或标签"
+          onChange={(event) => setPreferredSkillQuery(event.target.value)}
+        />
+        <div className="prompt-preferred-skill-list">
+          {visiblePreferredSkills.length > 0 ? (
+            visiblePreferredSkills.map((skill) => {
+              const checked = preferredSkillIds.includes(skill.id)
+              return (
+                <label className={checked ? 'prompt-preferred-skill-option active' : 'prompt-preferred-skill-option'} key={skill.id}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        preferredSkillIds: event.target.checked
+                          ? Array.from(new Set([...preferredSkillIds, skill.id]))
+                          : preferredSkillIds.filter((id) => id !== skill.id)
+                      })
+                    }
+                  />
+                  <span>
+                    <strong>{skill.title || skill.name}</strong>
+                    <small>{skill.summary}</small>
+                  </span>
+                </label>
+              )
+            })
+          ) : (
+            <span className="muted">没有匹配的 Skill。</span>
+          )}
+        </div>
+      </section>
       <section className="prompt-find-replace" aria-label={'\u6b63\u6587\u67e5\u627e\u548c\u66ff\u6362'}>
         <div className="prompt-find-row">
           <label>
@@ -4556,6 +4622,26 @@ function PromptEditorModal({
         <button className="danger" type="button" onClick={() => void deletePrompt(draft)}>
           删除
         </button>
+      </div>
+    </Modal>
+  )
+}
+
+function QuickSkillDetailModal({ skill, close }: { skill: SkillItem; close: () => void }): JSX.Element {
+  return (
+    <Modal title={`Skill 详情：${skill.title || skill.name}`} close={close}>
+      <div className="quick-skill-detail">
+        <strong>{skill.title || skill.name}</strong>
+        <p>{skill.summary || '暂无摘要'}</p>
+        <TagRow tags={skill.tags} />
+        <div>
+          <span className="muted">显式触发条件</span>
+          <p>{skillInvocationCondition(skill)}</p>
+        </div>
+        <div>
+          <span className="muted">本地路径</span>
+          <code>{skill.path}</code>
+        </div>
       </div>
     </Modal>
   )
@@ -5369,7 +5455,10 @@ function LauncherModal({
   skills,
   close,
   setActiveTab,
-  pasteQuickCall
+  pasteQuickCall,
+  setNotice,
+  pluginStatus,
+  requestPluginStatus
 }: {
   store: AppStore
   skills: SkillItem[]
@@ -5380,19 +5469,26 @@ function LauncherModal({
     success: string,
     attachments?: TemporaryWordAttachment[]
   ) => Promise<void>
+  setNotice: (notice: string) => void
+  pluginStatus: AiPluginStatus
+  requestPluginStatus: () => void
 }): JSX.Element {
   const [mode, setMode] = useState<LauncherMode>(() => readStoredQuickLauncherMode())
   const [query, setQuery] = useState(() => readStoredQuickLauncherQuery(mode))
   const [selectedGroup, setSelectedGroup] = useState(() => readStoredQuickLauncherGroup(mode))
   const [fillDraft, setFillDraft] = useState<PromptFillDraft | null>(null)
+  const [deliveryMode, setDeliveryMode] = useState<QuickDeliveryMode>(() => readStoredQuickLauncherDeliveryMode())
+  const [deliveryStep, setDeliveryStep] = useState<1 | 2>(1)
   const [attachmentBusy, setAttachmentBusy] = useState('')
   const [attachmentNotice, setAttachmentNotice] = useState('')
+  const [attachmentCopyIndex, setAttachmentCopyIndex] = useState(0)
   const [skillTransferLibraryQuery, setSkillTransferLibraryQuery] = useState('')
   const [skillTransferLibraryTag, setSkillTransferLibraryTag] = useState('all')
   const [skillTransferCandidateIds, setSkillTransferCandidateIds] = useState<string[]>([])
   const [skillTransferLeftIds, setSkillTransferLeftIds] = useState<string[]>([])
   const [skillTransferRightIds, setSkillTransferRightIds] = useState<string[]>([])
   const [skillTransferLibraryIds, setSkillTransferLibraryIds] = useState<string[]>([])
+  const [skillDetail, setSkillDetail] = useState<SkillItem | null>(null)
   const callablePrompts = store.prompts.filter((prompt) => prompt.content.trim())
   const quickGroupTags =
     mode === 'prompt'
@@ -5432,7 +5528,6 @@ function LauncherModal({
     : []
   const skillLibraryItems = fillDraft?.skillCall
     ? skills
-        .filter((skill) => !skillTransferCandidateIds.includes(skill.id) && !fillDraft.skillCall?.selectedIds.includes(skill.id))
         .filter((skill) => matchesTextAndTags(skill, skillTransferLibraryQuery, []))
         .filter(
           (skill) =>
@@ -5449,6 +5544,8 @@ function LauncherModal({
   const fillReady = fillDraft
     ? fillSlots.every((slot) => fillDraft.values[slot.label]?.trim() || fillDraft.attachments[slot.label])
     : false
+  const fillAttachments = fillDraft ? Object.values(fillDraft.attachments) : []
+  const fillAttachmentPaths = fillAttachments.flatMap((attachment) => attachment.filePaths || [attachment.path])
 
   useEffect(() => {
     if (selectedGroup !== 'all' && !groupOptions.some((group) => group.tag === selectedGroup)) {
@@ -5463,6 +5560,17 @@ function LauncherModal({
   useEffect(() => {
     writeStoredQuickLauncherQuery(mode, query)
   }, [mode, query])
+
+  useEffect(() => {
+    setAttachmentCopyIndex(0)
+    setDeliveryStep(1)
+  }, [fillDraft?.title])
+
+  function chooseDeliveryMode(nextMode: QuickDeliveryMode): void {
+    setDeliveryMode(nextMode)
+    setDeliveryStep(1)
+    writeStoredQuickLauncherDeliveryMode(nextMode)
+  }
   function selectLauncherMode(nextMode: LauncherMode): void {
     setMode(nextMode)
     setSelectedGroup(readStoredQuickLauncherGroup(nextMode))
@@ -5492,7 +5600,11 @@ function LauncherModal({
 
   function addSelectedSkillsToCandidates(): void {
     if (!fillDraft?.skillCall || skillTransferLibraryIds.length === 0) return
-    setSkillTransferCandidateIds((current) => Array.from(new Set([...current, ...skillTransferLibraryIds])))
+    setSkillTransferCandidateIds((current) =>
+      Array.from(new Set([...current, ...skillTransferLibraryIds])).filter(
+        (id) => !fillDraft.skillCall?.selectedIds.includes(id)
+      )
+    )
     setSkillTransferLibraryIds([])
   }
 
@@ -5568,11 +5680,87 @@ function LauncherModal({
     })
   }
 
+  async function copyFilledContentStep(): Promise<void> {
+    if (!fillDraft || !fillReady) return
+    if (!fillDraft.copyText) {
+      setNotice('当前内容不支持步骤化复制。')
+      return
+    }
+    try {
+      await fillDraft.copyText(filledPromptContent, fillDraft.values, fillDraft.skillCall)
+      if (fillAttachmentPaths.length === 0) {
+        close()
+        return
+      }
+      setDeliveryStep(2)
+      setNotice('已复制填充后内容，请继续完成附件步骤。')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setAttachmentNotice(message)
+      setNotice(message)
+    }
+  }
+
   async function copyAttachmentFiles(attachments: TemporaryWordAttachment[]): Promise<void> {
     const result = await formatFlow.copyTemporaryWordFiles(
       attachments.flatMap((attachment) => attachment.filePaths || [attachment.path])
     )
     setAttachmentNotice(result.message)
+    setNotice(result.message)
+    if (result.ok) close()
+  }
+
+  async function copyNextAttachment(): Promise<void> {
+    const nextPath = fillAttachmentPaths[attachmentCopyIndex]
+    if (!nextPath) return
+    const result = await formatFlow.copyTemporaryWordFiles([nextPath])
+    if (!result.ok) {
+      setAttachmentNotice(result.message)
+      setNotice(result.message)
+      return
+    }
+    const nextIndex = attachmentCopyIndex + 1
+    if (nextIndex >= fillAttachmentPaths.length) {
+      setAttachmentNotice(`已逐个复制全部 ${fillAttachmentPaths.length} 个附件。`)
+      setNotice(`已逐个复制全部 ${fillAttachmentPaths.length} 个附件。`)
+      setAttachmentCopyIndex(nextIndex)
+      close()
+      return
+    }
+    setAttachmentCopyIndex(nextIndex)
+    setAttachmentNotice(`已复制第 ${nextIndex} 个附件，请粘贴后继续。`)
+    setNotice(`已复制第 ${nextIndex} 个附件，请粘贴后继续。`)
+  }
+
+  async function fillThroughBrowserPlugin(): Promise<void> {
+    if (!fillDraft || !fillReady) return
+    if (!pluginStatus.connected) {
+      requestPluginStatus()
+      setAttachmentNotice('浏览器插件未连接，请先打开已安装插件的 AI 网页。')
+      setNotice('浏览器插件未连接，请先打开已安装插件的 AI 网页。')
+      return
+    }
+    const result = await queueBrowserPluginTask({
+      text: filledPromptContent,
+      attachmentPaths: fillAttachmentPaths,
+      submit: false
+    })
+    if (!result.ok) {
+      setAttachmentNotice(result.message)
+      setNotice(result.message)
+      return
+    }
+    setAttachmentNotice(
+      fillAttachmentPaths.length > 0
+        ? `已通过浏览器插件填充文本和 ${fillAttachmentPaths.length} 个附件。`
+        : '已通过浏览器插件填充文本。'
+    )
+    setNotice(
+      fillAttachmentPaths.length > 0
+        ? `已通过浏览器插件填充文本和 ${fillAttachmentPaths.length} 个附件。`
+        : '已通过浏览器插件填充文本。'
+    )
+    close()
   }
 
   function callPrompt(prompt: PromptItem): void {
@@ -5581,13 +5769,19 @@ function LauncherModal({
     const suggestedSkills = suggestSkillsForPrompt(prompt.content, skills)
     const rememberedSkillCall = readStoredQuickLauncherSkillSelection(historyKey)
     const rememberedIds = rememberedSkillCall?.selectedIds.filter((id) => skills.some((skill) => skill.id === id)) || []
-    const suggestedIds = suggestedSkills.map((skill) => skill.id).filter((id) => !rememberedIds.includes(id))
+    const preferredIds = (prompt.preferredSkillIds || []).filter((id) => skills.some((skill) => skill.id === id))
+    const selectedIds = preferredIds.length > 0 ? preferredIds : rememberedIds
+    const suggestedIds = suggestedSkills.map((skill) => skill.id).filter((id) => !selectedIds.includes(id))
     setSkillTransferLibraryQuery('')
     setSkillTransferLibraryTag('all')
     setSkillTransferCandidateIds(suggestedIds)
     setSkillTransferLeftIds([])
     setSkillTransferRightIds([])
     setSkillTransferLibraryIds([])
+    const copyPromptText = async (filledContent: string, values: Record<string, string>, skillCall?: PromptSkillCallSelection): Promise<void> => {
+      rememberQuickCall(prompt.id, prompt.title, values, skillCall)
+      await pasteQuickCall(filledContent, `已复制提示词文本：${prompt.title}`)
+    }
     setFillDraft({
       title: `填写提示词：${prompt.title}`,
       content: prompt.content,
@@ -5595,15 +5789,15 @@ function LauncherModal({
       historyKey,
       values: readStoredQuickLauncherFillValues(historyKey, slots),
       attachments: {},
-      skillCall: {
-        enabled: false,
-        selectedIds: rememberedIds,
-        suggestedIds: suggestedSkills.map((skill) => skill.id),
+        skillCall: {
+          enabled: preferredIds.length > 0,
+          selectedIds,
+          suggestedIds,
         timings: rememberedSkillCall?.timings || {}
       },
+      copyText: copyPromptText,
       submit: (filledContent, values, attachments = [], skillCall) => {
-        rememberQuickCall(prompt.id, prompt.title, values, skillCall)
-        void pasteQuickCall(filledContent, `已复制提示词文本：${prompt.title}`)
+        void copyPromptText(filledContent, values, skillCall)
           .then(() => {
             if (attachments.length === 0) close()
           })
@@ -5616,8 +5810,12 @@ function LauncherModal({
     const content = formatSkillReferenceText(skill)
     const slots = extractPromptFillSlots(content)
     const historyKey = quickLauncherHistoryKey(mode, skill.id)
+    const copySkillText = async (filledContent: string, values: Record<string, string>): Promise<void> => {
+      rememberQuickCall(skill.id, skill.title || skill.name, values)
+      await pasteQuickCall(filledContent, `已复制 Skill 名称和本地路径：${skill.title}`)
+    }
     const copySkill = (filledContent: string, attachments: TemporaryWordAttachment[] = []) =>
-      pasteQuickCall(filledContent, `已复制 Skill 名称和本地路径：${skill.title}`)
+      copySkillText(filledContent, {})
         .then(() => {
           if (attachments.length === 0) close()
         })
@@ -5630,9 +5828,11 @@ function LauncherModal({
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
         attachments: {},
+        copyText: copySkillText,
         submit: (filledContent, values, attachments = []) => {
-          rememberQuickCall(skill.id, skill.title || skill.name, values)
-          void copySkill(filledContent, attachments)
+          void copySkillText(filledContent, values).then(() => {
+            if (attachments.length === 0) close()
+          })
         }
       })
       return
@@ -5648,8 +5848,13 @@ function LauncherModal({
       : `调用工作流：${workflow.title}\n${workflow.description}`
     const slots = extractPromptFillSlots(task)
     const historyKey = quickLauncherHistoryKey(mode, workflow.id)
+    const copyWorkflowText = async (filledTask: string, values: Record<string, string>): Promise<void> => {
+      rememberQuickCall(workflow.id, workflow.title, values)
+      await pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务文本：${workflow.title}`)
+      setActiveTab('runner')
+    }
     const copyWorkflowTask = (filledTask: string, attachments: TemporaryWordAttachment[] = []) =>
-      pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务文本：${workflow.title}`)
+      copyWorkflowText(filledTask, {})
         .then(() => {
           setActiveTab('runner')
           if (attachments.length === 0) close()
@@ -5663,9 +5868,11 @@ function LauncherModal({
         historyKey,
         values: readStoredQuickLauncherFillValues(historyKey, slots),
         attachments: {},
+        copyText: copyWorkflowText,
         submit: (filledTask, values, attachments = []) => {
-          rememberQuickCall(workflow.id, workflow.title, values)
-          void copyWorkflowTask(filledTask, attachments)
+          void copyWorkflowText(filledTask, values).then(() => {
+            if (attachments.length === 0) close()
+          })
         }
       })
       return
@@ -5687,7 +5894,8 @@ function LauncherModal({
 
   if (fillDraft) {
     return (
-      <Modal title={fillDraft.title} close={close} className="prompt-fill-modal">
+      <>
+        <Modal title={fillDraft.title} close={close} className="prompt-fill-modal">
         <div className="prompt-fill-layout">
           <div className="prompt-fill-fields">
             {fillSlots.map((slot) => {
@@ -5821,7 +6029,7 @@ function LauncherModal({
                         availableSkillCallItems.map((skill) => {
                           const suggested = fillDraft.skillCall?.suggestedIds.includes(skill.id)
                           return (
-                            <label className="skill-transfer-option" key={skill.id}>
+                            <div className="skill-transfer-option" key={skill.id}>
                               <input
                                 type="checkbox"
                                 checked={skillTransferLeftIds.includes(skill.id)}
@@ -5831,12 +6039,13 @@ function LauncherModal({
                                   )
                                 }
                               />
-                              <span>
-                                <strong>{skill.title || skill.name}</strong>
+                              <div className="skill-transfer-content">
+                                <button className="skill-transfer-name" type="button" onClick={() => setSkillDetail(skill)}>
+                                  {skill.title || skill.name}
+                                </button>
                                 {suggested && <em>正文匹配</em>}
-                                <small>{skillInvocationCondition(skill)}</small>
-                              </span>
-                            </label>
+                              </div>
+                            </div>
                           )
                         })
                       ) : (
@@ -5867,23 +6076,27 @@ function LauncherModal({
                       </div>
                       <div className="skill-transfer-library-list">
                         {skillLibraryItems.length > 0 ? (
-                          skillLibraryItems.map((skill) => (
-                            <label className="skill-transfer-option" key={skill.id}>
-                              <input
-                                type="checkbox"
-                                checked={skillTransferLibraryIds.includes(skill.id)}
-                                onChange={(event) =>
-                                  setSkillTransferLibraryIds((current) =>
-                                    event.target.checked ? [...current, skill.id] : current.filter((id) => id !== skill.id)
-                                  )
-                                }
-                              />
-                              <span>
-                                <strong>{skill.title || skill.name}</strong>
-                                <small>{skillInvocationCondition(skill)}</small>
-                              </span>
-                            </label>
-                          ))
+                          skillLibraryItems.map((skill) => {
+                            const added =
+                              skillTransferCandidateIds.includes(skill.id) || fillDraft.skillCall?.selectedIds.includes(skill.id)
+                            return (
+                              <div className={added ? 'skill-transfer-option library added' : 'skill-transfer-option library'} key={skill.id}>
+                                <input
+                                  type="checkbox"
+                                  disabled={added}
+                                  checked={skillTransferLibraryIds.includes(skill.id)}
+                                  onChange={(event) =>
+                                    setSkillTransferLibraryIds((current) =>
+                                      event.target.checked ? [...current, skill.id] : current.filter((id) => id !== skill.id)
+                                    )
+                                  }
+                                />
+                                <button className="skill-transfer-name" type="button" onClick={() => setSkillDetail(skill)}>
+                                  {skill.title || skill.name}
+                                </button>
+                              </div>
+                            )
+                          })
                         ) : (
                           <span className="muted">没有匹配的索引 Skill。</span>
                         )}
@@ -5934,10 +6147,9 @@ function LauncherModal({
                                   )
                                 }
                               />
-                              <span>
-                                <strong>{skill.title || skill.name}</strong>
-                                <small>{skillInvocationCondition(skill)}</small>
-                              </span>
+                              <button className="skill-transfer-name" type="button" onClick={() => setSkillDetail(skill)}>
+                                {skill.title || skill.name}
+                              </button>
                             </label>
                             <label className="skill-transfer-timing">
                               调用时机
@@ -5958,31 +6170,113 @@ function LauncherModal({
               )}
             </section>
           )}
+          <section className="quick-delivery-stepper" aria-label="快捷调用交付方式">
+            <header className="quick-delivery-header">
+              <div>
+                <strong>选择交付方式</strong>
+                <span>选择会被记住，下次快捷调用自动沿用。</span>
+              </div>
+              <span className="quick-delivery-memory">已记忆</span>
+            </header>
+            <div className="quick-delivery-modes" role="radiogroup" aria-label="快捷调用交付方式">
+              <label className={deliveryMode === 'copy-all' ? 'active' : ''}>
+                <input
+                  type="radio"
+                  name="quick-delivery-mode"
+                  checked={deliveryMode === 'copy-all'}
+                  onChange={() => chooseDeliveryMode('copy-all')}
+                />
+                <span>
+                  <strong>复制文本 + 全部附件</strong>
+                  <small>1. 复制填充后内容　2. 一次复制全部附件</small>
+                </span>
+              </label>
+              <label className={deliveryMode === 'copy-one-by-one' ? 'active' : ''}>
+                <input
+                  type="radio"
+                  name="quick-delivery-mode"
+                  checked={deliveryMode === 'copy-one-by-one'}
+                  onChange={() => chooseDeliveryMode('copy-one-by-one')}
+                />
+                <span>
+                  <strong>复制文本 + 逐个附件</strong>
+                  <small>1. 复制填充后内容　2. 逐个复制直到最后</small>
+                </span>
+              </label>
+              <label className={deliveryMode === 'browser-plugin' ? 'active' : ''}>
+                <input
+                  type="radio"
+                  name="quick-delivery-mode"
+                  checked={deliveryMode === 'browser-plugin'}
+                  onChange={() => chooseDeliveryMode('browser-plugin')}
+                />
+                <span>
+                  <strong>浏览器插件填充</strong>
+                  <small>通过浏览器插件注入文本和全部附件，不自动发送</small>
+                </span>
+              </label>
+            </div>
+            <div className="quick-delivery-steps">
+              {deliveryMode !== 'browser-plugin' ? (
+                <>
+                  <div className={deliveryStep === 1 ? 'quick-delivery-step active' : 'quick-delivery-step complete'}>
+                    <b>1</b>
+                    <span>复制填充后内容</span>
+                    {deliveryStep === 1 ? (
+                      <button className="primary-action" type="button" disabled={!fillReady} onClick={() => void copyFilledContentStep()}>
+                        复制填充后内容
+                      </button>
+                    ) : (
+                      <small>已完成</small>
+                    )}
+                  </div>
+                  <div className={deliveryStep === 2 ? 'quick-delivery-step active' : 'quick-delivery-step'}>
+                    <b>2</b>
+                    <span>{deliveryMode === 'copy-all' ? '一次复制全部附件' : '逐个复制附件'}</span>
+                    {fillAttachmentPaths.length > 0 ? (
+                      deliveryMode === 'copy-all' ? (
+                        <button type="button" disabled={deliveryStep !== 2} onClick={() => void copyAttachmentFiles(fillAttachments)}>
+                          一次复制全部附件
+                        </button>
+                      ) : (
+                        <button type="button" disabled={deliveryStep !== 2} onClick={() => void copyNextAttachment()}>
+                          {attachmentCopyIndex < fillAttachmentPaths.length
+                            ? attachmentCopyIndex === 0
+                              ? `逐个复制 1/${fillAttachmentPaths.length}`
+                              : `复制下一个 ${attachmentCopyIndex + 1}/${fillAttachmentPaths.length}`
+                            : '附件复制完成'}
+                        </button>
+                      )
+                    ) : (
+                      <small>没有附件，步骤自动跳过</small>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="quick-delivery-plugin-step">
+                  <span>注入文本和附件</span>
+                  <button
+                    className="primary-action"
+                    type="button"
+                    disabled={!fillReady}
+                    title={pluginStatus.connected ? '不自动发送' : '浏览器插件未连接'}
+                    onClick={() => void fillThroughBrowserPlugin()}
+                  >
+                    浏览器插件填充
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
           <div className="inline-actions">
-            <button
-              className="primary-action"
-              type="button"
-              disabled={!fillReady}
-              onClick={() =>
-                fillDraft.submit(filledPromptContent, fillDraft.values, Object.values(fillDraft.attachments), fillDraft.skillCall)
-              }
-            >
-              {Object.keys(fillDraft.attachments).length > 0 ? '复制填充后文本' : fillDraft.submitLabel}
-            </button>
-            {Object.keys(fillDraft.attachments).length > 0 && (
-              <button
-                type="button"
-                onClick={() => void copyAttachmentFiles(Object.values(fillDraft.attachments))}
-              >
-                复制附件
-              </button>
-            )}
             <button type="button" onClick={() => setFillDraft(null)}>
               {fillDraft.cancelLabel || '返回列表'}
             </button>
           </div>
         </div>
-      </Modal>
+        </Modal>
+        {skillDetail && <QuickSkillDetailModal skill={skillDetail} close={() => setSkillDetail(null)} />}
+      </>
     )
   }
 
@@ -7038,6 +7332,21 @@ function readStoredQuickLauncherMode(): LauncherMode {
   return storedMode === 'skill' || storedMode === 'workflow' || storedMode === 'prompt' ? storedMode : 'prompt'
 }
 
+function readStoredQuickLauncherDeliveryMode(): QuickDeliveryMode {
+  const stored = localStorage.getItem(quickLauncherDeliveryModeStorageKey)
+  return stored === 'copy-all' || stored === 'copy-one-by-one' || stored === 'browser-plugin'
+    ? stored
+    : 'copy-all'
+}
+
+function writeStoredQuickLauncherDeliveryMode(mode: QuickDeliveryMode): void {
+  try {
+    localStorage.setItem(quickLauncherDeliveryModeStorageKey, mode)
+  } catch {
+    // Browser storage can be unavailable in private or restricted contexts.
+  }
+}
+
 function readStoredQuickLauncherGroup(mode: LauncherMode): string {
   return localStorage.getItem(`${quickLauncherGroupStoragePrefix}-${mode}`) || 'all'
 }
@@ -7404,6 +7713,7 @@ function formatPromptsExport(prompts: PromptItem[], format: ExportFormat): strin
         `Summary: ${prompt.summary || ''}`,
         `Tags: ${formatTags(prompt.tags)}`,
         `Variables: ${formatTags(prompt.variables)}`,
+        `Preferred Skill IDs: ${formatTags(prompt.preferredSkillIds || [])}`,
         `Version: ${prompt.version}`,
         `Updated: ${prompt.updatedAt}`,
         '',
@@ -7428,6 +7738,7 @@ function formatPromptsExport(prompts: PromptItem[], format: ExportFormat): strin
       `- Summary: ${prompt.summary || ''}`,
       `- Tags: ${formatTags(prompt.tags)}`,
       `- Variables: ${formatTags(prompt.variables)}`,
+      `- Preferred Skill IDs: ${formatTags(prompt.preferredSkillIds || [])}`,
       `- Version: ${prompt.version}`,
       `- Updated: ${prompt.updatedAt}`,
       '',

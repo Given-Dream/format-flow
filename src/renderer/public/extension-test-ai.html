@@ -21,6 +21,7 @@
       }
 
       textarea,
+      input[type="file"],
       #test-ai-output {
         width: 100%;
         min-height: 160px;
@@ -44,6 +45,10 @@
       <label>
         AI 输入框
         <textarea id="test-ai-input" placeholder="插件会把 Format Flow 任务注入到这里"></textarea>
+      </label>
+      <label>
+        Attachments
+        <input id="test-ai-files" type="file" multiple />
       </label>
       <section>
         <h2>AI 输出</h2>

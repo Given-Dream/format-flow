@@ -7,6 +7,7 @@ export type PromptItem = {
   content: string
   tags: string[]
   variables: string[]
+  preferredSkillIds: string[]
   version: number
   favorite: boolean
   createdAt: string
@@ -263,6 +264,7 @@ export type AppPaths = {
   browserExtensionDirectory?: string
   dataDirectoryPreferencePath?: string
   temporaryWordDirectory?: string
+  temporaryWordScriptDirectory?: string
   defaultSkillDirectories: string[]
   defaultDataDirectories: Record<DataDirectoryKind, string>
 }

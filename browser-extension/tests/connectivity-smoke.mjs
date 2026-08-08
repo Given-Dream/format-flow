@@ -105,7 +105,14 @@ async function main() {
         window.postMessage({
           source: 'format-flow',
           type: 'FORMAT_FLOW_SEND_TASK',
-          payload: { text: 'Format Flow connectivity smoke task' }
+          payload: {
+            text: 'Format Flow connectivity smoke task',
+            submit: false,
+            attachments: [
+              { name: 'one.txt', mimeType: 'text/plain', data: 'b25l' },
+              { name: 'two.txt', mimeType: 'text/plain', data: 'dHdv' }
+            ]
+          }
         }, window.location.origin)
         setTimeout(finish, 5000)
       }))()`
@@ -115,8 +122,10 @@ async function main() {
 
     const injectedText = await evalIn(cdp, ai, `document.querySelector('#test-ai-input')?.value || ''`)
     assert.equal(injectedText, 'Format Flow connectivity smoke task')
+    const injectedFiles = await evalIn(cdp, ai, `Array.from(document.querySelector('#test-ai-files')?.files || []).map((file) => [file.name, file.type, file.size])`)
+    assert.deepEqual(injectedFiles, [['one.txt', 'text/plain', 3], ['two.txt', 'text/plain', 3]])
     const autoSentOutput = await evalIn(cdp, ai, `document.querySelector('#test-ai-output')?.textContent || ''`)
-    assert.ok(autoSentOutput.includes('插件连通性测试已经收到任务'), `task should auto-send; output=${autoSentOutput}`)
+    assert.ok(!autoSentOutput.includes('插件连通性测试已经收到任务'), `submit=false should not auto-send; output=${autoSentOutput}`)
 
     const outputPromise = evalIn(
       cdp,

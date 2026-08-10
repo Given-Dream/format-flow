@@ -2,11 +2,11 @@
 
 Format Flow 是一个面向长期使用的 Windows 本地 Prompt、Skill、工作流与 MCP 管理器。它将分散在文件、Codex 目录和浏览器中的 AI 工作资产集中管理，并通过快捷调用、变量填充、顺序运行、导入导出和备份形成可复用的个人工作流。
 
-当前版本：`v0.1.62`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
+当前版本：`v0.1.63`，`v0.1.38` 以下历史版本无密钥，若使用新版请联系作者。
 
 ## 下载与安装
 
-- [下载 Format Flow v0.1.62 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.62/Format-Flow-Setup-0.1.62.exe)
+- [下载 Format Flow v0.1.63 Windows 安装包](https://github.com/Given-Dream/format-flow/releases/download/v0.1.63/Format-Flow-Setup-0.1.63.exe)
 - [查看最新 Release](https://github.com/Given-Dream/format-flow/releases/latest)
 - 支持 Windows 10/11 x64，下载后直接运行安装程序。
 - Release 同时提供 `.blockmap` 和 `latest.yml`，便于分发安装包及其版本元数据。
@@ -58,6 +58,7 @@ README 已按当前代码重写，不再沿用 `v0.1.1` 时仅覆盖基础功能
 | `v0.1.60` | 快捷调用增加可记忆的交付步骤器：支持复制文本与全部附件、复制文本后逐个复制附件，或通过浏览器插件注入文本与全部附件；每一步完成后再进入下一步，流程结束自动关闭快捷窗口。 |
 | `v0.1.61` | 修复浏览器插件附件注入：先定位当前对话输入框，再等待并选择对应的文件上传控件；注入后校验网页实际接收的附件数量，并将失败原因反馈给桌面应用。 |
 | `v0.1.62` | 修复提示词编辑弹窗正文区域被底部控件截断的问题；正文恢复独立滚动和可编辑状态，窄窗口下也能完整查看和修改内容。 |
+| `v0.1.63` | 新建提示词时先打开编辑器并立即聚焦；后台分类文件保存期间显示明确的进行中进度条，保存失败会恢复原数据。 |
 
 ## 功能展示
 

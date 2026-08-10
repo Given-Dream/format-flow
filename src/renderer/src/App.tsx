@@ -630,7 +630,15 @@ export function App(): JSX.Element {
           </div>
         </header>
         <div className="workspace-content">
-          {activeTab === 'prompts' && <PromptPanel store={store} skills={skills} commit={commit} setNotice={setNotice} />}
+          {activeTab === 'prompts' && (
+            <PromptPanel
+              store={store}
+              skills={skills}
+              commit={commit}
+              restoreStore={(nextStore) => setStore(nextStore)}
+              setNotice={setNotice}
+            />
+          )}
           {activeTab === 'skills' && (
             <SkillPanel
               store={store}
@@ -690,16 +698,19 @@ function PromptPanel({
   store,
   skills,
   commit,
+  restoreStore,
   setNotice
 }: {
   store: AppStore
   skills: SkillItem[]
   commit: (store: AppStore) => Promise<void>
+  restoreStore: (store: AppStore) => void
   setNotice: (notice: string) => void
 }): JSX.Element {
   const [query, setQuery] = useState('')
   const [selectedGroup, setSelectedGroup] = useState('all')
   const [editing, setEditing] = useState<PromptItem | null>(null)
+  const [creatingPrompt, setCreatingPrompt] = useState(false)
   const [githubQuery, setGithubQuery] = useState('codex prompt')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
@@ -751,15 +762,24 @@ function PromptPanel({
   }
 
   async function createNewPrompt(): Promise<void> {
+    if (creatingPrompt) return
+    const previousStore = store
+    setCreatingPrompt(true)
     try {
       const prompt = createPrompt({
         tags: activePromptGroupTag ? [activePromptGroupTag] : []
       })
-      await commit({ ...store, prompts: [prompt, ...store.prompts] })
-      setNotice(activePromptGroupTag ? `已在“${activePromptGroupTag}”分组中新建提示词，请编辑后保存` : '已创建新提示词，请编辑后保存')
+      // Open the editor before the categorized-file write completes. Saving can
+      // touch many files and should not make the modal feel unresponsive.
       setEditing(prompt)
+      setNotice(activePromptGroupTag ? `已在“${activePromptGroupTag}”分组中新建提示词，请编辑后保存` : '已创建新提示词，请编辑后保存')
+      await commit({ ...store, prompts: [prompt, ...store.prompts] })
     } catch (error) {
+      restoreStore(previousStore)
+      setEditing(null)
       setNotice(error instanceof Error ? `新建提示词失败：${error.message}` : '新建提示词失败')
+    } finally {
+      setCreatingPrompt(false)
     }
   }
 
@@ -1165,8 +1185,8 @@ function PromptPanel({
           <div className="group-selection-note">
             当前分组：{selectedGroup === 'all' ? '全部提示词' : groupNameForTag(promptGroups, selectedGroup)}
           </div>
-          <button className="primary-action" type="button" onClick={() => void createNewPrompt()}>
-            新建提示词
+          <button className="primary-action" type="button" disabled={creatingPrompt} onClick={() => void createNewPrompt()}>
+            {creatingPrompt ? '正在保存...' : '新建提示词'}
           </button>
         </div>
 
@@ -1254,6 +1274,7 @@ function PromptPanel({
         <PromptEditorModal
           prompt={editing}
           skills={skills}
+          saving={creatingPrompt}
           close={() => setEditing(null)}
           save={savePrompt}
           deletePrompt={deletePrompt}
@@ -4372,12 +4393,14 @@ function GithubSkillPreviewModal({
 function PromptEditorModal({
   prompt,
   skills,
+  saving,
   close,
   save,
   deletePrompt
 }: {
   prompt: PromptItem
   skills: SkillItem[]
+  saving: boolean
   close: () => void
   save: (prompt: PromptItem) => Promise<void>
   deletePrompt: (prompt: PromptItem) => Promise<void>
@@ -4389,6 +4412,7 @@ function PromptEditorModal({
   const [caseSensitive, setCaseSensitive] = useState(false)
   const [searchMessage, setSearchMessage] = useState('')
   const [preferredSkillQuery, setPreferredSkillQuery] = useState('')
+  const titleRef = useRef<HTMLInputElement | null>(null)
   const contentRef = useRef<HTMLTextAreaElement | null>(null)
   const findInputRef = useRef<HTMLInputElement | null>(null)
   const pendingSelection = useRef<{ start: number; end: number } | null>(null)
@@ -4397,6 +4421,11 @@ function PromptEditorModal({
   const visiblePreferredSkills = skills
     .filter((skill) => matchesTextAndTags(skill, preferredSkillQuery, []))
     .sort((left, right) => left.title.localeCompare(right.title))
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => titleRef.current?.focus())
+    return () => cancelAnimationFrame(frame)
+  }, [])
 
   useEffect(() => {
     const selection = pendingSelection.current
@@ -4495,8 +4524,20 @@ function PromptEditorModal({
   return (
     <Modal title="编辑提示词" close={close} className="prompt-editor-modal">
       <label>
+        {saving && (
+          <div className="prompt-save-progress" role="status" aria-live="polite">
+            <div className="prompt-save-progress-head">
+              <strong>正在后台保存新提示词</strong>
+              <span>处理中</span>
+            </div>
+            <div className="prompt-save-progress-track" aria-hidden="true">
+              <span />
+            </div>
+            <small>可以继续编辑，保存完成后会保留到当前分组。</small>
+          </div>
+        )}
         标题
-        <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+        <input ref={titleRef} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
       </label>
       <label>
         摘要

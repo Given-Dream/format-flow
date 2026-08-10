@@ -1000,6 +1000,57 @@ label {
   overflow: auto;
 }
 
+.prompt-save-progress {
+  display: grid;
+  gap: 8px;
+  padding: 11px 13px;
+  border: 1px solid rgba(37, 99, 235, 0.24);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.prompt-save-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.prompt-save-progress-head span,
+.prompt-save-progress small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.prompt-save-progress-track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.14);
+}
+
+.prompt-save-progress-track span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 38%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: prompt-save-progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes prompt-save-progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(330%);
+  }
+}
+
 .manual-skill-modal .modal-body {
   grid-template-rows: auto auto auto auto minmax(280px, 1fr) auto auto;
   overflow: auto;

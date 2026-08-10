@@ -984,7 +984,7 @@ label {
 }
 
 .prompt-editor-modal .modal-body {
-  grid-template-rows: auto auto auto auto minmax(280px, 1fr) auto;
+  grid-template-rows: auto auto auto auto auto minmax(280px, 1fr) auto;
   overflow: auto;
 }
 

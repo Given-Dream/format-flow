@@ -146,6 +146,20 @@ FunctionEnd
 
 !macro customInstall
   !ifndef BUILD_UNINSTALLER
+    ; Electron Builder preserves existing shortcuts during upgrades. Recreate
+    ; them when present so an installation moved between Windows profiles does
+    ; not retain an obsolete executable target.
+    ${If} ${FileExists} "$newStartMenuLink"
+      CreateShortCut "$newStartMenuLink" "$appExe" "" "$appExe" 0 "" "" "${APP_DESCRIPTION}"
+      ClearErrors
+      WinShell::SetLnkAUMI "$newStartMenuLink" "${APP_ID}"
+    ${EndIf}
+    ${If} ${FileExists} "$newDesktopLink"
+      CreateShortCut "$newDesktopLink" "$appExe" "" "$appExe" 0 "" "" "${APP_DESCRIPTION}"
+      ClearErrors
+      WinShell::SetLnkAUMI "$newDesktopLink" "${APP_ID}"
+    ${EndIf}
+
     ${If} $FormatFlowBrowserExtensionSetup == "1"
     ${AndIfNot} ${Silent}
     ${AndIf} ${FileExists} "$INSTDIR\resources\browser-extension\manifest.json"

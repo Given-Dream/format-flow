@@ -342,6 +342,28 @@ const tabs: Array<{ id: TabId; label: string; description: string }> = [
 
 const activeTabStorageKey = 'format-flow-active-tab'
 
+type StoreMutation = (current: AppStore) => AppStore
+type CommitStore = (mutation: StoreMutation) => Promise<void>
+
+function useExclusiveAsyncAction<Action extends string>() {
+  const lockRef = useRef(false)
+  const [busyAction, setBusyAction] = useState<Action | null>(null)
+
+  async function run(action: Action, task: () => Promise<void>): Promise<void> {
+    if (lockRef.current) return
+    lockRef.current = true
+    setBusyAction(action)
+    try {
+      await task()
+    } finally {
+      lockRef.current = false
+      setBusyAction(null)
+    }
+  }
+
+  return { busy: busyAction !== null, busyAction, run }
+}
+
 export function App(): JSX.Element {
   const [store, setStore] = useState<AppStore | null>(null)
   const [paths, setPaths] = useState<AppPaths | null>(null)
@@ -355,6 +377,11 @@ export function App(): JSX.Element {
   const [isBusy, setIsBusy] = useState(true)
   const [launcherOpen, setLauncherOpen] = useState(false)
   const lastLauncherOpenRef = useRef(0)
+  const committedStoreRef = useRef<AppStore | null>(null)
+  const optimisticStoreRef = useRef<AppStore | null>(null)
+  const commitTailRef = useRef<Promise<void>>(Promise.resolve())
+  const commitGenerationRef = useRef(0)
+  const pendingCommitsRef = useRef(0)
   const [pluginStatus, setPluginStatus] = useState<AiPluginStatus>({
     connected: false,
     message: '浏览器插件未连接'
@@ -400,6 +427,8 @@ export function App(): JSX.Element {
         const scanned = await formatFlow.scanSkills(skillDirectories)
 
         if (!cancelled) {
+          committedStoreRef.current = normalizedStore
+          optimisticStoreRef.current = normalizedStore
           setStore(normalizedStore)
           setPaths(loadedPaths)
           setRawSkills(scanned)
@@ -533,15 +562,44 @@ export function App(): JSX.Element {
     setActiveTabState(tab)
   }
 
-  async function commit(nextStore: AppStore): Promise<void> {
-    const normalized = normalizeStore(nextStore)
+  async function commit(mutation: StoreMutation): Promise<void> {
+    const current = optimisticStoreRef.current
+    if (!current) throw new Error('应用数据尚未载入')
+    const normalized = normalizeStore(mutation(current))
+    const generation = commitGenerationRef.current
+    optimisticStoreRef.current = normalized
     setStore(normalized)
+    pendingCommitsRef.current += 1
+    setIsBusy(true)
+    const task = commitTailRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (generation !== commitGenerationRef.current) {
+          throw new Error('前一项保存失败，本次排队修改已取消，请重试')
+        }
+        try {
+          const saved = await formatFlow.saveStore(normalized)
+          committedStoreRef.current = saved
+        } catch (error) {
+          if (generation === commitGenerationRef.current) {
+            commitGenerationRef.current += 1
+            if (committedStoreRef.current) {
+              optimisticStoreRef.current = committedStoreRef.current
+              setStore(committedStoreRef.current)
+            }
+          }
+          throw error
+        }
+      })
+    commitTailRef.current = task.catch(() => undefined)
     try {
-      const saved = await formatFlow.saveStore(normalized)
-      setStore(saved)
+      await task
     } catch (error) {
       setNotice(`保存失败：${error instanceof Error ? error.message : '无法写入数据文件'}`)
       throw error
+    } finally {
+      pendingCommitsRef.current -= 1
+      if (pendingCommitsRef.current === 0) setIsBusy(false)
     }
   }
 
@@ -635,7 +693,6 @@ export function App(): JSX.Element {
               store={store}
               skills={skills}
               commit={commit}
-              restoreStore={(nextStore) => setStore(nextStore)}
               setNotice={setNotice}
             />
           )}
@@ -698,19 +755,16 @@ function PromptPanel({
   store,
   skills,
   commit,
-  restoreStore,
   setNotice
 }: {
   store: AppStore
   skills: SkillItem[]
-  commit: (store: AppStore) => Promise<void>
-  restoreStore: (store: AppStore) => void
+  commit: CommitStore
   setNotice: (notice: string) => void
 }): JSX.Element {
   const [query, setQuery] = useState('')
   const [selectedGroup, setSelectedGroup] = useState('all')
   const [editing, setEditing] = useState<PromptItem | null>(null)
-  const [creatingPrompt, setCreatingPrompt] = useState(false)
   const [githubQuery, setGithubQuery] = useState('codex prompt')
   const [githubResults, setGithubResults] = useState<GithubSearchResult[]>([])
   const [githubBusy, setGithubBusy] = useState(false)
@@ -741,62 +795,51 @@ function PromptPanel({
 
   async function savePrompt(prompt: PromptItem): Promise<void> {
     try {
-      const nextPrompt = {
-        ...prompt,
-        variables: extractVariables(prompt.content),
-        version: prompt.version + 1,
-        updatedAt: nowIso()
-      }
-      const exists = store.prompts.some((item) => item.id === nextPrompt.id)
-      await commit({
-        ...store,
-        prompts: exists
-          ? store.prompts.map((item) => (item.id === nextPrompt.id ? nextPrompt : item))
-          : [nextPrompt, ...store.prompts]
+      let savedTitle = prompt.title
+      await commit((current) => {
+        const existing = current.prompts.find((item) => item.id === prompt.id)
+        const nextPrompt = {
+          ...prompt,
+          variables: extractVariables(prompt.content),
+          version: existing ? existing.version + 1 : Math.max(1, prompt.version),
+          updatedAt: nowIso()
+        }
+        savedTitle = nextPrompt.title
+        return {
+          ...current,
+          prompts: existing
+            ? current.prompts.map((item) => (item.id === nextPrompt.id ? nextPrompt : item))
+            : [nextPrompt, ...current.prompts]
+        }
       })
-      setNotice(`已保存提示词：${nextPrompt.title}`)
+      setNotice(`已保存提示词：${savedTitle}`)
       setEditing(null)
     } catch (error) {
       setNotice(error instanceof Error ? `提示词保存失败：${error.message}` : '提示词保存失败')
     }
   }
 
-  async function createNewPrompt(): Promise<void> {
-    if (creatingPrompt) return
-    const previousStore = store
-    setCreatingPrompt(true)
-    try {
-      const prompt = createPrompt({
-        tags: activePromptGroupTag ? [activePromptGroupTag] : []
-      })
-      // Open the editor before the categorized-file write completes. Saving can
-      // touch many files and should not make the modal feel unresponsive.
-      setEditing(prompt)
-      setNotice(activePromptGroupTag ? `已在“${activePromptGroupTag}”分组中新建提示词，请编辑后保存` : '已创建新提示词，请编辑后保存')
-      await commit({ ...store, prompts: [prompt, ...store.prompts] })
-    } catch (error) {
-      restoreStore(previousStore)
-      setEditing(null)
-      setNotice(error instanceof Error ? `新建提示词失败：${error.message}` : '新建提示词失败')
-    } finally {
-      setCreatingPrompt(false)
-    }
+  function createNewPrompt(): void {
+    const prompt = createPrompt({
+      tags: activePromptGroupTag ? [activePromptGroupTag] : []
+    })
+    setEditing(prompt)
+    setNotice(activePromptGroupTag ? `正在“${activePromptGroupTag}”分组中新建提示词；保存后才会创建` : '正在新建提示词；保存后才会创建')
   }
 
   async function deletePrompt(prompt: PromptItem): Promise<void> {
     if (!confirmDestructiveAction(`确认删除提示词“${prompt.title}”？`, ['此操作会从提示词库移除该条目。'])) return
-    const nextRecoveries = store.tagRecoveries
-      .map((recovery) => {
-        const promptTags = { ...recovery.promptTags }
-        delete promptTags[prompt.id]
-        return { ...recovery, promptTags }
-      })
-      .filter((recovery) => Object.keys(recovery.promptTags).length > 0)
-    await commit({
-      ...store,
-      prompts: store.prompts.filter((item) => item.id !== prompt.id),
-      tagRecoveries: nextRecoveries
-    })
+    await commit((current) => ({
+      ...current,
+      prompts: current.prompts.filter((item) => item.id !== prompt.id),
+      tagRecoveries: current.tagRecoveries
+        .map((recovery) => {
+          const promptTags = { ...recovery.promptTags }
+          delete promptTags[prompt.id]
+          return { ...recovery, promptTags }
+        })
+        .filter((recovery) => Object.keys(recovery.promptTags).length > 0)
+    }))
     if (promptClipboard?.id === prompt.id) setPromptClipboard(null)
     setEditing(null)
     setNotice(`已删除提示词：${prompt.title}`)
@@ -812,42 +855,44 @@ function PromptPanel({
       setNotice('请先在提示词卡片中点击“复制条目”')
       return
     }
-    const title = uniquePromptCopyTitle(promptClipboard.title, store.prompts)
-    const copiedPrompt = clonePromptToGroup(promptClipboard, group.tag, title)
-    await commit({ ...store, prompts: [copiedPrompt, ...store.prompts] })
+    await commit((current) => {
+      const title = uniquePromptCopyTitle(promptClipboard.title, current.prompts)
+      const copiedPrompt = clonePromptToGroup(promptClipboard, group.tag, title)
+      return { ...current, prompts: [copiedPrompt, ...current.prompts] }
+    })
     setSelectedGroup(group.tag)
     setNotice(`已将提示词条目“${promptClipboard.title}”粘贴到“${group.name}”分组`)
   }
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
-    await commit({ ...store, groups: { ...store.groups, prompts: groups } })
+    await commit((current) => ({ ...current, groups: { ...current.groups, prompts: groups } }))
   }
 
   async function createGroup(parent: GroupItem | null, group: GroupItem, groups: GroupItem[]): Promise<void> {
-    await commit({
-      ...store,
+    await commit((current) => ({
+      ...current,
       prompts: parent
-        ? store.prompts.map((prompt) =>
+        ? current.prompts.map((prompt) =>
             prompt.tags.includes(parent.tag)
               ? { ...prompt, tags: mergeTags(prompt.tags, [group.tag]), updatedAt: nowIso() }
               : prompt
           )
-        : store.prompts,
-      groups: { ...store.groups, prompts: groups }
-    })
+        : current.prompts,
+      groups: { ...current.groups, prompts: groups }
+    }))
   }
 
   async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
     const nextTag = renamedGroup.tag
-    await commit({
-      ...store,
-      prompts: store.prompts.map((prompt) => ({
+    await commit((current) => ({
+      ...current,
+      prompts: current.prompts.map((prompt) => ({
         ...prompt,
         tags: replaceTag(prompt.tags, group.tag, nextTag),
         updatedAt: prompt.tags.includes(group.tag) ? nowIso() : prompt.updatedAt
       })),
-      groups: { ...store.groups, prompts: groups }
-    })
+      groups: { ...current.groups, prompts: groups }
+    }))
     if (selectedGroup === group.tag) setSelectedGroup(nextTag)
   }
 
@@ -862,60 +907,70 @@ function PromptPanel({
     ) {
       return
     }
-    const promptTags = Object.fromEntries(
-      store.prompts
-        .filter((prompt) => prompt.tags.some((tag) => tags.includes(tag)))
-        .map((prompt) => [prompt.id, prompt.tags.filter((tag) => tags.includes(tag))])
-    )
-    const recovery = Object.keys(promptTags).length > 0
-      ? {
-          id: newId('tag-recovery'),
-          resource: 'prompts' as const,
-          group,
-          promptTags,
-          deletedAt: nowIso()
-        }
-      : null
-    await commit({
-      ...store,
-      prompts: store.prompts.map((prompt) => ({
-        ...prompt,
-        tags: prompt.tags.filter((tag) => !tags.includes(tag)),
-        updatedAt: nowIso()
-      })),
-      groups: {
-        ...store.groups,
-        prompts: removeGroupById(store.groups.prompts, group.id)
-      },
-      tagRecoveries: recovery ? [...store.tagRecoveries, recovery] : store.tagRecoveries
+    await commit((current) => {
+      const promptTags = Object.fromEntries(
+        current.prompts
+          .filter((prompt) => prompt.tags.some((tag) => tags.includes(tag)))
+          .map((prompt) => [prompt.id, prompt.tags.filter((tag) => tags.includes(tag))])
+      )
+      const recovery = Object.keys(promptTags).length > 0
+        ? {
+            id: newId('tag-recovery'),
+            resource: 'prompts' as const,
+            group,
+            promptTags,
+            deletedAt: nowIso()
+          }
+        : null
+      return {
+        ...current,
+        prompts: current.prompts.map((prompt) => ({
+          ...prompt,
+          tags: prompt.tags.filter((tag) => !tags.includes(tag)),
+          updatedAt: nowIso()
+        })),
+        groups: {
+          ...current.groups,
+          prompts: removeGroupById(current.groups.prompts, group.id)
+        },
+        tagRecoveries: recovery ? [...current.tagRecoveries, recovery] : current.tagRecoveries
+      }
     })
     if (tags.includes(selectedGroup)) setSelectedGroup('all')
   }
 
   async function restoreTagRecovery(recoveryId: string): Promise<void> {
     if (tagRecoveryBusy) return
-    const recovery = store.tagRecoveries.find((item) => item.id === recoveryId)
-    if (!recovery) return
+    if (!store.tagRecoveries.some((item) => item.id === recoveryId)) return
     setTagRecoveryBusy(true)
     try {
-      const remapped = remapRecoveryGroup(recovery.group, store.groups.prompts)
-      const existingPromptIds = new Set(store.prompts.map((prompt) => prompt.id))
-      const restoredCount = Object.keys(recovery.promptTags).filter((id) => existingPromptIds.has(id)).length
-      const nextPrompts = store.prompts.map((prompt) => {
-        const originalTags = recovery.promptTags[prompt.id]
-        if (!originalTags) return prompt
-        const mappedTags = originalTags.map((tag) => remapped.tagMap[normalizeTag(tag)] || tag)
-        return { ...prompt, tags: mergeTags(prompt.tags, mappedTags), updatedAt: nowIso() }
+      let restoredTag = ''
+      let restoredName = ''
+      let restoredCount = 0
+      const updatedAt = nowIso()
+      await commit((current) => {
+        const recovery = current.tagRecoveries.find((item) => item.id === recoveryId)
+        if (!recovery) return current
+        const remapped = remapRecoveryGroup(recovery.group, current.groups.prompts)
+        const existingPromptIds = new Set(current.prompts.map((prompt) => prompt.id))
+        restoredTag = remapped.group.tag
+        restoredName = recovery.group.name
+        restoredCount = Object.keys(recovery.promptTags).filter((id) => existingPromptIds.has(id)).length
+        return {
+          ...current,
+          prompts: current.prompts.map((prompt) => {
+            const originalTags = recovery.promptTags[prompt.id]
+            if (!originalTags) return prompt
+            const mappedTags = originalTags.map((tag) => remapped.tagMap[normalizeTag(tag)] || tag)
+            return { ...prompt, tags: mergeTags(prompt.tags, mappedTags), updatedAt }
+          }),
+          groups: { ...current.groups, prompts: [...current.groups.prompts, remapped.group] },
+          tagRecoveries: current.tagRecoveries.filter((item) => item.id !== recoveryId)
+        }
       })
-      await commit({
-        ...store,
-        prompts: nextPrompts,
-        groups: { ...store.groups, prompts: [...store.groups.prompts, remapped.group] },
-        tagRecoveries: store.tagRecoveries.filter((item) => item.id !== recoveryId)
-      })
-      setSelectedGroup(remapped.group.tag)
+      setSelectedGroup(restoredTag)
       setTagRecoveryOpen(false)
-      setNotice(`已恢复标签“${recovery.group.name}”，恢复 ${restoredCount} 个仍存在的提示词；已删除的提示词无法恢复`)
+      setNotice(`已恢复标签“${restoredName}”，恢复 ${restoredCount} 个仍存在的提示词；已删除的提示词无法恢复`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '恢复标签失败')
     } finally {
@@ -929,11 +984,11 @@ function PromptPanel({
     target?: { tag: string; newGroupName: string }
   ): Promise<void> {
     let targetTag = normalizeTag(target?.tag || '')
-    let nextPromptGroups = store.groups.prompts
+    let newPromptGroup: GroupItem | null = null
     if (target?.newGroupName.trim()) {
       const group = createGroupFromName(target.newGroupName, store.groups.prompts)
       targetTag = group.tag
-      nextPromptGroups = [...store.groups.prompts, group]
+      newPromptGroup = group
     }
     const withTargetTag = (prompt: PromptItem): PromptItem =>
       targetTag ? { ...prompt, tags: mergeTags(prompt.tags, [targetTag]), updatedAt: nowIso() } : prompt
@@ -946,16 +1001,21 @@ function PromptPanel({
       ...review.identical.map((item) => item.existing.id),
       ...review.conflicts.map((item) => item.existing.id)
     ])
-    const nextPrompts = [
-      ...review.additions.map((prompt) => withTargetTag(replacementById.get(prompt.id) || prompt)),
-      ...store.prompts
-        .map((prompt) => {
+    await commit((current) => ({
+      ...current,
+      prompts: [
+        ...review.additions.map((prompt) => withTargetTag(replacementById.get(prompt.id) || prompt)),
+        ...current.prompts.map((prompt) => {
           const replacement = replacementById.get(prompt.id)
           if (replacement && !additionIds.has(prompt.id)) return replacement
           return review.forceConfirm && matchedExistingIds.has(prompt.id) ? withTargetTag(prompt) : prompt
         })
-    ]
-    await commit({ ...store, prompts: nextPrompts, groups: { ...store.groups, prompts: nextPromptGroups } })
+      ],
+      groups: {
+        ...current.groups,
+        prompts: newPromptGroup ? [...current.groups.prompts, newPromptGroup] : current.groups.prompts
+      }
+    }))
     setPromptImportReview(null)
     const skipped = review.identical.length + review.conflicts.length - replacements.length
     setNotice(`${review.source}：新增 ${review.additions.length} 个，替换 ${replacements.length} 个，跳过 ${skipped} 个重复项`)
@@ -1002,30 +1062,33 @@ function PromptPanel({
       }
     }
 
-    const nextPrompts = store.prompts
-      .filter((prompt) => !replacementById.has(prompt.id))
-      .map((prompt) => mergedById.get(prompt.id) || prompt)
-    const nextRecoveries = store.tagRecoveries
-      .map((recovery) => {
-        const promptTags: Record<string, string[]> = {}
-        for (const [promptId, tags] of Object.entries(recovery.promptTags)) {
-          const targetId = replacementById.get(promptId) || promptId
-          promptTags[targetId] = mergeTags(promptTags[targetId] || [], tags)
-        }
-        return { ...recovery, promptTags }
+    let nextPrompts: PromptItem[] = []
+    const updatedAt = nowIso()
+    await commit((current) => {
+      nextPrompts = current.prompts
+        .filter((prompt) => !replacementById.has(prompt.id))
+        .map((prompt) => mergedById.get(prompt.id) || prompt)
+      const nextRecoveries = current.tagRecoveries
+        .map((recovery) => {
+          const promptTags: Record<string, string[]> = {}
+          for (const [promptId, tags] of Object.entries(recovery.promptTags)) {
+            const targetId = replacementById.get(promptId) || promptId
+            promptTags[targetId] = mergeTags(promptTags[targetId] || [], tags)
+          }
+          return { ...recovery, promptTags }
+        })
+        .filter((recovery) => Object.keys(recovery.promptTags).length > 0)
+      const nextWorkflows = current.workflows.map((workflow) => {
+        let changed = false
+        const nodes = workflow.nodes.map((node) => {
+          if (node.type !== 'prompt' || !node.refId || !replacementById.has(node.refId)) return node
+          changed = true
+          return { ...node, refId: replacementById.get(node.refId) }
+        })
+        return changed ? { ...workflow, nodes, updatedAt } : workflow
       })
-      .filter((recovery) => Object.keys(recovery.promptTags).length > 0)
-    const nextWorkflows = store.workflows.map((workflow) => {
-      let changed = false
-      const nodes = workflow.nodes.map((node) => {
-        if (node.type !== 'prompt' || !node.refId || !replacementById.has(node.refId)) return node
-        changed = true
-        return { ...node, refId: replacementById.get(node.refId) }
-      })
-      return changed ? { ...workflow, nodes, updatedAt: nowIso() } : workflow
+      return { ...current, prompts: nextPrompts, workflows: nextWorkflows, tagRecoveries: nextRecoveries }
     })
-
-    await commit({ ...store, prompts: nextPrompts, workflows: nextWorkflows, tagRecoveries: nextRecoveries })
     setPromptDuplicateGroups(null)
     setPromptClipboard((current) => {
       if (!current) return null
@@ -1185,8 +1248,8 @@ function PromptPanel({
           <div className="group-selection-note">
             当前分组：{selectedGroup === 'all' ? '全部提示词' : groupNameForTag(promptGroups, selectedGroup)}
           </div>
-          <button className="primary-action" type="button" disabled={creatingPrompt} onClick={() => void createNewPrompt()}>
-            {creatingPrompt ? '正在保存...' : '新建提示词'}
+          <button className="primary-action" type="button" onClick={createNewPrompt}>
+            新建提示词
           </button>
         </div>
 
@@ -1274,7 +1337,7 @@ function PromptPanel({
         <PromptEditorModal
           prompt={editing}
           skills={skills}
-          saving={creatingPrompt}
+          isNew={!store.prompts.some((item) => item.id === editing.id)}
           close={() => setEditing(null)}
           save={savePrompt}
           deletePrompt={deletePrompt}
@@ -1352,7 +1415,7 @@ function SkillPanel({
 }: {
   store: AppStore
   skills: SkillItem[]
-  commit: (store: AppStore) => Promise<void>
+  commit: CommitStore
   scanSkills: (directories?: string[]) => Promise<void>
   openPath: (path: string) => Promise<string>
   setNotice: (notice: string) => void
@@ -1385,13 +1448,13 @@ function SkillPanel({
   const activeSkillGroupTag = selectedGroup === 'all' ? '' : selectedGroup
 
   async function saveMetadata(skill: SkillItem, metadata: SkillMetadata): Promise<void> {
-    await commit({
-      ...store,
+    await commit((current) => ({
+      ...current,
       skillIndex: {
-        ...store.skillIndex,
+        ...current.skillIndex,
         [skill.id]: { ...metadata, assignedTags: metadata.tags }
       }
-    })
+    }))
     setEditing(null)
   }
 
@@ -1415,35 +1478,39 @@ function SkillPanel({
     const result = await formatFlow.deleteSkill(skill)
     setNotice(result.message)
     if (!result.ok) return
-    const nextSkillIndex = { ...store.skillIndex }
-    delete nextSkillIndex[skill.id]
-    await commit({ ...store, skillIndex: nextSkillIndex })
+    await commit((current) => {
+      const nextSkillIndex = { ...current.skillIndex }
+      delete nextSkillIndex[skill.id]
+      return { ...current, skillIndex: nextSkillIndex }
+    })
     if (skillClipboard?.id === skill.id) setSkillClipboard(null)
     setEditing(null)
     await scanSkills()
   }
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
-    await commit({ ...store, groups: { ...store.groups, skills: groups } })
+    await commit((current) => ({ ...current, groups: { ...current.groups, skills: groups } }))
   }
 
   async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
     const nextTag = renamedGroup.tag
-    const nextSkillIndex = { ...store.skillIndex }
-    for (const skill of skills) {
-      const metadata = nextSkillIndex[skill.id] || { tags: skill.tags }
-      const tags = metadata.tags || skill.tags
-      if (!tags.includes(group.tag)) continue
-      nextSkillIndex[skill.id] = {
-        ...metadata,
-        tags: replaceTag(tags, group.tag, nextTag),
-        assignedTags: replaceTag(metadata.assignedTags || [], group.tag, nextTag)
+    await commit((current) => {
+      const nextSkillIndex = { ...current.skillIndex }
+      for (const skill of skills) {
+        const metadata = nextSkillIndex[skill.id] || { tags: skill.tags }
+        const tags = metadata.tags || skill.tags
+        if (!tags.includes(group.tag)) continue
+        nextSkillIndex[skill.id] = {
+          ...metadata,
+          tags: replaceTag(tags, group.tag, nextTag),
+          assignedTags: replaceTag(metadata.assignedTags || [], group.tag, nextTag)
+        }
       }
-    }
-    await commit({
-      ...store,
-      skillIndex: nextSkillIndex,
-      groups: { ...store.groups, skills: groups }
+      return {
+        ...current,
+        skillIndex: nextSkillIndex,
+        groups: { ...current.groups, skills: groups }
+      }
     })
     if (selectedGroup === group.tag) setSelectedGroup(nextTag)
   }
@@ -1459,21 +1526,23 @@ function SkillPanel({
     ) {
       return
     }
-    const nextSkillIndex = { ...store.skillIndex }
-    for (const skill of skills) {
-      const metadata = nextSkillIndex[skill.id] || { tags: skill.tags }
-      nextSkillIndex[skill.id] = {
-        ...metadata,
-        tags: (metadata.tags || skill.tags).filter((tag) => !tags.includes(tag)),
-        assignedTags: (metadata.assignedTags || []).filter((tag) => !tags.includes(tag))
+    await commit((current) => {
+      const nextSkillIndex = { ...current.skillIndex }
+      for (const skill of skills) {
+        const metadata = nextSkillIndex[skill.id] || { tags: skill.tags }
+        nextSkillIndex[skill.id] = {
+          ...metadata,
+          tags: (metadata.tags || skill.tags).filter((tag) => !tags.includes(tag)),
+          assignedTags: (metadata.assignedTags || []).filter((tag) => !tags.includes(tag))
+        }
       }
-    }
-    await commit({
-      ...store,
-      skillIndex: nextSkillIndex,
-      groups: {
-        ...store.groups,
-        skills: removeGroupById(store.groups.skills, group.id)
+      return {
+        ...current,
+        skillIndex: nextSkillIndex,
+        groups: {
+          ...current.groups,
+          skills: removeGroupById(current.groups.skills, group.id)
+        }
       }
     })
     if (tags.includes(selectedGroup)) setSelectedGroup('all')
@@ -1485,26 +1554,30 @@ function SkillPanel({
     newGroup?: GroupItem,
     includeActiveGroup = true,
     removedSkillIds: string[] = []
-  ): Promise<void> {
+  ): Promise<boolean> {
     setNotice(result.message)
-    if (!result.ok) return
-    const directories = Array.from(
-      new Set([...store.settings.skillDirectories, result.managedDirectory || '', ...(result.installedPaths || [])].filter(Boolean))
-    )
+    if (!result.ok) return false
     const importTags = mergeTags(includeActiveGroup && activeSkillGroupTag ? [activeSkillGroupTag] : [], extraTags)
-    let nextSkillIndex = { ...store.skillIndex }
-    for (const id of removedSkillIds) delete nextSkillIndex[id]
-    for (const tag of importTags) {
-      nextSkillIndex = addTagToSkillIndex(nextSkillIndex, result.items, tag)
-    }
-    await commit({
-      ...store,
-      skillIndex: nextSkillIndex,
-      groups: newGroup ? { ...store.groups, skills: [...store.groups.skills, newGroup] } : store.groups,
-      settings: { ...store.settings, skillDirectories: directories }
+    let directories: string[] = []
+    await commit((current) => {
+      directories = Array.from(
+        new Set([...current.settings.skillDirectories, result.managedDirectory || '', ...(result.installedPaths || [])].filter(Boolean))
+      )
+      let nextSkillIndex = { ...current.skillIndex }
+      for (const id of removedSkillIds) delete nextSkillIndex[id]
+      for (const tag of importTags) {
+        nextSkillIndex = addTagToSkillIndex(nextSkillIndex, result.items, tag)
+      }
+      return {
+        ...current,
+        skillIndex: nextSkillIndex,
+        groups: newGroup ? { ...current.groups, skills: [...current.groups.skills, newGroup] } : current.groups,
+        settings: { ...current.settings, skillDirectories: directories }
+      }
     })
     await scanSkills(directories)
     if (importTags.length > 0) setNotice(`${result.message}；已加入 ${importTags.map((tag) => `“${tag}”`).join('、')} 分组`)
+    return true
   }
 
   async function finishSkillImport(
@@ -1611,40 +1684,42 @@ function SkillPanel({
       }
     }
 
-    let nextSkillIndex = { ...store.skillIndex }
-    for (const removedId of replacementById.keys()) delete nextSkillIndex[removedId]
-    for (const group of groups) {
-      const kept = group.items.find((item) => item.id === choices[group.id]) || group.items[0]
-      const metadata = group.items.map((item) => store.skillIndex[item.id]).filter(Boolean)
-      const keptMetadata = store.skillIndex[kept.id] || { tags: kept.tags }
-      nextSkillIndex[kept.id] = {
-        ...keptMetadata,
-        tags: mergeTags(
-          group.items.flatMap((item) => item.tags),
-          metadata.flatMap((item) => item.tags || [])
-        ),
-        assignedTags: mergeTags([], metadata.flatMap((item) => item.assignedTags || [])),
-        summaryOverride: keptMetadata.summaryOverride || metadata.find((item) => item.summaryOverride)?.summaryOverride,
-        favorite: group.items.some((item) => item.favorite) || metadata.some((item) => item.favorite),
-        variables: Array.from(new Set([
-          ...group.items.flatMap((item) => item.variables),
-          ...metadata.flatMap((item) => item.variables || [])
-        ]))
+    const updatedAt = nowIso()
+    await commit((current) => {
+      const nextSkillIndex = { ...current.skillIndex }
+      for (const removedId of replacementById.keys()) delete nextSkillIndex[removedId]
+      for (const group of groups) {
+        const kept = group.items.find((item) => item.id === choices[group.id]) || group.items[0]
+        const metadata = group.items.map((item) => current.skillIndex[item.id]).filter(Boolean)
+        const keptMetadata = current.skillIndex[kept.id] || { tags: kept.tags }
+        nextSkillIndex[kept.id] = {
+          ...keptMetadata,
+          tags: mergeTags(
+            group.items.flatMap((item) => item.tags),
+            metadata.flatMap((item) => item.tags || [])
+          ),
+          assignedTags: mergeTags([], metadata.flatMap((item) => item.assignedTags || [])),
+          summaryOverride: keptMetadata.summaryOverride || metadata.find((item) => item.summaryOverride)?.summaryOverride,
+          favorite: group.items.some((item) => item.favorite) || metadata.some((item) => item.favorite),
+          variables: Array.from(new Set([
+            ...group.items.flatMap((item) => item.variables),
+            ...metadata.flatMap((item) => item.variables || [])
+          ]))
+        }
       }
-    }
-    const nextWorkflows = store.workflows.map((workflow) => {
-      let changed = false
-      const nodes = workflow.nodes.map((node) => {
-        const refId = node.type === 'skill' && node.refId ? replacementById.get(node.refId) : undefined
-        const skillRefId = node.skillRefId ? replacementById.get(node.skillRefId) : undefined
-        if (!refId && !skillRefId) return node
-        changed = true
-        return { ...node, refId: refId || node.refId, skillRefId: skillRefId || node.skillRefId }
+      const nextWorkflows = current.workflows.map((workflow) => {
+        let changed = false
+        const nodes = workflow.nodes.map((node) => {
+          const refId = node.type === 'skill' && node.refId ? replacementById.get(node.refId) : undefined
+          const skillRefId = node.skillRefId ? replacementById.get(node.skillRefId) : undefined
+          if (!refId && !skillRefId) return node
+          changed = true
+          return { ...node, refId: refId || node.refId, skillRefId: skillRefId || node.skillRefId }
+        })
+        return changed ? { ...workflow, nodes, updatedAt } : workflow
       })
-      return changed ? { ...workflow, nodes, updatedAt: nowIso() } : workflow
+      return { ...current, skillIndex: nextSkillIndex, workflows: nextWorkflows }
     })
-
-    await commit({ ...store, skillIndex: nextSkillIndex, workflows: nextWorkflows })
     setSkillDuplicateGroups(null)
     setSkillClipboard((current) => {
       if (!current) return null
@@ -1727,8 +1802,11 @@ function SkillPanel({
 
   async function installManualSkill(draft: ManualSkillDraft): Promise<void> {
     try {
-      await applySkillImport(await formatFlow.installGeneratedSkill(draft.name, buildManualSkillContent(draft)), draft.tags)
-      setManualSkillOpen(false)
+      const installed = await applySkillImport(
+        await formatFlow.installGeneratedSkill(draft.name, buildManualSkillContent(draft)),
+        draft.tags
+      )
+      if (installed) setManualSkillOpen(false)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '手动添加 Skill 失败')
     }
@@ -1924,7 +2002,7 @@ function WorkflowPanel({
 }: {
   store: AppStore
   skills: SkillItem[]
-  commit: (store: AppStore) => Promise<void>
+  commit: CommitStore
   setNotice: (notice: string) => void
 }): JSX.Element {
   const [query, setQuery] = useState('')
@@ -1940,6 +2018,16 @@ function WorkflowPanel({
   const [skillToAdd, setSkillToAdd] = useState(skills[0]?.id || '')
   const [mcpToAdd, setMcpToAdd] = useState(store.mcpServers[0]?.id || '')
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
+  const [workflowTitleDraft, setWorkflowTitleDraft] = useState(workflow?.title || '')
+  const [workflowDescriptionDraft, setWorkflowDescriptionDraft] = useState(workflow?.description || '')
+  const [nodePositionOverrides, setNodePositionOverrides] = useState<Record<string, { x: number; y: number }>>({})
+  const workflowTextSaveTimerRef = useRef<number | null>(null)
+  const pendingWorkflowTextRef = useRef(new Map<string, {
+    title?: string
+    description?: string
+  }>())
+  const workflowTextFlushPromiseRef = useRef<Promise<void> | null>(null)
+  const nodeAction = useExclusiveAsyncAction<'prompt' | 'skill' | 'mcp' | 'approval'>()
   const selectedNode = workflow?.nodes.find((node) => node.id === selectedNodeId)
   const workflowGroups = mergeGroupsWithTags(store.groups.workflows || [], allTags(store.workflows))
   const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
@@ -1968,40 +2056,132 @@ function WorkflowPanel({
     setMcpToAdd(store.mcpServers[0]?.id || '')
   }, [mcpToAdd, store.mcpServers])
 
+  useEffect(() => {
+    setWorkflowTitleDraft(workflow?.title || '')
+    setWorkflowDescriptionDraft(workflow?.description || '')
+    setNodePositionOverrides({})
+    return () => {
+      void flushWorkflowText().catch(() => undefined)
+    }
+  }, [workflow?.id])
+
+  useEffect(() => {
+    function flushWhenHidden(): void {
+      if (document.visibilityState === 'hidden') void flushWorkflowText().catch(() => undefined)
+    }
+    function flushBeforeUnload(): void {
+      void flushWorkflowText().catch(() => undefined)
+    }
+    document.addEventListener('visibilitychange', flushWhenHidden)
+    window.addEventListener('beforeunload', flushBeforeUnload)
+    return () => {
+      document.removeEventListener('visibilitychange', flushWhenHidden)
+      window.removeEventListener('beforeunload', flushBeforeUnload)
+    }
+  }, [workflow?.id])
+
+  async function mutateWorkflow(workflowId: string, mutation: (current: Workflow) => Workflow): Promise<void> {
+    await commit((current) => ({
+      ...current,
+      workflows: current.workflows.map((item) => (item.id === workflowId ? mutation(item) : item))
+    }))
+  }
+
+  function queueWorkflowText(patch: { title?: string; description?: string }): void {
+    if (!workflow) return
+    pendingWorkflowTextRef.current.set(workflow.id, {
+      ...pendingWorkflowTextRef.current.get(workflow.id),
+      ...patch
+    })
+    if (workflowTextSaveTimerRef.current !== null) window.clearTimeout(workflowTextSaveTimerRef.current)
+    workflowTextSaveTimerRef.current = window.setTimeout(() => {
+      void flushWorkflowText().catch(() => undefined)
+    }, 400)
+  }
+
+  function flushWorkflowText(): Promise<void> {
+    if (workflowTextSaveTimerRef.current !== null) {
+      window.clearTimeout(workflowTextSaveTimerRef.current)
+      workflowTextSaveTimerRef.current = null
+    }
+    if (workflowTextFlushPromiseRef.current) {
+      return workflowTextFlushPromiseRef.current.then(() =>
+        pendingWorkflowTextRef.current.size > 0 ? flushWorkflowText() : undefined
+      )
+    }
+    const batch = Array.from(pendingWorkflowTextRef.current.entries())
+    if (batch.length === 0) return Promise.resolve()
+    pendingWorkflowTextRef.current.clear()
+    const run = (async () => {
+      for (let index = 0; index < batch.length; index += 1) {
+        const [workflowId, pending] = batch[index]
+        try {
+          await mutateWorkflow(workflowId, (current) => ({
+            ...current,
+            ...(pending.title === undefined ? {} : { title: pending.title }),
+            ...(pending.description === undefined ? {} : { description: pending.description }),
+            updatedAt: nowIso()
+          }))
+        } catch (error) {
+          for (const [retryWorkflowId, retryPatch] of batch.slice(index)) {
+            pendingWorkflowTextRef.current.set(retryWorkflowId, {
+              ...retryPatch,
+              ...pendingWorkflowTextRef.current.get(retryWorkflowId)
+            })
+          }
+          throw error
+        }
+      }
+    })()
+    let tracked: Promise<void>
+    tracked = run.finally(() => {
+      if (workflowTextFlushPromiseRef.current === tracked) workflowTextFlushPromiseRef.current = null
+    })
+    workflowTextFlushPromiseRef.current = tracked
+    return tracked
+  }
+
   async function updateWorkflow(nextWorkflow: Workflow): Promise<void> {
-    const exists = store.workflows.some((item) => item.id === nextWorkflow.id)
-    await commit({
-      ...store,
-      workflows: exists
-        ? store.workflows.map((item) => (item.id === nextWorkflow.id ? nextWorkflow : item))
-        : [nextWorkflow, ...store.workflows]
+    await commit((current) => {
+      const exists = current.workflows.some((item) => item.id === nextWorkflow.id)
+      return {
+        ...current,
+        workflows: exists
+          ? current.workflows.map((item) => (item.id === nextWorkflow.id ? nextWorkflow : item))
+          : [nextWorkflow, ...current.workflows]
+      }
     })
   }
 
-  async function createNewWorkflow(): Promise<void> {
+  function createNewWorkflow(): void {
     const next = createWorkflow({ tags: activeWorkflowGroupTag ? [activeWorkflowGroupTag] : [] })
-    await commit({ ...store, workflows: [next, ...store.workflows] })
     setWorkflowId(next.id)
     setEditingWorkflowId('')
     setMetadataEditing(next)
+    setNotice('正在新建工作流；保存后才会创建')
   }
 
   async function saveWorkflowMetadata(nextWorkflow: Workflow): Promise<void> {
-    await updateWorkflow({
-      ...nextWorkflow,
-      variables: nextWorkflow.variables.length > 0 ? nextWorkflow.variables : extractVariables(nextWorkflow.description),
-      updatedAt: nowIso()
-    })
-    setMetadataEditing(null)
+    try {
+      await updateWorkflow({
+        ...nextWorkflow,
+        variables: nextWorkflow.variables.length > 0 ? nextWorkflow.variables : extractVariables(nextWorkflow.description),
+        updatedAt: nowIso()
+      })
+      setMetadataEditing(null)
+      setNotice(`已保存工作流：${nextWorkflow.title}`)
+    } catch (error) {
+      setNotice(error instanceof Error ? `工作流保存失败：${error.message}` : '工作流保存失败')
+    }
   }
 
   async function deleteWorkflow(target: Workflow): Promise<void> {
     if (!confirmDestructiveAction(`确认删除工作流“${target.title}”？`, ['此操作会从工作流列表中移除该条目。'])) return
-    await commit({
-      ...store,
-      workflows: store.workflows.filter((item) => item.id !== target.id),
-      runs: store.runs.filter((run) => run.workflowId !== target.id)
-    })
+    await commit((current) => ({
+      ...current,
+      workflows: current.workflows.filter((item) => item.id !== target.id),
+      runs: current.runs.filter((run) => run.workflowId !== target.id)
+    }))
     if (workflowClipboard?.id === target.id) setWorkflowClipboard(null)
     if (editingWorkflowId === target.id) setEditingWorkflowId('')
     if (workflowId === target.id) setWorkflowId(store.workflows.find((item) => item.id !== target.id)?.id || '')
@@ -2019,27 +2199,33 @@ function WorkflowPanel({
       setNotice('请先在工作流卡片中点击“复制条目”')
       return
     }
-    const copiedWorkflow = cloneWorkflowToGroup(workflowClipboard, group.tag, uniqueWorkflowCopyTitle(workflowClipboard.title, store.workflows))
-    await commit({ ...store, workflows: [copiedWorkflow, ...store.workflows] })
+    await commit((current) => {
+      const copiedWorkflow = cloneWorkflowToGroup(
+        workflowClipboard,
+        group.tag,
+        uniqueWorkflowCopyTitle(workflowClipboard.title, current.workflows)
+      )
+      return { ...current, workflows: [copiedWorkflow, ...current.workflows] }
+    })
     setSelectedGroup(group.tag)
     setNotice(`已将工作流条目“${workflowClipboard.title}”粘贴到“${group.name}”分组`)
   }
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
-    await commit({ ...store, groups: { ...store.groups, workflows: groups } })
+    await commit((current) => ({ ...current, groups: { ...current.groups, workflows: groups } }))
   }
 
   async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
     const nextTag = renamedGroup.tag
-    await commit({
-      ...store,
-      workflows: store.workflows.map((item) => ({
+    await commit((current) => ({
+      ...current,
+      workflows: current.workflows.map((item) => ({
         ...item,
         tags: replaceTag(item.tags, group.tag, nextTag),
         updatedAt: item.tags.includes(group.tag) ? nowIso() : item.updatedAt
       })),
-      groups: { ...store.groups, workflows: groups }
-    })
+      groups: { ...current.groups, workflows: groups }
+    }))
     if (selectedGroup === group.tag) setSelectedGroup(nextTag)
   }
 
@@ -2054,62 +2240,88 @@ function WorkflowPanel({
     ) {
       return
     }
-    await commit({
-      ...store,
-      workflows: store.workflows.map((item) => ({
+    await commit((current) => ({
+      ...current,
+      workflows: current.workflows.map((item) => ({
         ...item,
         tags: item.tags.filter((tag) => !tags.includes(tag)),
         updatedAt: nowIso()
       })),
-      groups: { ...store.groups, workflows: removeGroupById(store.groups.workflows || [], group.id) }
-    })
+      groups: { ...current.groups, workflows: removeGroupById(current.groups.workflows || [], group.id) }
+    }))
     if (tags.includes(selectedGroup)) setSelectedGroup('all')
   }
 
   async function appendPromptNode(): Promise<void> {
-    if (!workflow) return
-    const prompt = store.prompts.find((item) => item.id === promptToAdd)
-    if (!prompt) return
-    const nextNode = nodeFromPrompt(prompt, workflow.nodes.length)
-    const nodes = [...workflow.nodes, nextNode]
-    await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
-    setSelectedNodeId(nextNode.id)
+    await nodeAction.run('prompt', async () => {
+      if (!workflow) return
+      const prompt = store.prompts.find((item) => item.id === promptToAdd)
+      if (!prompt) return
+      let nextNodeId = ''
+      await mutateWorkflow(workflow.id, (current) => {
+        const nextNode = nodeFromPrompt(prompt, current.nodes.length)
+        nextNodeId = nextNode.id
+        const nodes = [...current.nodes, nextNode]
+        return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
+      })
+      setSelectedNodeId(nextNodeId)
+    })
   }
 
   async function appendSkillNode(): Promise<void> {
-    if (!workflow) return
-    const skill = skills.find((item) => item.id === skillToAdd)
-    if (!skill) return
-    const nextNode = nodeFromSkill(skill, workflow.nodes.length)
-    const nodes = [...workflow.nodes, nextNode]
-    await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
-    setSelectedNodeId(nextNode.id)
+    await nodeAction.run('skill', async () => {
+      if (!workflow) return
+      const skill = skills.find((item) => item.id === skillToAdd)
+      if (!skill) return
+      let nextNodeId = ''
+      await mutateWorkflow(workflow.id, (current) => {
+        const nextNode = nodeFromSkill(skill, current.nodes.length)
+        nextNodeId = nextNode.id
+        const nodes = [...current.nodes, nextNode]
+        return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
+      })
+      setSelectedNodeId(nextNodeId)
+    })
   }
 
   async function appendMcpNode(): Promise<void> {
-    if (!workflow) return
-    const mcp = store.mcpServers.find((item) => item.id === mcpToAdd)
-    if (!mcp) return
-    const nextNode = nodeFromMcp(mcp, workflow.nodes.length)
-    const nodes = [...workflow.nodes, nextNode]
-    await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
-    setSelectedNodeId(nextNode.id)
+    await nodeAction.run('mcp', async () => {
+      if (!workflow) return
+      const mcp = store.mcpServers.find((item) => item.id === mcpToAdd)
+      if (!mcp) return
+      let nextNodeId = ''
+      await mutateWorkflow(workflow.id, (current) => {
+        const nextNode = nodeFromMcp(mcp, current.nodes.length)
+        nextNodeId = nextNode.id
+        const nodes = [...current.nodes, nextNode]
+        return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
+      })
+      setSelectedNodeId(nextNodeId)
+    })
   }
 
   async function appendApprovalNode(): Promise<void> {
-    if (!workflow) return
-    const nextNode = approvalNode(workflow.nodes.length)
-    const nodes = [...workflow.nodes, nextNode]
-    await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
-    setSelectedNodeId(nextNode.id)
+    await nodeAction.run('approval', async () => {
+      if (!workflow) return
+      let nextNodeId = ''
+      await mutateWorkflow(workflow.id, (current) => {
+        const nextNode = approvalNode(current.nodes.length)
+        nextNodeId = nextNode.id
+        const nodes = [...current.nodes, nextNode]
+        return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
+      })
+      setSelectedNodeId(nextNodeId)
+    })
   }
 
   async function removeNode(nodeId: string): Promise<void> {
     if (!workflow) return
     const node = workflow.nodes.find((item) => item.id === nodeId)
     if (!confirmDestructiveAction(`确认删除节点“${node?.title || '未命名节点'}”？`, ['此操作会从当前工作流中移除该节点并重新生成执行顺序。'])) return
-    const nodes = workflow.nodes.filter((node) => node.id !== nodeId)
-    await updateWorkflow({ ...workflow, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() })
+    await mutateWorkflow(workflow.id, (current) => {
+      const nodes = current.nodes.filter((node) => node.id !== nodeId)
+      return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
+    })
   }
 
   function selectWorkflowForEditing(nextWorkflowId: string): void {
@@ -2122,43 +2334,64 @@ function WorkflowPanel({
 
   async function updateSelectedNode(patch: Partial<WorkflowNode>): Promise<void> {
     if (!workflow || !selectedNode) return
-    await updateWorkflow({
-      ...workflow,
-      nodes: workflow.nodes.map((node) => (node.id === selectedNode.id ? { ...node, ...patch } : node)),
+    const workflowId = workflow.id
+    const nodeId = selectedNode.id
+    await mutateWorkflow(workflowId, (current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, ...patch } : node)),
       updatedAt: nowIso()
-    })
+    }))
   }
 
   async function moveNode(nodeId: string, direction: -1 | 1): Promise<void> {
     if (!workflow) return
-    const index = workflow.nodes.findIndex((node) => node.id === nodeId)
-    const target = index + direction
-    if (index < 0 || target < 0 || target >= workflow.nodes.length) return
-    const nodes = [...workflow.nodes]
-    const [node] = nodes.splice(index, 1)
-    nodes.splice(target, 0, node)
-    const positioned = nodes.map((item, itemIndex) => ({ ...item, position: { x: itemIndex * 280, y: item.position.y } }))
-    await updateWorkflow({ ...workflow, nodes: positioned, edges: rebuildLinearEdges(positioned), updatedAt: nowIso() })
+    await mutateWorkflow(workflow.id, (current) => {
+      const index = current.nodes.findIndex((node) => node.id === nodeId)
+      const target = index + direction
+      if (index < 0 || target < 0 || target >= current.nodes.length) return current
+      const nodes = [...current.nodes]
+      const [node] = nodes.splice(index, 1)
+      nodes.splice(target, 0, node)
+      const positioned = nodes.map((item, itemIndex) => ({ ...item, position: { x: itemIndex * 280, y: item.position.y } }))
+      return { ...current, nodes: positioned, edges: rebuildLinearEdges(positioned), updatedAt: nowIso() }
+    })
   }
 
   function onNodeChanges(changes: NodeChange[]): void {
-    if (!workflow) return
-    const positions = new Map<string, { x: number; y: number }>()
-    for (const change of changes) {
-      if (change.type === 'position' && change.position) positions.set(change.id, change.position)
-    }
-    if (positions.size === 0) return
-    void updateWorkflow({
-      ...workflow,
-      nodes: workflow.nodes.map((node) => (positions.has(node.id) ? { ...node, position: positions.get(node.id) || node.position } : node)),
-      updatedAt: nowIso()
+    setNodePositionOverrides((current) => {
+      let changed = false
+      const next = { ...current }
+      for (const change of changes) {
+        if (change.type !== 'position' || !change.position) continue
+        next[change.id] = change.position
+        changed = true
+      }
+      return changed ? next : current
     })
+  }
+
+  async function persistNodePosition(nodeId: string, position: { x: number; y: number }): Promise<void> {
+    if (!workflow) return
+    setNodePositionOverrides((current) => {
+      const next = { ...current }
+      delete next[nodeId]
+      return next
+    })
+    await mutateWorkflow(workflow.id, (current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, position } : node)),
+      updatedAt: nowIso()
+    }))
   }
 
   function onConnect(connection: Connection): void {
     if (!workflow || !connection.source || !connection.target) return
     const edge = { id: `edge_${connection.source}_${connection.target}`, source: connection.source, target: connection.target }
-    void updateWorkflow({ ...workflow, edges: [...workflow.edges.filter((item) => item.id !== edge.id), edge], updatedAt: nowIso() })
+    void mutateWorkflow(workflow.id, (current) => ({
+      ...current,
+      edges: [...current.edges.filter((item) => item.id !== edge.id), edge],
+      updatedAt: nowIso()
+    }))
   }
 
   async function exportWorkflowItems(items: Workflow[], scope: string): Promise<void> {
@@ -2281,6 +2514,7 @@ function WorkflowPanel({
         {metadataEditing && (
           <WorkflowMetadataModal
             workflow={metadataEditing}
+            isNew={!store.workflows.some((item) => item.id === metadataEditing.id)}
             close={() => setMetadataEditing(null)}
             save={saveWorkflowMetadata}
             deleteWorkflow={deleteWorkflow}
@@ -2303,7 +2537,7 @@ function WorkflowPanel({
 
   const flowNodes: FlowNode[] = workflow.nodes.map((node) => ({
     id: node.id,
-    position: node.position,
+    position: nodePositionOverrides[node.id] || node.position,
     data: {
       label: (
         <FlowNodeCard
@@ -2369,17 +2603,17 @@ function WorkflowPanel({
           <button className="picker-trigger" type="button" onClick={() => setPickerOpen('mcp')}>
             <span>{selectedMcp ? selectedMcp.name : '选择 MCP'}</span>
           </button>
-          <button className="primary-action" type="button" disabled={!selectedPrompt} onClick={() => void appendPromptNode()}>
-            添加提示词节点
+          <button className="primary-action" type="button" disabled={nodeAction.busy || !selectedPrompt} onClick={() => void appendPromptNode().catch(() => undefined)}>
+            {nodeAction.busyAction === 'prompt' ? '添加中...' : '添加提示词节点'}
           </button>
-          <button className="primary-action" type="button" disabled={!selectedSkill} onClick={() => void appendSkillNode()}>
-            添加 Skill 节点
+          <button className="primary-action" type="button" disabled={nodeAction.busy || !selectedSkill} onClick={() => void appendSkillNode().catch(() => undefined)}>
+            {nodeAction.busyAction === 'skill' ? '添加中...' : '添加 Skill 节点'}
           </button>
-          <button className="primary-action" type="button" disabled={!selectedMcp} onClick={() => void appendMcpNode()}>
-            添加 MCP 节点
+          <button className="primary-action" type="button" disabled={nodeAction.busy || !selectedMcp} onClick={() => void appendMcpNode().catch(() => undefined)}>
+            {nodeAction.busyAction === 'mcp' ? '添加中...' : '添加 MCP 节点'}
           </button>
-          <button type="button" onClick={() => void appendApprovalNode()}>
-            添加审查节点
+          <button type="button" disabled={nodeAction.busy} onClick={() => void appendApprovalNode().catch(() => undefined)}>
+            {nodeAction.busyAction === 'approval' ? '添加中...' : '添加审查节点'}
           </button>
         </div>
       </div>
@@ -2447,6 +2681,7 @@ function WorkflowPanel({
             nodes={flowNodes}
             edges={flowEdges}
             onNodesChange={onNodeChanges}
+            onNodeDragStop={(_, node) => void persistNodePosition(node.id, node.position)}
             onConnect={onConnect}
             onNodeClick={(_, node) => setSelectedNodeId(node.id)}
             fitView
@@ -2459,11 +2694,25 @@ function WorkflowPanel({
         <aside className="inspector">
           <label>
             工作流标题
-            <input value={workflow.title} onChange={(event) => void updateWorkflow({ ...workflow, title: event.target.value, updatedAt: nowIso() })} />
+            <input
+              value={workflowTitleDraft}
+              onChange={(event) => {
+                setWorkflowTitleDraft(event.target.value)
+                queueWorkflowText({ title: event.target.value })
+              }}
+              onBlur={() => void flushWorkflowText().catch(() => undefined)}
+            />
           </label>
           <label>
             工作流说明
-            <textarea value={workflow.description} onChange={(event) => void updateWorkflow({ ...workflow, description: event.target.value, updatedAt: nowIso() })} />
+            <textarea
+              value={workflowDescriptionDraft}
+              onChange={(event) => {
+                setWorkflowDescriptionDraft(event.target.value)
+                queueWorkflowText({ description: event.target.value })
+              }}
+              onBlur={() => void flushWorkflowText().catch(() => undefined)}
+            />
           </label>
           <h3>执行顺序</h3>
           <div className="sequence-list">
@@ -2476,6 +2725,7 @@ function WorkflowPanel({
           </div>
           {selectedNode ? (
             <NodeInspector
+              key={selectedNode.id}
               node={selectedNode}
               prompt={store.prompts.find((prompt) => prompt.id === selectedNode.refId)}
               skill={skills.find((skill) => skill.id === (selectedNode.type === 'skill' ? selectedNode.refId : selectedNode.skillRefId))}
@@ -2506,7 +2756,7 @@ function RunnerPanel({
 }: {
   store: AppStore
   skills: SkillItem[]
-  commit: (store: AppStore) => Promise<void>
+  commit: CommitStore
   setNotice: (notice: string) => void
   pluginStatus: AiPluginStatus
   pluginOutput: AiPluginOutput | null
@@ -2519,6 +2769,7 @@ function RunnerPanel({
   const [reviewDialog, setReviewDialog] = useState<ReviewMessage[]>([])
   const [taskFillDraft, setTaskFillDraft] = useState<PromptFillDraft | null>(null)
   const lastPluginOutputRef = useRef<number>(0)
+  const runAction = useExclusiveAsyncAction<'start'>()
   const workflow = store.workflows.find((item) => item.id === workflowId) || store.workflows[0]
   const activeRun =
     store.runs.find((run) => run.workflowId === workflow?.id && run.status !== 'completed') ||
@@ -2557,25 +2808,33 @@ function RunnerPanel({
   }, [targetKind, requestPluginStatus])
 
   async function startRun(): Promise<void> {
-    if (!workflow) return
-    const timestamp = nowIso()
-    const run = {
-      id: `run_${Date.now()}`,
-      workflowId: workflow.id,
-      workflowTitle: workflow.title,
-      status: 'reviewing' as const,
-      currentStepIndex: 0,
-      steps: createRunSteps(workflow),
-      createdAt: timestamp,
-      updatedAt: timestamp
-    }
-    await commit({ ...store, runs: [run, ...store.runs] })
+    await runAction.run('start', async () => {
+      if (!workflow) return
+      const timestamp = nowIso()
+      const run = {
+        id: `run_${Date.now()}`,
+        workflowId: workflow.id,
+        workflowTitle: workflow.title,
+        status: 'reviewing' as const,
+        currentStepIndex: 0,
+        steps: createRunSteps(workflow),
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+      await commit((current) => ({ ...current, runs: [run, ...current.runs] }))
+    })
   }
 
   async function updateRun(steps: RunStep[], patch: Partial<typeof activeRun> = {}): Promise<void> {
     if (!activeRun) return
-    const nextRun = { ...activeRun, ...patch, steps, updatedAt: nowIso() }
-    await commit({ ...store, runs: store.runs.map((run) => (run.id === activeRun.id ? nextRun : run)) })
+    const activeRunId = activeRun.id
+    const updatedAt = nowIso()
+    await commit((current) => ({
+      ...current,
+      runs: current.runs.map((run) =>
+        run.id === activeRunId ? { ...run, ...patch, steps, updatedAt } : run
+      )
+    }))
   }
 
   async function sendCurrentTask(): Promise<void> {
@@ -2739,8 +2998,13 @@ function RunnerPanel({
             </button>
           </div>
         )}
-        <button className="primary-action" type="button" disabled={!workflow?.nodes.length} onClick={() => void startRun()}>
-          创建运行记录
+        <button
+          className="primary-action save-action"
+          type="button"
+          disabled={runAction.busy || !workflow?.nodes.length}
+          onClick={() => void startRun().catch(() => undefined)}
+        >
+          {runAction.busy ? '正在创建...' : '创建运行记录'}
         </button>
         {activeRun ? (
           <div className="run-card">
@@ -2869,7 +3133,7 @@ function McpPanel({
   setNotice
 }: {
   store: AppStore
-  commit: (store: AppStore) => Promise<void>
+  commit: CommitStore
   setNotice: (notice: string) => void
 }): JSX.Element {
   const [query, setQuery] = useState('')
@@ -2882,39 +3146,53 @@ function McpPanel({
   )
 
   async function saveMcp(server: McpServer): Promise<void> {
-    const next = { ...server, updatedAt: nowIso() }
-    await commit({ ...store, mcpServers: store.mcpServers.map((item) => (item.id === next.id ? next : item)) })
-    setEditing(null)
+    try {
+      const next = { ...server, updatedAt: nowIso() }
+      await commit((current) => {
+        const exists = current.mcpServers.some((item) => item.id === next.id)
+        return {
+          ...current,
+          mcpServers: exists
+            ? current.mcpServers.map((item) => (item.id === next.id ? next : item))
+            : [next, ...current.mcpServers]
+        }
+      })
+      setEditing(null)
+      setNotice(`已保存 MCP：${next.name}`)
+    } catch (error) {
+      setNotice(error instanceof Error ? `MCP 保存失败：${error.message}` : 'MCP 保存失败')
+    }
   }
 
-  async function createNewMcp(): Promise<void> {
-    const server = createMcpServer()
-    await commit({ ...store, mcpServers: [server, ...store.mcpServers] })
+  function createNewMcp(): void {
+    const server = createMcpServer({ tags: selectedGroup === 'all' ? [] : [selectedGroup] })
     setEditing(server)
+    setNotice('正在新建 MCP；保存后才会创建')
   }
 
   async function deleteMcp(server: McpServer): Promise<void> {
     if (!confirmDestructiveAction(`确认删除 MCP“${server.name}”？`, ['此操作会从 MCP 服务列表中移除该配置。'])) return
-    await commit({ ...store, mcpServers: store.mcpServers.filter((item) => item.id !== server.id) })
+    await commit((current) => ({ ...current, mcpServers: current.mcpServers.filter((item) => item.id !== server.id) }))
     setEditing(null)
     setNotice(`已删除 MCP：${server.name}`)
   }
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
-    await commit({ ...store, groups: { ...store.groups, mcps: groups } })
+    await commit((current) => ({ ...current, groups: { ...current.groups, mcps: groups } }))
   }
 
   async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
     const nextTag = renamedGroup.tag
-    await commit({
-      ...store,
-      mcpServers: store.mcpServers.map((server) => ({
+    const updatedAt = nowIso()
+    await commit((current) => ({
+      ...current,
+      mcpServers: current.mcpServers.map((server) => ({
         ...server,
         tags: replaceTag(server.tags, group.tag, nextTag),
-        updatedAt: server.tags.includes(group.tag) ? nowIso() : server.updatedAt
+        updatedAt: server.tags.includes(group.tag) ? updatedAt : server.updatedAt
       })),
-      groups: { ...store.groups, mcps: groups }
-    })
+      groups: { ...current.groups, mcps: groups }
+    }))
     if (selectedGroup === group.tag) setSelectedGroup(nextTag)
   }
 
@@ -2929,18 +3207,19 @@ function McpPanel({
     ) {
       return
     }
-    await commit({
-      ...store,
-      mcpServers: store.mcpServers.map((server) => ({
+    const updatedAt = nowIso()
+    await commit((current) => ({
+      ...current,
+      mcpServers: current.mcpServers.map((server) => ({
         ...server,
         tags: server.tags.filter((tag) => !tags.includes(tag)),
-        updatedAt: nowIso()
+        updatedAt
       })),
       groups: {
-        ...store.groups,
-        mcps: removeGroupById(store.groups.mcps, group.id)
+        ...current.groups,
+        mcps: removeGroupById(current.groups.mcps, group.id)
       }
-    })
+    }))
     if (tags.includes(selectedGroup)) setSelectedGroup('all')
   }
 
@@ -2949,8 +3228,12 @@ function McpPanel({
       const result = await formatFlow.importMcpConfig()
       setNotice(result.message)
       if (!result.ok) return
-      const { merged, added } = mergeMcpItems(store.mcpServers, result.items)
-      await commit({ ...store, mcpServers: merged })
+      let added: McpServer[] = []
+      await commit((current) => {
+        const mergedResult = mergeMcpItems(current.mcpServers, result.items)
+        added = mergedResult.added
+        return { ...current, mcpServers: mergedResult.merged }
+      })
       if (added[0]) setEditing(added[0])
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'MCP 导入失败')
@@ -2962,8 +3245,12 @@ function McpPanel({
       const result = await formatFlow.restoreMcpFromBackup()
       setNotice(result.message)
       if (!result.ok) return
-      const { merged, added } = mergeMcpItems(store.mcpServers, result.items)
-      await commit({ ...store, mcpServers: merged })
+      let added: McpServer[] = []
+      await commit((current) => {
+        const mergedResult = mergeMcpItems(current.mcpServers, result.items)
+        added = mergedResult.added
+        return { ...current, mcpServers: mergedResult.merged }
+      })
       if (added[0]) setEditing(added[0])
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'MCP 备份恢复失败')
@@ -3017,7 +3304,15 @@ function McpPanel({
           ))}
         </div>
       </div>
-      {editing && <McpEditorModal server={editing} close={() => setEditing(null)} save={saveMcp} deleteServer={deleteMcp} />}
+      {editing && (
+        <McpEditorModal
+          server={editing}
+          isNew={!store.mcpServers.some((item) => item.id === editing.id)}
+          close={() => setEditing(null)}
+          save={saveMcp}
+          deleteServer={deleteMcp}
+        />
+      )}
     </section>
   )
 }
@@ -3031,7 +3326,7 @@ function LearningPanel({
 }: {
   store: AppStore
   skills: SkillItem[]
-  commit: (store: AppStore) => Promise<void>
+  commit: CommitStore
   scanSkills: (directories?: string[]) => Promise<void>
   setNotice: (notice: string) => void
 }): JSX.Element {
@@ -3051,7 +3346,7 @@ function LearningPanel({
   const selectableSkills = skills.filter((skill) => !isLearningCoreSkill(skill))
 
   async function updateGroups(groups: GroupItem[]): Promise<void> {
-    await commit({ ...store, groups: { ...store.groups, learning: groups } })
+    await commit((current) => ({ ...current, groups: { ...current.groups, learning: groups } }))
   }
 
   async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
@@ -3069,19 +3364,24 @@ function LearningPanel({
       return
     }
     if (!confirmDestructiveAction(`确认删除学习分组“${group.name}”？`, ['只删除分组结构，不会删除本地 Skill。'])) return
-    const nextGroups = removeGroupById(store.groups.learning || [], group.id)
-    await updateGroups(nextGroups)
+    await commit((current) => ({
+      ...current,
+      groups: {
+        ...current.groups,
+        learning: removeGroupById(current.groups.learning || [], group.id)
+      }
+    }))
     if (selectedGroup === group.tag) setSelectedGroup('all')
   }
 
   async function saveMetadata(skill: SkillItem, metadata: SkillMetadata): Promise<void> {
-    await commit({
-      ...store,
+    await commit((current) => ({
+      ...current,
       skillIndex: {
-        ...store.skillIndex,
+        ...current.skillIndex,
         [skill.id]: { ...metadata, assignedTags: metadata.tags }
       }
-    })
+    }))
     setEditing(null)
     await scanSkills()
   }
@@ -3091,9 +3391,11 @@ function LearningPanel({
     const result = await formatFlow.deleteSkill(skill)
     setNotice(result.message)
     if (!result.ok) return
-    const nextSkillIndex = { ...store.skillIndex }
-    delete nextSkillIndex[skill.id]
-    await commit({ ...store, skillIndex: nextSkillIndex })
+    await commit((current) => {
+      const nextSkillIndex = { ...current.skillIndex }
+      delete nextSkillIndex[skill.id]
+      return { ...current, skillIndex: nextSkillIndex }
+    })
     setEditing(null)
     await scanSkills()
   }
@@ -3268,7 +3570,7 @@ function SettingsPanel({
 }: {
   store: AppStore
   paths: AppPaths | null
-  commit: (store: AppStore) => Promise<void>
+  commit: CommitStore
   scanSkills: (directories: string[]) => Promise<void>
   refreshPaths: () => Promise<void>
   setNotice: (notice: string) => void
@@ -3368,7 +3670,7 @@ function SettingsPanel({
 
   async function saveDirectories(): Promise<void> {
     const directories = normalizeSkillDirectories(skillDirectories)
-    await commit({ ...store, settings: { ...store.settings, skillDirectories: directories } })
+    await commit((current) => ({ ...current, settings: { ...current.settings, skillDirectories: directories } }))
     await scanSkills(directories)
     setSkillDirectories(directories)
   }
@@ -3376,7 +3678,7 @@ function SettingsPanel({
   async function saveShortcut(): Promise<void> {
     const result = await formatFlow.setShortcut(shortcut)
     if (result.ok) {
-      await commit({ ...store, settings: { ...store.settings, shortcut: result.accelerator } })
+      await commit((current) => ({ ...current, settings: { ...current.settings, shortcut: result.accelerator } }))
       setShortcut(result.accelerator)
     }
     setNotice(result.message)
@@ -3399,16 +3701,16 @@ function SettingsPanel({
       const value = dataDirectories[key].trim()
       if (value) overrides[key] = value
     }
-    await commit({
-      ...store,
+    await commit((current) => ({
+      ...current,
       settings: {
-        ...store.settings,
+        ...current.settings,
         dataDirectory: dataDirectories.data.trim(),
         dataDirectories: overrides
       }
-    })
+    }))
     await refreshPaths()
-    await scanSkills(normalizeSkillDirectories(store.settings.skillDirectories))
+    await scanSkills(normalizeSkillDirectories(skillDirectories))
     setNotice('分类数据目录已保存')
   }
 
@@ -3421,11 +3723,11 @@ function SettingsPanel({
     setNotice(result.message)
     if (!result.ok) return
     setBackupDirectory(result.path)
-    await commit({ ...store, settings: { ...store.settings, backupDirectory: result.path } })
+    await commit((current) => ({ ...current, settings: { ...current.settings, backupDirectory: result.path } }))
   }
 
   async function saveBackupDirectory(): Promise<void> {
-    await commit({ ...store, settings: { ...store.settings, backupDirectory } })
+    await commit((current) => ({ ...current, settings: { ...current.settings, backupDirectory } }))
     setNotice(backupDirectory ? '备份目录已保存' : '备份目录已恢复默认')
   }
 
@@ -3438,23 +3740,23 @@ function SettingsPanel({
     setNotice(result.message)
     if (!result.ok) return
     setTemporaryWordDirectory(result.path)
-    await commit({
-      ...store,
-      settings: { ...store.settings, temporaryWordDirectory: result.path, temporaryWordRetentionHours }
-    })
+    await commit((current) => ({
+      ...current,
+      settings: { ...current.settings, temporaryWordDirectory: result.path, temporaryWordRetentionHours }
+    }))
     await refreshPaths()
   }
 
   async function saveTemporaryWordSettings(): Promise<void> {
     const retentionHours = Math.min(720, Math.max(1, Math.round(temporaryWordRetentionHours || 24)))
-    await commit({
-      ...store,
+    await commit((current) => ({
+      ...current,
       settings: {
-        ...store.settings,
+        ...current.settings,
         temporaryWordDirectory: temporaryWordDirectory.trim(),
         temporaryWordRetentionHours: retentionHours
       }
-    })
+    }))
     setTemporaryWordRetentionHours(retentionHours)
     await refreshPaths()
     setNotice('临时文档设置已保存')
@@ -3474,14 +3776,18 @@ function SettingsPanel({
     const nextStore = backupSettingsStore(store, backupDirectory, gitBackupRemote, gitBackupBranch, gitBackupUserEmail)
     const result = await formatFlow.createBackup(nextStore)
     setNotice(result.message)
-    if (result.ok) await commit(nextStore)
+    if (result.ok) {
+      await commit((current) => backupSettingsStore(current, backupDirectory, gitBackupRemote, gitBackupBranch, gitBackupUserEmail))
+    }
   }
 
   async function createGitBackupNow(): Promise<void> {
     const nextStore = backupSettingsStore(store, backupDirectory, gitBackupRemote, gitBackupBranch, gitBackupUserEmail)
     const result = await formatFlow.createGitBackup(nextStore)
     setNotice(result.message)
-    if (result.ok) await commit(nextStore)
+    if (result.ok) {
+      await commit((current) => backupSettingsStore(current, backupDirectory, gitBackupRemote, gitBackupBranch, gitBackupUserEmail))
+    }
   }
 
   async function openBrowserExtensionInstaller(): Promise<void> {
@@ -3549,7 +3855,7 @@ function SettingsPanel({
 
   async function saveDiscoverySources(): Promise<void> {
     const normalized = normalizeDiscoverySources(discoverySources)
-    await commit({ ...store, settings: { ...store.settings, discoverySources: normalized } })
+    await commit((current) => ({ ...current, settings: { ...current.settings, discoverySources: normalized } }))
     setDiscoverySources(normalized)
     setNotice(`发现来源已保存：GitHub + ${normalized.filter((source) => source.enabled).length} 个自定义网站`)
   }
@@ -4393,14 +4699,14 @@ function GithubSkillPreviewModal({
 function PromptEditorModal({
   prompt,
   skills,
-  saving,
+  isNew,
   close,
   save,
   deletePrompt
 }: {
   prompt: PromptItem
   skills: SkillItem[]
-  saving: boolean
+  isNew: boolean
   close: () => void
   save: (prompt: PromptItem) => Promise<void>
   deletePrompt: (prompt: PromptItem) => Promise<void>
@@ -4412,20 +4718,15 @@ function PromptEditorModal({
   const [caseSensitive, setCaseSensitive] = useState(false)
   const [searchMessage, setSearchMessage] = useState('')
   const [preferredSkillQuery, setPreferredSkillQuery] = useState('')
-  const titleRef = useRef<HTMLInputElement | null>(null)
   const contentRef = useRef<HTMLTextAreaElement | null>(null)
   const findInputRef = useRef<HTMLInputElement | null>(null)
   const pendingSelection = useRef<{ start: number; end: number } | null>(null)
+  const action = useExclusiveAsyncAction<'save' | 'delete'>()
   const matches = useMemo(() => findTextMatches(draft.content, findText, caseSensitive), [draft.content, findText, caseSensitive])
   const preferredSkillIds = draft.preferredSkillIds || []
   const visiblePreferredSkills = skills
     .filter((skill) => matchesTextAndTags(skill, preferredSkillQuery, []))
     .sort((left, right) => left.title.localeCompare(right.title))
-
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => titleRef.current?.focus())
-    return () => cancelAnimationFrame(frame)
-  }, [])
 
   useEffect(() => {
     const selection = pendingSelection.current
@@ -4522,22 +4823,10 @@ function PromptEditorModal({
   }
 
   return (
-    <Modal title="编辑提示词" close={close} className="prompt-editor-modal">
+    <Modal title={isNew ? '新建提示词' : '编辑提示词'} close={close} className="prompt-editor-modal" busy={action.busy} busyLabel="正在保存提示词">
       <label>
-        {saving && (
-          <div className="prompt-save-progress" role="status" aria-live="polite">
-            <div className="prompt-save-progress-head">
-              <strong>正在后台保存新提示词</strong>
-              <span>处理中</span>
-            </div>
-            <div className="prompt-save-progress-track" aria-hidden="true">
-              <span />
-            </div>
-            <small>可以继续编辑，保存完成后会保留到当前分组。</small>
-          </div>
-        )}
         标题
-        <input ref={titleRef} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+        <input autoFocus value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
       </label>
       <label>
         摘要
@@ -4654,15 +4943,27 @@ function PromptEditorModal({
         />
       </label>
       <div className="inline-actions">
-        <button className="primary-action" type="button" onClick={() => void save({ ...draft, tags: parseTags(tagText) })}>
-          保存
+        <button
+          className="primary-action save-action"
+          type="button"
+          disabled={action.busy}
+          onClick={() => void action.run('save', () => save({ ...draft, tags: parseTags(tagText) })).catch(() => undefined)}
+        >
+          {action.busyAction === 'save' ? '正在保存...' : '保存'}
         </button>
-        <button type="button" onClick={() => setDraft({ ...draft, favorite: !draft.favorite })}>
+        <button type="button" disabled={action.busy} onClick={() => setDraft({ ...draft, favorite: !draft.favorite })}>
           {draft.favorite ? '取消收藏' : '收藏'}
         </button>
-        <button className="danger" type="button" onClick={() => void deletePrompt(draft)}>
-          删除
-        </button>
+        {!isNew && (
+          <button
+            className="danger"
+            type="button"
+            disabled={action.busy}
+            onClick={() => void action.run('delete', () => deletePrompt(draft)).catch(() => undefined)}
+          >
+            {action.busyAction === 'delete' ? '正在删除...' : '删除'}
+          </button>
+        )}
       </div>
     </Modal>
   )
@@ -5129,6 +5430,7 @@ function ManualSkillModal(
     ].join('\n')
   )
   const [error, setError] = useState('')
+  const action = useExclusiveAsyncAction<'save'>()
 
   function updateTitle(nextTitle: string): void {
     setTitle(nextTitle)
@@ -5147,17 +5449,19 @@ function ManualSkillModal(
       setError('请输入 Skill 内容')
       return
     }
-    await save({
-      name: cleanName,
-      title: title.trim() || cleanName,
-      description: description.trim() || 'Use when this manual Skill should guide the current task.',
-      tags: parseTags(tagText),
-      content: content.trim()
-    })
+    setError('')
+    await action.run('save', () => save({
+        name: cleanName,
+        title: title.trim() || cleanName,
+        description: description.trim() || 'Use when this manual Skill should guide the current task.',
+        tags: parseTags(tagText),
+        content: content.trim()
+      })
+    )
   }
 
   return (
-    <Modal title="新建 Skill" close={close} className="manual-skill-modal">
+    <Modal title="新建 Skill" close={close} className="manual-skill-modal" busy={action.busy} busyLabel="正在保存 Skill">
       <label>
         标题
         <input value={title} onChange={(event) => updateTitle(event.target.value)} />
@@ -5180,10 +5484,10 @@ function ManualSkillModal(
       </label>
       {error && <p className="form-error">{error}</p>}
       <div className="inline-actions">
-        <button className="primary-action" type="button" onClick={() => void saveDraft()}>
-          保存 Skill
+        <button className="primary-action save-action" type="button" disabled={action.busy} onClick={() => void saveDraft().catch(() => undefined)}>
+          {action.busy ? '正在保存...' : '保存 Skill'}
         </button>
-        <button type="button" onClick={close}>
+        <button type="button" disabled={action.busy} onClick={close}>
           取消
         </button>
       </div>
@@ -5193,11 +5497,13 @@ function ManualSkillModal(
 
 function McpEditorModal({
   server,
+  isNew,
   close,
   save,
   deleteServer
 }: {
   server: McpServer
+  isNew: boolean
   close: () => void
   save: (server: McpServer) => Promise<void>
   deleteServer: (server: McpServer) => Promise<void>
@@ -5206,12 +5512,13 @@ function McpEditorModal({
   const [argsText, setArgsText] = useState(server.args.join('\n'))
   const [envText, setEnvText] = useState(envToText(server.env))
   const [tagText, setTagText] = useState(tagsToText(server.tags))
+  const action = useExclusiveAsyncAction<'save' | 'delete'>()
 
   return (
-    <Modal title="编辑 MCP" close={close}>
+    <Modal title={isNew ? '新建 MCP' : '编辑 MCP'} close={close} busy={action.busy} busyLabel="正在保存 MCP">
       <label>
         名称
-        <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+        <input autoFocus value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
       </label>
       <label>
         Transport
@@ -5247,18 +5554,30 @@ function McpEditorModal({
       </label>
       <div className="inline-actions">
         <button
-          className="primary-action"
+          className="primary-action save-action"
           type="button"
-          onClick={() => void save({ ...draft, args: parseLines(argsText), env: parseEnvText(envText), tags: parseTags(tagText) })}
+          disabled={action.busy}
+          onClick={() =>
+            void action
+              .run('save', () => save({ ...draft, args: parseLines(argsText), env: parseEnvText(envText), tags: parseTags(tagText) }))
+              .catch(() => undefined)
+          }
         >
-          保存 MCP
+          {action.busyAction === 'save' ? '正在保存...' : '保存 MCP'}
         </button>
-        <button type="button" onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}>
+        <button type="button" disabled={action.busy} onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}>
           {draft.enabled ? '禁用' : '启用'}
         </button>
-        <button className="danger" type="button" onClick={() => void deleteServer(draft)}>
-          删除
-        </button>
+        {!isNew && (
+          <button
+            className="danger"
+            type="button"
+            disabled={action.busy}
+            onClick={() => void action.run('delete', () => deleteServer(draft)).catch(() => undefined)}
+          >
+            {action.busyAction === 'delete' ? '正在删除...' : '删除'}
+          </button>
+        )}
       </div>
     </Modal>
   )
@@ -5266,11 +5585,13 @@ function McpEditorModal({
 
 function WorkflowMetadataModal({
   workflow,
+  isNew,
   close,
   save,
   deleteWorkflow
 }: {
   workflow: Workflow
+  isNew: boolean
   close: () => void
   save: (workflow: Workflow) => Promise<void>
   deleteWorkflow: (workflow: Workflow) => Promise<void>
@@ -5278,12 +5599,13 @@ function WorkflowMetadataModal({
   const [draft, setDraft] = useState(workflow)
   const [tagText, setTagText] = useState(tagsToText(workflow.tags))
   const [variableText, setVariableText] = useState(tagsToText(workflow.variables))
+  const action = useExclusiveAsyncAction<'save' | 'delete'>()
 
   return (
-    <Modal title="编辑工作流" close={close}>
+    <Modal title={isNew ? '新建工作流' : '编辑工作流'} close={close} busy={action.busy} busyLabel="正在保存工作流">
       <label>
         标题
-        <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+        <input autoFocus value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
       </label>
       <label>
         说明
@@ -5299,18 +5621,30 @@ function WorkflowMetadataModal({
       </label>
       <div className="inline-actions">
         <button
-          className="primary-action"
+          className="primary-action save-action"
           type="button"
-          onClick={() => void save({ ...draft, tags: parseTags(tagText), variables: parseTags(variableText) })}
+          disabled={action.busy}
+          onClick={() =>
+            void action
+              .run('save', () => save({ ...draft, tags: parseTags(tagText), variables: parseTags(variableText) }))
+              .catch(() => undefined)
+          }
         >
-          保存
+          {action.busyAction === 'save' ? '正在保存...' : '保存'}
         </button>
-        <button type="button" onClick={() => setDraft({ ...draft, favorite: !draft.favorite })}>
+        <button type="button" disabled={action.busy} onClick={() => setDraft({ ...draft, favorite: !draft.favorite })}>
           {draft.favorite ? '取消收藏' : '收藏'}
         </button>
-        <button className="danger" type="button" onClick={() => void deleteWorkflow(draft)}>
-          删除
-        </button>
+        {!isNew && (
+          <button
+            className="danger"
+            type="button"
+            disabled={action.busy}
+            onClick={() => void action.run('delete', () => deleteWorkflow(draft)).catch(() => undefined)}
+          >
+            {action.busyAction === 'delete' ? '正在删除...' : '删除'}
+          </button>
+        )}
       </div>
     </Modal>
   )
@@ -5426,7 +5760,12 @@ function NodeInspector({
   removeNode: (nodeId: string) => Promise<void>
   moveNode: (nodeId: string, direction: -1 | 1) => Promise<void>
 }): JSX.Element {
+  const [titleDraft, setTitleDraft] = useState(node.title)
+  const [summaryDraft, setSummaryDraft] = useState(node.summary)
   const [tagText, setTagText] = useState(tagsToText(node.tags))
+  const nodeTextSaveTimerRef = useRef<number | null>(null)
+  const pendingNodeTextRef = useRef<{ title?: string; summary?: string } | null>(null)
+  const nodeTextFlushPromiseRef = useRef<Promise<void> | null>(null)
   const fullContent =
     node.type === 'prompt'
       ? prompt?.content || node.summary
@@ -5445,15 +5784,75 @@ function NodeInspector({
           : node.summary
 
   useEffect(() => {
+    setTitleDraft(node.title)
+    setSummaryDraft(node.summary)
     setTagText(tagsToText(node.tags))
-  }, [node.id, node.tags])
+    return () => {
+      void flushNodeText().catch(() => undefined)
+    }
+  }, [node.id])
+
+  useEffect(() => {
+    function flushWhenHidden(): void {
+      if (document.visibilityState === 'hidden') void flushNodeText().catch(() => undefined)
+    }
+    function flushBeforeUnload(): void {
+      void flushNodeText().catch(() => undefined)
+    }
+    document.addEventListener('visibilitychange', flushWhenHidden)
+    window.addEventListener('beforeunload', flushBeforeUnload)
+    return () => {
+      document.removeEventListener('visibilitychange', flushWhenHidden)
+      window.removeEventListener('beforeunload', flushBeforeUnload)
+    }
+  }, [node.id])
+
+  function queueNodeText(patch: { title?: string; summary?: string }): void {
+    pendingNodeTextRef.current = { ...pendingNodeTextRef.current, ...patch }
+    if (nodeTextSaveTimerRef.current !== null) window.clearTimeout(nodeTextSaveTimerRef.current)
+    nodeTextSaveTimerRef.current = window.setTimeout(() => {
+      void flushNodeText().catch(() => undefined)
+    }, 400)
+  }
+
+  function flushNodeText(): Promise<void> {
+    if (nodeTextSaveTimerRef.current !== null) {
+      window.clearTimeout(nodeTextSaveTimerRef.current)
+      nodeTextSaveTimerRef.current = null
+    }
+    if (nodeTextFlushPromiseRef.current) {
+      return nodeTextFlushPromiseRef.current.then(() =>
+        pendingNodeTextRef.current ? flushNodeText() : undefined
+      )
+    }
+    const pending = pendingNodeTextRef.current
+    if (!pending) return Promise.resolve()
+    pendingNodeTextRef.current = null
+    const run = updateNode(pending).catch((error) => {
+      pendingNodeTextRef.current = { ...pending, ...pendingNodeTextRef.current }
+      throw error
+    })
+    let tracked: Promise<void>
+    tracked = run.finally(() => {
+      if (nodeTextFlushPromiseRef.current === tracked) nodeTextFlushPromiseRef.current = null
+    })
+    nodeTextFlushPromiseRef.current = tracked
+    return tracked
+  }
 
   return (
     <div className="node-inspector">
       <h3>节点详情</h3>
       <label>
         标题
-        <input value={node.title} onChange={(event) => void updateNode({ title: event.target.value })} />
+        <input
+          value={titleDraft}
+          onChange={(event) => {
+            setTitleDraft(event.target.value)
+            queueNodeText({ title: event.target.value })
+          }}
+          onBlur={() => void flushNodeText().catch(() => undefined)}
+        />
       </label>
       <div className="node-resource-summary">
         <strong>{nodeTypeLabel(node.type)}</strong>
@@ -5466,7 +5865,14 @@ function NodeInspector({
       </div>
       <label>
         摘要
-        <textarea value={node.summary} onChange={(event) => void updateNode({ summary: event.target.value })} />
+        <textarea
+          value={summaryDraft}
+          onChange={(event) => {
+            setSummaryDraft(event.target.value)
+            queueNodeText({ summary: event.target.value })
+          }}
+          onBlur={() => void flushNodeText().catch(() => undefined)}
+        />
       </label>
       <label>
         标签
@@ -6473,17 +6879,44 @@ function RecommendedShortcutModal({
   )
 }
 
-function Modal({ title, close, children, className = '' }: { title: string; close: () => void; children: ReactNode; className?: string }): JSX.Element {
+function Modal({
+  title,
+  close,
+  children,
+  className = '',
+  busy = false,
+  busyLabel = '正在处理'
+}: {
+  title: string
+  close: () => void
+  children: ReactNode
+  className?: string
+  busy?: boolean
+  busyLabel?: string
+}): JSX.Element {
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className={className ? `modal-card ${className}` : 'modal-card'} role="dialog" aria-modal="true" aria-label={title}>
+      <section
+        className={className ? `modal-card ${className}` : 'modal-card'}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        aria-busy={busy}
+      >
+        {busy && (
+          <div className="modal-save-progress" role="status" aria-live="polite" aria-label={busyLabel}>
+            <span aria-hidden="true" />
+          </div>
+        )}
         <header className="modal-header">
           <h2>{title}</h2>
-          <button type="button" onClick={close}>
+          <button type="button" disabled={busy} onClick={close}>
             关闭
           </button>
         </header>
-        <div className="modal-body">{children}</div>
+        <div className="modal-body" inert={busy} aria-disabled={busy || undefined}>
+          {children}
+        </div>
       </section>
     </div>
   )
@@ -6608,6 +7041,7 @@ function ResourceGroupManager({
   const [dragOverGroupId, setDragOverGroupId] = useState('')
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set())
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
+  const groupAction = useExclusiveAsyncAction<'create' | 'rename' | 'move' | 'reorder' | 'delete'>()
   const rootDropTargetId = '__root__'
   const canDropGroupOnRoot = Boolean(draggedGroupId && !groups.some((group) => group.id === draggedGroupId))
   const isRootDropTarget = dragOverGroupId === rootDropTargetId && canDropGroupOnRoot
@@ -6652,21 +7086,23 @@ function ResourceGroupManager({
     if (!groupDraft) return
     const name = groupDraft.name.trim()
     if (!name) return
-    const nextGroup = createGroupFromName(name, groups)
-    let nextGroups: GroupItem[]
-    let parentGroup: GroupItem | null = null
-    if (groupDraft.mode === 'root') {
-      nextGroups = [...groups, nextGroup]
-    } else {
-      parentGroup = findGroupById(groups, groupDraft.parentId) || null
-      nextGroups = updateGroupById(groups, groupDraft.parentId, (group) => ({
-        ...group,
-        children: [...group.children, nextGroup]
-      }))
-    }
-    await (onCreate ? onCreate(parentGroup, nextGroup, nextGroups) : onChange(nextGroups))
-    onSelect(nextGroup.tag)
-    setGroupDraft(null)
+    await groupAction.run('create', async () => {
+      const nextGroup = createGroupFromName(name, groups)
+      let nextGroups: GroupItem[]
+      let parentGroup: GroupItem | null = null
+      if (groupDraft.mode === 'root') {
+        nextGroups = [...groups, nextGroup]
+      } else {
+        parentGroup = findGroupById(groups, groupDraft.parentId) || null
+        nextGroups = updateGroupById(groups, groupDraft.parentId, (group) => ({
+          ...group,
+          children: [...group.children, nextGroup]
+        }))
+      }
+      await (onCreate ? onCreate(parentGroup, nextGroup, nextGroups) : onChange(nextGroups))
+      onSelect(nextGroup.tag)
+      setGroupDraft(null)
+    })
   }
 
   function openChildGroupDialog(parent: GroupItem): void {
@@ -6692,24 +7128,28 @@ function ResourceGroupManager({
       setRenameDraft({ ...renameDraft, error: '请输入分组名称' })
       return
     }
-    const nextGroups = renameGroupById(groups, renameDraft.group.id, tag)
-    const renamedGroup = findGroupById(nextGroups, renameDraft.group.id)
-    if (!renamedGroup) return
-    await (onRename ? onRename(renameDraft.group, renamedGroup, nextGroups) : onChange(nextGroups))
-    onSelect(renamedGroup.tag)
-    setRenameDraft(null)
+    await groupAction.run('rename', async () => {
+      const nextGroups = renameGroupById(groups, renameDraft.group.id, tag)
+      const renamedGroup = findGroupById(nextGroups, renameDraft.group.id)
+      if (!renamedGroup) return
+      await (onRename ? onRename(renameDraft.group, renamedGroup, nextGroups) : onChange(nextGroups))
+      onSelect(renamedGroup.tag)
+      setRenameDraft(null)
+    })
   }
 
   async function saveMoveGroup(): Promise<void> {
     if (!moveDraft) return
-    const nextGroups = moveGroupToParent(groups, moveDraft.group.id, moveDraft.targetParentId || null)
-    await onChange(nextGroups)
-    onSelect(moveDraft.group.tag)
-    setMoveDraft(null)
+    await groupAction.run('move', async () => {
+      const nextGroups = moveGroupToParent(groups, moveDraft.group.id, moveDraft.targetParentId || null)
+      await onChange(nextGroups)
+      onSelect(moveDraft.group.tag)
+      setMoveDraft(null)
+    })
   }
 
   async function moveGroup(group: GroupItem, direction: -1 | 1): Promise<void> {
-    await onChange(moveGroupById(groups, group.id, direction))
+    await groupAction.run('reorder', () => onChange(moveGroupById(groups, group.id, direction)))
   }
 
   function canDropGroupOnTarget(targetGroup: GroupItem): boolean {
@@ -6722,8 +7162,10 @@ function ResourceGroupManager({
     setDragOverGroupId('')
     setDraggedGroupId('')
     if (!draggedGroup || draggedGroup.id === targetParent.id || groupContainsId(draggedGroup, targetParent.id)) return
-    await onChange(moveGroupToParent(groups, draggedGroup.id, targetParent.id))
-    onSelect(draggedGroup.tag)
+    await groupAction.run('move', async () => {
+      await onChange(moveGroupToParent(groups, draggedGroup.id, targetParent.id))
+      onSelect(draggedGroup.tag)
+    })
   }
 
   async function dropGroupOnRoot(): Promise<void> {
@@ -6731,8 +7173,14 @@ function ResourceGroupManager({
     setDragOverGroupId('')
     setDraggedGroupId('')
     if (!draggedGroup || groups.some((group) => group.id === draggedGroup.id)) return
-    await onChange(moveGroupToParent(groups, draggedGroup.id, null))
-    onSelect(draggedGroup.tag)
+    await groupAction.run('move', async () => {
+      await onChange(moveGroupToParent(groups, draggedGroup.id, null))
+      onSelect(draggedGroup.tag)
+    })
+  }
+
+  async function deleteGroup(group: GroupItem): Promise<void> {
+    await groupAction.run('delete', () => onDelete(group))
   }
 
   function toggleGroupCollapsed(groupId: string): void {
@@ -6750,7 +7198,7 @@ function ResourceGroupManager({
   const moveTargets = moveDraft ? availableGroupMoveTargets(groups, moveDraft.group.id) : []
 
   return (
-    <div className="library-sidebar">
+    <div className="library-sidebar" aria-busy={groupAction.busy}>
       <PanelHeader title={title} detail={detail} />
       <button
         className={[
@@ -6759,6 +7207,7 @@ function ResourceGroupManager({
           isRootDropTarget ? 'root-drop-target' : ''
         ].filter(Boolean).join(' ')}
         type="button"
+        disabled={groupAction.busy}
         onClick={() => onSelect('all')}
         onDragOver={(event) => {
           if (!canDropGroupOnRoot) return
@@ -6779,7 +7228,7 @@ function ResourceGroupManager({
         {allLabel}
         <span>{allCount}</span>
       </button>
-      <div className="group-tree">
+      <div className="group-tree" inert={groupAction.busy}>
         {groups.map((group) => (
           <GroupTreeItem
             key={group.id}
@@ -6789,7 +7238,7 @@ function ResourceGroupManager({
             countForTags={countForTags}
             onSelect={onSelect}
             moveGroup={moveGroup}
-            deleteGroup={onDelete}
+            deleteGroup={deleteGroup}
             draggedGroupId={draggedGroupId}
             dragOverGroupId={dragOverGroupId}
             setDraggedGroupId={setDraggedGroupId}
@@ -6805,7 +7254,7 @@ function ResourceGroupManager({
           />
         ))}
       </div>
-      <button type="button" onClick={() => setGroupDraft({ mode: 'root', name: '' })}>
+      <button type="button" disabled={groupAction.busy} onClick={() => setGroupDraft({ mode: 'root', name: '' })}>
         添加分组
       </button>
       {footer && <div className="group-footer">{footer}</div>}
@@ -6813,32 +7262,38 @@ function ResourceGroupManager({
         <div
           ref={contextMenuRef}
           className="context-menu"
+          inert={groupAction.busy}
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
-          <button type="button" onClick={() => void moveGroup(contextMenu.group, -1).then(() => setContextMenu(null))}>
+          <button type="button" disabled={groupAction.busy} onClick={() => void moveGroup(contextMenu.group, -1).then(() => setContextMenu(null)).catch(() => undefined)}>
             上移
           </button>
-          <button type="button" onClick={() => void moveGroup(contextMenu.group, 1).then(() => setContextMenu(null))}>
+          <button type="button" disabled={groupAction.busy} onClick={() => void moveGroup(contextMenu.group, 1).then(() => setContextMenu(null)).catch(() => undefined)}>
             下移
           </button>
-          <button type="button" onClick={() => openChildGroupDialog(contextMenu.group)}>
+          <button type="button" disabled={groupAction.busy} onClick={() => openChildGroupDialog(contextMenu.group)}>
             添加小类
           </button>
-          <button type="button" onClick={() => openRenameGroupDialog(contextMenu.group)}>
+          <button type="button" disabled={groupAction.busy} onClick={() => openRenameGroupDialog(contextMenu.group)}>
             重命名
           </button>
-          <button type="button" onClick={() => openMoveGroupDialog(contextMenu.group)}>
+          <button type="button" disabled={groupAction.busy} onClick={() => openMoveGroupDialog(contextMenu.group)}>
             移动到其他分组
           </button>
           {renderGroupContextActions?.(contextMenu.group, () => setContextMenu(null))}
-          <button className="danger" type="button" onClick={() => void onDelete(contextMenu.group).then(() => setContextMenu(null))}>
-            删除分组/小类
+          <button className="danger" type="button" disabled={groupAction.busy} onClick={() => void deleteGroup(contextMenu.group).then(() => setContextMenu(null)).catch(() => undefined)}>
+            {groupAction.busyAction === 'delete' ? '正在删除...' : '删除分组/小类'}
           </button>
         </div>
       )}
       {groupDraft && (
-        <Modal title={groupDraft.mode === 'root' ? '添加分组' : `给「${groupDraft.parentName}」添加小类`} close={() => setGroupDraft(null)}>
+        <Modal
+          title={groupDraft.mode === 'root' ? '添加分组' : `给「${groupDraft.parentName}」添加小类`}
+          close={() => setGroupDraft(null)}
+          busy={groupAction.busy}
+          busyLabel="正在保存分组"
+        >
           <label className="form-field">
             名称
             <input
@@ -6846,23 +7301,26 @@ function ResourceGroupManager({
               value={groupDraft.name}
               onChange={(event) => setGroupDraft({ ...groupDraft, name: event.target.value })}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') void saveGroupDraft()
-                if (event.key === 'Escape') setGroupDraft(null)
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void saveGroupDraft().catch(() => undefined)
+                }
+                if (event.key === 'Escape' && !groupAction.busy) setGroupDraft(null)
               }}
             />
           </label>
           <div className="inline-actions">
-            <button type="button" onClick={() => void saveGroupDraft()}>
-              保存
+            <button className="primary-action save-action" type="button" disabled={groupAction.busy} onClick={() => void saveGroupDraft().catch(() => undefined)}>
+              {groupAction.busyAction === 'create' ? '正在保存...' : '保存'}
             </button>
-            <button type="button" onClick={() => setGroupDraft(null)}>
+            <button type="button" disabled={groupAction.busy} onClick={() => setGroupDraft(null)}>
               取消
             </button>
           </div>
         </Modal>
       )}
       {renameDraft && (
-        <Modal title={`重命名「${renameDraft.group.name}」`} close={() => setRenameDraft(null)}>
+        <Modal title={`重命名「${renameDraft.group.name}」`} close={() => setRenameDraft(null)} busy={groupAction.busy} busyLabel="正在重命名分组">
           <label className="form-field">
             新名称
             <input
@@ -6870,24 +7328,27 @@ function ResourceGroupManager({
               value={renameDraft.name}
               onChange={(event) => setRenameDraft({ ...renameDraft, name: event.target.value, error: '' })}
               onKeyDown={(event) => {
-                if (event.key === 'Enter') void saveRenameGroup()
-                if (event.key === 'Escape') setRenameDraft(null)
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void saveRenameGroup().catch(() => undefined)
+                }
+                if (event.key === 'Escape' && !groupAction.busy) setRenameDraft(null)
               }}
             />
           </label>
           {renameDraft.error && <p className="form-error">{renameDraft.error}</p>}
           <div className="inline-actions">
-            <button className="primary-action" type="button" onClick={() => void saveRenameGroup()}>
-              保存
+            <button className="primary-action save-action" type="button" disabled={groupAction.busy} onClick={() => void saveRenameGroup().catch(() => undefined)}>
+              {groupAction.busyAction === 'rename' ? '正在保存...' : '保存'}
             </button>
-            <button type="button" onClick={() => setRenameDraft(null)}>
+            <button type="button" disabled={groupAction.busy} onClick={() => setRenameDraft(null)}>
               取消
             </button>
           </div>
         </Modal>
       )}
       {moveDraft && (
-        <Modal title={`移动「${moveDraft.group.name}」`} close={() => setMoveDraft(null)}>
+        <Modal title={`移动「${moveDraft.group.name}」`} close={() => setMoveDraft(null)} busy={groupAction.busy} busyLabel="正在移动分组">
           <div className="group-move-targets" role="radiogroup" aria-label="目标位置">
             <button
               className={moveDraft.targetParentId === '' ? 'active' : ''}
@@ -6914,10 +7375,10 @@ function ResourceGroupManager({
             ))}
           </div>
           <div className="inline-actions">
-            <button className="primary-action" type="button" onClick={() => void saveMoveGroup()}>
-              移动
+            <button className="primary-action save-action" type="button" disabled={groupAction.busy} onClick={() => void saveMoveGroup().catch(() => undefined)}>
+              {groupAction.busyAction === 'move' ? '正在移动...' : '移动'}
             </button>
-            <button type="button" onClick={() => setMoveDraft(null)}>
+            <button type="button" disabled={groupAction.busy} onClick={() => setMoveDraft(null)}>
               取消
             </button>
           </div>

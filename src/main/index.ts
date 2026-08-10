@@ -24,6 +24,7 @@ import {
   removeTemporaryWordAttachment
 } from './temporary-word'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
+import { planCategorizedStoreWrites, type CategorizedStoreWritePlan } from '../shared/store-persistence'
 import {
   buildGithubRepositorySearchUrl,
   buildWebsiteSearchUrl,
@@ -120,6 +121,10 @@ let captureAltSpaceRegistered = false
 let lastLauncherOpenAt = 0
 let releaseForegroundTimer: NodeJS.Timeout | null = null
 let temporaryWordCleanupTimer: NodeJS.Timeout | null = null
+let storeCache: AppStore | null = null
+let categorizedStoreBaseline: AppStore | null = null
+let storeLoadPromise: Promise<AppStore> | null = null
+let storeSaveTail: Promise<void> = Promise.resolve()
 const browserBridgeTasks: Array<{ id: string; payload: Record<string, unknown>; createdAt: number }> = []
 const browserBridgeTaskWaiters = new Map<string, {
   resolve: (result: Record<string, unknown> | null) => void
@@ -160,8 +165,80 @@ async function writeDataDirectoryPreference(
   dataDirectories: DataDirectoryOverrides = {}
 ): Promise<void> {
   const preferencePath = getDataDirectoryPreferencePath()
-  await fs.mkdir(path.dirname(preferencePath), { recursive: true })
-  await fs.writeFile(preferencePath, `${JSON.stringify({ dataDirectory, dataDirectories }, null, 2)}\n`, 'utf8')
+  await writeTextFileAtomic(preferencePath, `${JSON.stringify({ dataDirectory, dataDirectories }, null, 2)}\n`)
+}
+
+type StoreStorageTargets = {
+  dataRoot: string
+  storePath: string
+  promptDirectory: string
+  workflowDirectory: string
+  skillMetadataDirectory: string
+  skillMetadataPath: string
+  managedSkillDirectory: string
+}
+
+class StoreLocationUnavailableError extends Error {
+  constructor(readonly storePath: string) {
+    super(`配置的应用数据目录暂时不可用：${storePath}`)
+    this.name = 'StoreLocationUnavailableError'
+  }
+}
+
+function storageTargetsForStore(store: AppStore): StoreStorageTargets {
+  const dataRoot = store.settings.dataDirectory?.trim() || app.getPath('userData')
+  const overrides = store.settings.dataDirectories || {}
+  const promptDirectory = overrides.prompts?.trim() || path.join(dataRoot, 'prompts')
+  const workflowDirectory = overrides.workflows?.trim() || path.join(dataRoot, 'workflows')
+  const skillMetadataDirectory = overrides.skillMetadata?.trim() || path.join(dataRoot, 'skills')
+  const targets = {
+    dataRoot,
+    storePath: path.join(dataRoot, 'format-flow-store.json'),
+    promptDirectory,
+    workflowDirectory,
+    skillMetadataDirectory,
+    skillMetadataPath: path.join(skillMetadataDirectory, 'metadata.json'),
+    managedSkillDirectory: overrides.managedSkills?.trim() || getDefaultManagedSkillDirectory()
+  }
+  assertSafeStorageTargets(targets)
+  return targets
+}
+
+function assertSafeStorageTargets(targets: StoreStorageTargets): void {
+  const managedDirectories = [
+    ['提示词', targets.promptDirectory],
+    ['工作流', targets.workflowDirectory],
+    ['Skill 元数据', targets.skillMetadataDirectory],
+    ['托管 Skill', targets.managedSkillDirectory]
+  ] as const
+
+  for (const [label, directory] of managedDirectories) {
+    if (isPathInside(targets.dataRoot, directory)) {
+      throw new Error(`${label}目录不能等于或包含应用数据根目录：${directory}`)
+    }
+  }
+
+  for (let leftIndex = 0; leftIndex < managedDirectories.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < managedDirectories.length; rightIndex += 1) {
+      const [leftLabel, leftDirectory] = managedDirectories[leftIndex]
+      const [rightLabel, rightDirectory] = managedDirectories[rightIndex]
+      if (isPathInside(leftDirectory, rightDirectory) || isPathInside(rightDirectory, leftDirectory)) {
+        throw new Error(`${leftLabel}目录与${rightLabel}目录不能相同或互相包含`)
+      }
+    }
+  }
+}
+
+async function writeTextFileAtomic(filePath: string, content: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  try {
+    await fs.writeFile(temporaryPath, content, 'utf8')
+    await fs.rename(temporaryPath, filePath)
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
 }
 
 function getDataRoot(): string {
@@ -858,111 +935,215 @@ function sendJson(response: http.ServerResponse, statusCode: number, payload: un
   response.end(JSON.stringify(payload))
 }
 
-async function loadStore(): Promise<AppStore> {
-  const storePath = getStorePath()
+async function loadStoreFromDisk(): Promise<AppStore> {
+  const preference = readDataDirectoryPreference()
+  let normalized: AppStore
   try {
-    const content = await fs.readFile(storePath, 'utf8')
-    const normalized = normalizeStore(JSON.parse(content) as Partial<AppStore>)
-    configureTemporaryWordStorage(normalized.settings)
-    await saveCategorizedStoreFiles(normalized)
-    return normalized
-  } catch {
-    const store = normalizeStore(null)
-    await saveStore(store)
-    return store
+    const content = await fs.readFile(getStorePath(), 'utf8')
+    normalized = normalizeStore(JSON.parse(content) as Partial<AppStore>)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    if (preference.dataDirectory) {
+      throw new StoreLocationUnavailableError(getStorePath())
+    }
+    const initialStore = normalizeStore(null)
+    initialStore.settings = {
+      ...initialStore.settings,
+      dataDirectories: preference.dataDirectories
+    }
+    return saveStore(initialStore)
   }
+
+  configureTemporaryWordStorage(normalized.settings)
+  storeCache = normalized
+  try {
+    await saveCategorizedStoreFiles(
+      normalized,
+      { prompts: true, workflows: true, skillMetadata: true },
+      storageTargetsForStore(normalized)
+    )
+    categorizedStoreBaseline = normalized
+  } catch (error) {
+    console.warn('Unable to refresh categorized store mirrors; canonical store remains available.', error)
+  }
+  return normalized
+}
+
+async function loadStore(): Promise<AppStore> {
+  if (storeCache) return storeCache
+  if (!storeLoadPromise) {
+    storeLoadPromise = loadStoreFromDisk().finally(() => {
+      storeLoadPromise = null
+    })
+  }
+  return storeLoadPromise
+}
+
+async function loadStoreWithRecovery(): Promise<boolean> {
+  while (true) {
+    try {
+      await loadStore()
+      return true
+    } catch (error) {
+      if (!(error instanceof StoreLocationUnavailableError)) {
+        dialog.showErrorBox('Format Flow 无法载入数据', error instanceof Error ? error.message : '数据文件读取失败')
+        app.quit()
+        return false
+      }
+
+      const { response } = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'Format Flow 数据目录不可用',
+        message: '已保留原数据目录设置，没有创建或覆盖任何数据。',
+        detail: `${error.storePath}\n\n请重新连接磁盘后重试，或恢复全部默认目录。恢复设置不会删除原目录中的文件。`,
+        buttons: ['重试', '恢复全部默认目录', '退出'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true
+      })
+      if (response === 0) {
+        storeLoadPromise = null
+        continue
+      }
+      if (response === 1) {
+        try {
+          await writeDataDirectoryPreference('', {})
+          storeCache = null
+          categorizedStoreBaseline = null
+          storeLoadPromise = null
+          continue
+        } catch (resetError) {
+          dialog.showErrorBox(
+            'Format Flow 无法恢复默认目录',
+            resetError instanceof Error ? resetError.message : '数据目录设置写入失败'
+          )
+        }
+      }
+      app.quit()
+      return false
+    }
+  }
+}
+
+async function saveStoreNow(normalized: AppStore): Promise<AppStore> {
+  const targets = storageTargetsForStore(normalized)
+  const writePlan = planCategorizedStoreWrites(categorizedStoreBaseline, normalized)
+  const currentPreference = readDataDirectoryPreference()
+  const desiredPreference: DataDirectoryPreference = {
+    dataDirectory: normalized.settings.dataDirectory || '',
+    dataDirectories: normalized.settings.dataDirectories || {}
+  }
+  await saveCategorizedStoreFiles(normalized, writePlan, targets)
+  await writeTextFileAtomic(targets.storePath, `${JSON.stringify(normalized, null, 2)}\n`)
+  if (JSON.stringify(currentPreference) !== JSON.stringify(desiredPreference)) {
+    await writeDataDirectoryPreference(desiredPreference.dataDirectory, desiredPreference.dataDirectories)
+  }
+  configureTemporaryWordStorage(normalized.settings)
+  storeCache = normalized
+  categorizedStoreBaseline = normalized
+  return normalized
 }
 
 async function saveStore(store: AppStore): Promise<AppStore> {
   const normalized = normalizeStore(store)
-  configureTemporaryWordStorage(normalized.settings)
-  await writeDataDirectoryPreference(normalized.settings.dataDirectory || '', normalized.settings.dataDirectories)
-  const storePath = getStorePath()
-  await fs.mkdir(path.dirname(storePath), { recursive: true })
-  await fs.writeFile(storePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8')
-  await saveCategorizedStoreFiles(normalized)
-  return normalized
+  const task = storeSaveTail
+    .catch(() => undefined)
+    .then(() => saveStoreNow(normalized))
+  storeSaveTail = task.then(
+    () => undefined,
+    () => undefined
+  )
+  return task
 }
 
-async function saveCategorizedStoreFiles(store: AppStore): Promise<void> {
-  const dataRoot = getDataRoot()
-  const promptDirectory = getPromptDirectory()
-  const workflowDirectory = getWorkflowDirectory()
-  const skillDirectory = getSkillMetadataDirectory()
-
-  await resetManagedDataDirectory(promptDirectory, dataRoot, 'prompts')
-  await resetManagedDataDirectory(workflowDirectory, dataRoot, 'workflows')
-  await fs.mkdir(skillDirectory, { recursive: true })
-
-  const promptFiles = store.prompts.map(
-    (prompt) => `${safeSegment(prompt.title)}-${safeSegment(prompt.id)}.json`
-  )
-  await Promise.all(
-    store.prompts.map((prompt, index) =>
-      fs.writeFile(
-        path.join(promptDirectory, promptFiles[index]),
-        `${JSON.stringify(prompt, null, 2)}\n`,
-        'utf8'
-      )
-    )
-  )
-  await writeManagedDataManifest(promptDirectory, 'prompts', promptFiles)
-
-  const workflowFiles = store.workflows.map(
-    (workflow) => `${safeSegment(workflow.title)}-${safeSegment(workflow.id)}.json`
-  )
-  await Promise.all(
-    store.workflows.map((workflow, index) =>
-      fs.writeFile(
-        path.join(workflowDirectory, workflowFiles[index]),
-        `${JSON.stringify(workflow, null, 2)}\n`,
-        'utf8'
-      )
-    )
-  )
-  await writeManagedDataManifest(workflowDirectory, 'workflows', workflowFiles)
-
-  await fs.writeFile(
-    getSkillMetadataPath(),
-    `${JSON.stringify(
-      {
-        format: 'format-flow-skill-metadata',
-        updatedAt: new Date().toISOString(),
-        skillIndex: store.skillIndex,
-        groups: store.groups.skills,
-        skillDirectories: store.settings.skillDirectories,
-        managedSkillDirectory: getManagedSkillDirectory()
-      },
-      null,
-      2
-    )}\n`,
-    'utf8'
-  )
-}
-
-async function resetManagedDataDirectory(
-  directory: string,
-  dataRoot: string,
-  kind: 'prompts' | 'workflows'
+async function saveCategorizedStoreFiles(
+  store: AppStore,
+  writePlan: CategorizedStoreWritePlan,
+  targets: StoreStorageTargets
 ): Promise<void> {
-  if (isPathInside(directory, dataRoot)) {
-    await fs.rm(directory, { recursive: true, force: true })
-    await fs.mkdir(directory, { recursive: true })
-    return
+  if (writePlan.prompts) {
+    const promptFiles = store.prompts.map(
+      (prompt) => `${safeSegment(prompt.title)}-${safeSegment(prompt.id)}.json`
+    )
+    await synchronizeManagedDataDirectory(
+      targets.promptDirectory,
+      'prompts',
+      store.prompts.map((prompt, index) => ({
+        fileName: promptFiles[index],
+        content: `${JSON.stringify(prompt, null, 2)}\n`
+      }))
+    )
   }
 
+  if (writePlan.workflows) {
+    const workflowFiles = store.workflows.map(
+      (workflow) => `${safeSegment(workflow.title)}-${safeSegment(workflow.id)}.json`
+    )
+    await synchronizeManagedDataDirectory(
+      targets.workflowDirectory,
+      'workflows',
+      store.workflows.map((workflow, index) => ({
+        fileName: workflowFiles[index],
+        content: `${JSON.stringify(workflow, null, 2)}\n`
+      }))
+    )
+  }
+
+  if (writePlan.skillMetadata) {
+    await fs.mkdir(targets.skillMetadataDirectory, { recursive: true })
+    await writeTextFileAtomic(
+      targets.skillMetadataPath,
+      `${JSON.stringify(
+        {
+          format: 'format-flow-skill-metadata',
+          updatedAt: new Date().toISOString(),
+          skillIndex: store.skillIndex,
+          groups: store.groups.skills,
+          skillDirectories: store.settings.skillDirectories,
+          managedSkillDirectory: targets.managedSkillDirectory
+        },
+        null,
+        2
+      )}\n`
+    )
+  }
+}
+
+async function synchronizeManagedDataDirectory(
+  directory: string,
+  kind: 'prompts' | 'workflows',
+  entries: Array<{ fileName: string; content: string }>
+): Promise<void> {
   await fs.mkdir(directory, { recursive: true })
   const manifestPath = managedDataManifestPath(directory, kind)
+  let previousFiles: string[] = []
   try {
     const parsed = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as { files?: unknown }
-    const files = Array.isArray(parsed.files) ? parsed.files.filter((item): item is string => typeof item === 'string') : []
-    for (const fileName of files) {
-      if (path.basename(fileName) !== fileName) continue
-      await fs.rm(path.join(directory, fileName), { force: true })
-    }
+    previousFiles = Array.isArray(parsed.files)
+      ? parsed.files.filter((item): item is string => typeof item === 'string' && path.basename(item) === item)
+      : []
   } catch {
     // A newly selected external directory has no Format Flow manifest yet.
   }
+
+  const nextFiles = new Set(entries.map((entry) => entry.fileName))
+  await Promise.all(
+    previousFiles
+      .filter((fileName) => !nextFiles.has(fileName))
+      .map((fileName) => fs.rm(path.join(directory, fileName), { force: true }))
+  )
+  await Promise.all(
+    entries.map(async (entry) => {
+      const filePath = path.join(directory, entry.fileName)
+      try {
+        if ((await fs.readFile(filePath, 'utf8')) === entry.content) return
+      } catch {
+        // Missing or unreadable managed files are rewritten below.
+      }
+      await writeTextFileAtomic(filePath, entry.content)
+    })
+  )
+  await writeManagedDataManifest(directory, kind, entries.map((entry) => entry.fileName))
 }
 
 function managedDataManifestPath(directory: string, kind: 'prompts' | 'workflows'): string {
@@ -974,10 +1155,9 @@ async function writeManagedDataManifest(
   kind: 'prompts' | 'workflows',
   files: string[]
 ): Promise<void> {
-  await fs.writeFile(
+  await writeTextFileAtomic(
     managedDataManifestPath(directory, kind),
-    `${JSON.stringify({ format: `format-flow-${kind}`, files }, null, 2)}\n`,
-    'utf8'
+    `${JSON.stringify({ format: `format-flow-${kind}`, files }, null, 2)}\n`
   )
 }
 
@@ -2434,20 +2614,7 @@ function registerIpc(): void {
   ipcMain.handle('browserBridge:getOutput', () => browserBridgeOutput)
   ipcMain.handle('browserBridge:queueTask', (_event, payload: Record<string, unknown>) => queueBrowserBridgeTask(payload))
   ipcMain.handle('browserExtension:openInstaller', () => openBrowserExtensionInstaller())
-  ipcMain.handle('shortcut:set', async (_event, accelerator: string) => {
-    const result = registerShortcut(accelerator)
-    if (result.ok) {
-      const store = await loadStore()
-      await saveStore({
-        ...store,
-        settings: {
-          ...store.settings,
-          shortcut: result.accelerator
-        }
-      })
-    }
-    return result
-  })
+  ipcMain.handle('shortcut:set', (_event, accelerator: string) => registerShortcut(accelerator))
   ipcMain.handle('shortcut:captureActive', (_event, active: boolean) => {
     setShortcutCaptureActive(active)
   })
@@ -2481,7 +2648,7 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') app.setAppUserModelId('com.songyu.formatflow')
   Menu.setApplicationMenu(null)
   registerIpc()
-  await loadStore()
+  if (!(await loadStoreWithRecovery())) return
   await cleanupTemporaryWordAttachments()
   scheduleTemporaryWordCleanup()
   startBrowserBridgeServer()

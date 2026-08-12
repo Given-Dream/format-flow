@@ -1,14 +1,18 @@
 import type {
   AppStore,
   DataDirectoryOverrides,
+  DeliveryRecord,
   GroupItem,
   McpServer,
+  NodeExecutionState,
+  ProjectCheckpoint,
+  ProjectFlowState,
   PromptDuplicateGroup,
   PromptItem,
   PromptImportAnalysis,
   PromptDuplicateConflict,
   ResourceGroups,
-  RunStep,
+  ReviewAttempt,
   SkillDuplicateGroup,
   SkillItem,
   SkillDuplicateConflict,
@@ -19,9 +23,12 @@ import type {
   WorkflowNode
 } from './types'
 import { normalizeDiscoverySources } from './github-discovery'
+import { sha256Text } from './sha256'
+import { normalizeImportedSourceWorkflow } from './workflow-import-templates'
 
-export const STORE_VERSION = 2
+export const STORE_VERSION = 3
 export const DEFAULT_SHORTCUT = 'CommandOrControl+Alt+F'
+export const SKILL_CONTENT_PREVIEW_LIMIT = 256_000
 
 export function nowIso(): string {
   return new Date().toISOString()
@@ -64,11 +71,37 @@ export function groupsFromTags(tags: string[]): GroupItem[] {
   return tags.map(groupFromTag)
 }
 
+export function defaultWorkflowGroups(): GroupItem[] {
+  return [
+    { id: 'workflow-group-research', name: '原创研究', tag: 'research', children: [] },
+    { id: 'workflow-group-review', name: 'SCI 综述', tag: 'review', children: [] },
+    { id: 'workflow-group-patent', name: '发明专利', tag: 'patent', children: [] },
+    { id: 'workflow-group-custom', name: '自定义', tag: 'custom', children: [] }
+  ]
+}
+
+export function workflowGroupsForQuickCall(
+  groups: ResourceGroups,
+  workflows: Array<Pick<Workflow, 'tags'>>
+): GroupItem[] {
+  const workflowTags = new Set(workflows.flatMap((workflow) => workflow.tags.map(normalizeTag)))
+  const filterConfiguredGroups = (items: GroupItem[]): GroupItem[] =>
+    items
+      .map((group) => ({
+        ...group,
+        children: filterConfiguredGroups(group.children)
+      }))
+      .filter((group) => workflowTags.has(normalizeTag(group.tag)) || group.children.length > 0)
+
+  const configuredGroups = groups.workflows.length > 0 ? groups.workflows : defaultWorkflowGroups()
+  return filterConfiguredGroups(configuredGroups)
+}
+
 export function defaultGroups(prompts: PromptItem[] = []): ResourceGroups {
   return {
     prompts: groupsFromTags(allTags(prompts)),
     skills: [],
-    workflows: [],
+    workflows: defaultWorkflowGroups(),
     mcps: [],
     quickCalls: groupsFromTags(allTags(prompts)),
     learning: groupsFromTags(['hermes', '对话审查', '工程控制论学习用户习惯'])
@@ -346,15 +379,50 @@ export function parseMcpConfig(content: string, sourceName = 'mcp-config'): McpS
   }
 }
 
+export function defaultApplicabilityProfile(): Workflow['applicability'] {
+  return {
+    researchTypes: [],
+    scenarios: [],
+    targetArtifacts: [],
+    requiredInputs: [],
+    optionalInputs: [],
+    prerequisites: [],
+    exclusions: [],
+    requiredPromptKeys: [],
+    requiredSkillKeys: [],
+    requiredMcpKeys: [],
+    externalSoftware: [],
+    humanPermissions: [],
+    supportedOperatingSystems: ['Windows'],
+    supportedAiPlatforms: [],
+    supportedDeliveryModes: ['copy-all', 'copy-one-by-one', 'browser-plugin'],
+    riskLevel: 'medium',
+    maturity: 'draft',
+    maintainer: '',
+    rules: []
+  }
+}
+
 export function createWorkflow(overrides: Partial<Workflow> = {}): Workflow {
   const timestamp = nowIso()
+  const id = overrides.id || newId('workflow')
   return {
-    id: newId('workflow'),
+    id,
+    templateKey: overrides.templateKey || id,
+    templateVersion: '0.1.0',
+    status: 'draft',
+    family: 'custom',
     title: '新的工作流',
     description: '把提示词、Skill 和人工审查节点排成可执行工作流。',
     tags: [],
     variables: [],
     favorite: false,
+    formSchema: [],
+    stages: [{ stageKey: 'main', title: '主要阶段', description: '', order: 1 }],
+    checkpointBlueprint: [],
+    applicability: defaultApplicabilityProfile(),
+    applicabilityTests: [],
+    changeLog: [],
     nodes: [],
     edges: [],
     createdAt: timestamp,
@@ -382,35 +450,15 @@ export function defaultStore(): AppStore {
     tags: ['codex', 'implementation', 'safe']
   })
 
-  const firstNode = { ...nodeFromPrompt(promptA, 0), id: 'node_prompt_preflight_review' }
-  const secondNode = { ...nodeFromPrompt(promptB, 1), id: 'node_prompt_safe_implementation' }
-  const approval = {
-    ...approvalNode(2),
-    id: 'node_default_approval',
-    title: '人工审查',
-    summary: '人工检查执行结果，决定是否继续或停止。'
-  }
-
   return {
     version: STORE_VERSION,
     prompts: [promptA, promptB],
     skillIndex: {},
     groups: defaultGroups([promptA, promptB]),
     mcpServers: [],
-    workflows: [
-      createWorkflow({
-        id: 'workflow_default_codex_change',
-        title: 'Codex 变更工作流',
-        description: '先审查，再实现，最后由人工确认输出。',
-        tags: ['codex', 'default'],
-        nodes: [firstNode, secondNode, approval],
-        edges: [
-          { id: 'edge_default_1', source: 'node_prompt_preflight_review', target: 'node_prompt_safe_implementation' },
-          { id: 'edge_default_2', source: 'node_prompt_safe_implementation', target: 'node_default_approval' }
-        ]
-      })
-    ],
-    runs: [],
+    workflows: [],
+    projectFlowStates: [],
+    resourceVersions: [],
     tagRecoveries: [],
     settings: {
       shortcut: DEFAULT_SHORTCUT,
@@ -428,9 +476,12 @@ export function defaultStore(): AppStore {
   }
 }
 
-export function normalizeStore(value: Partial<AppStore> | null | undefined): AppStore {
+export function normalizeStore(
+  value: (Partial<AppStore> & { runs?: unknown[] }) | null | undefined
+): AppStore {
   const base = defaultStore()
   if (!value) return base
+  const isLegacyStore = typeof value.version !== 'number' || value.version < STORE_VERSION
   const rawPrompts = Array.isArray(value.prompts) ? value.prompts : base.prompts
   const groups = normalizeGroups(value.groups, rawPrompts)
   const prompts = repairSplitGroupTags(
@@ -440,6 +491,16 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
     })),
     groups.prompts
   )
+  const migrationTimestamp = nowIso()
+  const legacyMigration = isLegacyStore
+    ? migrateLegacyWorkflowData(
+        Array.isArray(value.workflows) ? value.workflows : [],
+        Array.isArray(value.runs) ? value.runs : [],
+        prompts,
+        typeof value.version === 'number' ? value.version : 0,
+        migrationTimestamp
+      )
+    : null
 
   return {
     version: STORE_VERSION,
@@ -447,8 +508,26 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
     skillIndex: value.skillIndex && typeof value.skillIndex === 'object' ? value.skillIndex : {},
     groups: normalizeGroups(value.groups, prompts),
     mcpServers: Array.isArray(value.mcpServers) ? value.mcpServers : [],
-    workflows: Array.isArray(value.workflows) ? value.workflows.map(normalizeWorkflow) : base.workflows,
-    runs: Array.isArray(value.runs) ? value.runs : [],
+    workflows: isLegacyStore
+      ? legacyMigration?.workflows || []
+      : Array.isArray(value.workflows)
+        ? value.workflows.map(normalizeWorkflow)
+        : base.workflows,
+    projectFlowStates: isLegacyStore
+      ? legacyMigration?.projectFlowStates || []
+      : Array.isArray(value.projectFlowStates)
+        ? value.projectFlowStates
+        : [],
+    resourceVersions: !isLegacyStore && Array.isArray(value.resourceVersions) ? value.resourceVersions : [],
+    legacyWorkflowArchive: isLegacyStore
+      ? {
+          storeVersion: typeof value.version === 'number' ? value.version : 0,
+          workflows: legacyMigration?.workflows || [],
+          runs: Array.isArray(value.runs) ? value.runs : [],
+          archivedAt: migrationTimestamp,
+          reason: '旧工作流和运行记录已转换到新版工作流界面；这里继续保留只读原始归档以便审计和回滚。'
+        }
+      : value.legacyWorkflowArchive,
     tagRecoveries: Array.isArray(value.tagRecoveries)
       ? value.tagRecoveries.filter((item): item is AppStore['tagRecoveries'][number] => Boolean(item && typeof item === 'object'))
       : [],
@@ -472,11 +551,303 @@ export function normalizeStore(value: Partial<AppStore> | null | undefined): App
   }
 }
 
+type LegacyWorkflowMigrationResult = {
+  workflows: Workflow[]
+  projectFlowStates: ProjectFlowState[]
+}
+
+function migrateLegacyWorkflowData(
+  rawWorkflows: unknown[],
+  rawRuns: unknown[],
+  prompts: PromptItem[],
+  sourceStoreVersion: number,
+  migratedAt: string
+): LegacyWorkflowMigrationResult {
+  const usedWorkflowIds = new Set<string>()
+  const promptById = new Map(prompts.map((prompt) => [prompt.id, prompt]))
+  const workflowPairs: Array<{ sourceId: string; workflow: Workflow }> = []
+
+  rawWorkflows.forEach((rawWorkflow, index) => {
+    if (!isRecord(rawWorkflow)) return
+    const sourceId = stringOr(rawWorkflow.id, `workflow-${index + 1}`)
+    let workflowId = sourceId
+    let suffix = 1
+    while (usedWorkflowIds.has(workflowId)) {
+      workflowId = `legacy-${sourceId}-${suffix}`
+      suffix += 1
+    }
+    usedWorkflowIds.add(workflowId)
+
+    const normalized = normalizeWorkflow(rawWorkflow as Workflow)
+    const nodes = normalized.nodes.map((node) => {
+      const prompt = node.type === 'prompt' && node.refId ? promptById.get(node.refId) : undefined
+      const checkpointKey = node.type === 'review' ? node.checkpointKey || `${node.nodeKey}-approved` : node.checkpointKey
+      return {
+        ...node,
+        checkpointKey,
+        resourceRef: prompt
+          ? {
+              resourceKey: `prompt:${prompt.id}`,
+              type: 'prompt' as const,
+              expectedVersion: String(prompt.version),
+              fingerprint: sha256Text(prompt.content),
+              locator: prompt.id
+            }
+          : node.resourceRef
+            ? {
+                ...node.resourceRef,
+                fingerprint: node.resourceRef.fingerprint || 'legacy-unverified'
+              }
+            : undefined
+      }
+    })
+    const checkpointBlueprint = [...normalized.checkpointBlueprint]
+    for (const node of nodes.filter((item) => item.type === 'review')) {
+      if (checkpointBlueprint.some((item) => item.afterNodeKey === node.nodeKey)) continue
+      checkpointBlueprint.push({
+        checkpointKey: node.checkpointKey || `${node.nodeKey}-approved`,
+        title: `${node.title}通过`,
+        afterNodeKey: node.nodeKey,
+        requiredArtifacts: []
+      })
+    }
+    const templateKey = `legacy-${sourceId}`.replace(/[^a-zA-Z0-9_-]/g, '-')
+    const migrationSummary = `由 Store v${sourceStoreVersion} 工作流迁移；原始结构保留在只读归档中。`
+    const workflow: Workflow = {
+      ...normalized,
+      id: workflowId,
+      templateKey,
+      templateVersion: normalized.templateVersion || '0.1.0-legacy',
+      status: 'draft',
+      family: 'custom',
+      description: normalized.description ? `${normalized.description}\n\n${migrationSummary}` : migrationSummary,
+      tags: Array.from(new Set([...normalized.tags, 'migrated-v2'])),
+      nodes,
+      checkpointBlueprint,
+      applicability: {
+        ...normalized.applicability,
+        maturity: 'pilot',
+        maintainer: normalized.applicability.maintainer || 'Format Flow v3 迁移器'
+      },
+      changeLog: [
+        ...normalized.changeLog,
+        { version: normalized.templateVersion || '0.1.0-legacy', publishedAt: migratedAt, summary: migrationSummary }
+      ],
+      updatedAt: migratedAt
+    }
+    workflowPairs.push({ sourceId, workflow })
+  })
+
+  const projectFlowStates = rawRuns.flatMap((rawRun, index) => {
+    if (!isRecord(rawRun)) return []
+    const sourceWorkflowId = stringOr(rawRun.workflowId, '')
+    const pair = workflowPairs.find((item) => item.sourceId === sourceWorkflowId)
+    if (!pair) return []
+    return [migrateLegacyRun(rawRun, pair.workflow, sourceStoreVersion, migratedAt, index)]
+  })
+
+  return { workflows: workflowPairs.map((item) => item.workflow), projectFlowStates }
+}
+
+function migrateLegacyRun(
+  rawRun: Record<string, unknown>,
+  workflow: Workflow,
+  sourceStoreVersion: number,
+  migratedAt: string,
+  runIndex: number
+): ProjectFlowState {
+  const sourceRunId = stringOr(rawRun.id, `run-${runIndex + 1}`)
+  const sourceWorkflowId = stringOr(rawRun.workflowId, workflow.id)
+  const sourceWorkflowTitle = stringOr(rawRun.workflowTitle, workflow.title)
+  const sourceStatus = stringOr(rawRun.status, 'unknown')
+  const orderedNodes = [...workflow.nodes].sort((left, right) => left.order - right.order)
+  const rawSteps = Array.isArray(rawRun.steps) ? rawRun.steps.filter(isRecord) : []
+  const rawCurrentStepIndex = finiteNumberOr(rawRun.currentStepIndex, 0)
+  const currentStepIndex = Math.min(Math.max(0, rawCurrentStepIndex), Math.max(0, orderedNodes.length - 1))
+  const projectId = `legacy-${sourceRunId}`
+  const projectStateId = `${projectId}:${workflow.id}:${workflow.templateVersion}`
+  const deliveryRecords: DeliveryRecord[] = []
+  const reviewAttempts: ReviewAttempt[] = []
+  const checkpoints: ProjectCheckpoint[] = []
+  const nodeStates: Record<string, NodeExecutionState> = {}
+
+  const stepForNode = (node: WorkflowNode, nodeIndex: number): Record<string, unknown> | undefined =>
+    rawSteps.find((step) => stringOr(step.nodeId, '') === node.id) || rawSteps[nodeIndex]
+
+  orderedNodes.forEach((node, nodeIndex) => {
+    const step = stepForNode(node, nodeIndex)
+    const stepStatus = stringOr(step?.status, 'pending').toLowerCase()
+    const isCurrent = nodeIndex === currentStepIndex
+    const isCompleted = ['done', 'completed', 'passed'].includes(stepStatus)
+    const isSkipped = stepStatus === 'skipped'
+    const isBlocked = ['blocked', 'failed', 'error'].includes(stepStatus)
+    let status: NodeExecutionState['status'] = 'pending'
+    if (isCompleted) status = node.type === 'review' ? 'passed' : 'completed'
+    else if (isSkipped) status = 'skipped'
+    else if (isBlocked) status = 'blocked'
+    else if (isCurrent) status = 'ready'
+
+    const deliveryRecordIds: string[] = []
+    const reviewAttemptIds: string[] = []
+    const output = legacyText(step?.output)
+    if (output) {
+      const record: DeliveryRecord = {
+        id: legacyStableId('legacy-delivery', sourceRunId, node.nodeKey),
+        projectId,
+        workflowId: workflow.id,
+        templateVersion: workflow.templateVersion,
+        nodeKey: node.nodeKey,
+        mode: 'copy-all',
+        text: output,
+        attachmentPaths: [],
+        createdAt: legacyTimestamp(step?.finishedAt, step?.startedAt, rawRun.updatedAt, migratedAt),
+        source: 'legacy-v2-output'
+      }
+      deliveryRecords.push(record)
+      deliveryRecordIds.push(record.id)
+    }
+
+    if (step?.reviewedByHuman === true) {
+      const attempt: ReviewAttempt = {
+        id: legacyStableId('legacy-review', sourceRunId, node.nodeKey),
+        projectId,
+        workflowId: workflow.id,
+        templateVersion: workflow.templateVersion,
+        nodeKey: node.nodeKey,
+        attempt: 1,
+        checklist: { legacyReviewedByHuman: true },
+        passed: true,
+        changeReason: 'Store v2 reviewedByHuman=true（只读迁移记录）',
+        reviewedAt: legacyTimestamp(step.finishedAt, step.startedAt, rawRun.updatedAt, migratedAt),
+        deliveryRecordIds: [...deliveryRecordIds],
+        attachmentPaths: [],
+        source: 'legacy-v2'
+      }
+      reviewAttempts.push(attempt)
+      reviewAttemptIds.push(attempt.id)
+    }
+
+    const completedAt = isCompleted || isSkipped
+      ? legacyTimestamp(step?.finishedAt, rawRun.updatedAt, migratedAt)
+      : undefined
+    nodeStates[node.nodeKey] = {
+      nodeKey: node.nodeKey,
+      status,
+      formValues: {},
+      deliveryRecordIds,
+      reviewAttemptIds,
+      enteredAt: legacyOptionalTimestamp(step?.startedAt) || (isCurrent ? legacyTimestamp(rawRun.createdAt, migratedAt) : undefined),
+      completedAt
+    }
+    if (isCompleted) {
+      checkpoints.push({
+        checkpointKey: `legacy-${node.nodeKey}-completed`,
+        nodeKey: node.nodeKey,
+        createdAt: completedAt || migratedAt,
+        deliveryRecordIds: [...deliveryRecordIds]
+      })
+    }
+  })
+
+  const completed = sourceStatus === 'completed' || orderedNodes.every((node) =>
+    ['completed', 'passed', 'skipped'].includes(nodeStates[node.nodeKey]?.status)
+  )
+  const blocked = ['blocked', 'failed', 'error'].includes(sourceStatus) || orderedNodes.some((node) => nodeStates[node.nodeKey]?.status === 'blocked')
+  const waiting = sourceStatus === 'waiting'
+  const currentNodeKey = completed ? '' : orderedNodes[currentStepIndex]?.nodeKey || ''
+  const projectFields: Record<string, unknown> = {
+    migratedFromStoreVersion: sourceStoreVersion,
+    legacyRunId: sourceRunId,
+    legacyWorkflowId: sourceWorkflowId,
+    legacyStatus: sourceStatus,
+    legacyCurrentStepIndex: rawCurrentStepIndex
+  }
+  const resourceLocks = Object.fromEntries(
+    workflow.nodes
+      .filter((node) => node.resourceRef)
+      .map((node) => [node.resourceRef!.resourceKey, { ...node.resourceRef!, lockedAt: migratedAt }])
+  )
+  const stepSnapshots = rawSteps.map((step, stepIndex) => {
+    const node = orderedNodes.find((item) => item.id === stringOr(step.nodeId, '')) || orderedNodes[stepIndex]
+    return {
+      sourceStepId: stringOr(step.id, `step-${stepIndex + 1}`),
+      sourceNodeId: stringOr(step.nodeId, node?.id || ''),
+      nodeKey: node?.nodeKey || `unmapped-step-${stepIndex + 1}`,
+      title: stringOr(step.title, node?.title || `步骤 ${stepIndex + 1}`),
+      type: stringOr(step.type, node?.type || 'unknown'),
+      status: stringOr(step.status, 'pending'),
+      reviewedByHuman: step.reviewedByHuman === true,
+      inputSnapshot: legacyText(step.inputSnapshot),
+      output: legacyText(step.output),
+      startedAt: legacyOptionalTimestamp(step.startedAt),
+      finishedAt: legacyOptionalTimestamp(step.finishedAt)
+    }
+  })
+
+  return {
+    id: projectStateId,
+    projectId,
+    projectTitle: `${sourceWorkflowTitle} · 迁移运行 ${runIndex + 1}`,
+    workflowId: workflow.id,
+    templateKey: workflow.templateKey,
+    templateVersion: workflow.templateVersion,
+    status: completed ? 'completed' : blocked ? 'blocked' : waiting ? 'waiting' : 'active',
+    projectFields,
+    workflowApplicability: {
+      status: 'highly-applicable',
+      outcome: 'enable',
+      reason: '从 Store v2 运行记录迁移，沿用原执行位置。',
+      evaluatedAt: migratedAt,
+      inputSnapshot: { ...projectFields }
+    },
+    currentNodeKey,
+    nodeStates,
+    deliveryRecords,
+    reviewAttempts,
+    checkpoints,
+    resourceLocks,
+    legacyMigration: {
+      sourceStoreVersion,
+      sourceRunId,
+      sourceWorkflowId,
+      sourceWorkflowTitle,
+      sourceStatus,
+      sourceCurrentStepIndex: rawCurrentStepIndex,
+      migratedAt,
+      steps: stepSnapshots
+    },
+    createdAt: legacyTimestamp(rawRun.createdAt, migratedAt),
+    updatedAt: legacyTimestamp(rawRun.updatedAt, rawRun.createdAt, migratedAt)
+  }
+}
+
+function legacyText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value === undefined || value === null) return ''
+  return JSON.stringify(value)
+}
+
+function legacyOptionalTimestamp(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
+}
+
+function legacyTimestamp(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === 'string' && Boolean(value)) || nowIso()
+}
+
+function finiteNumberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : fallback
+}
+
+function legacyStableId(prefix: string, ...parts: string[]): string {
+  return `${prefix}-${parts.join('-')}`.replace(/[^a-zA-Z0-9_-]/g, '-')
+}
+
 function normalizeDataDirectoryOverrides(value: unknown): DataDirectoryOverrides {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   const record = value as Record<string, unknown>
   const result: DataDirectoryOverrides = {}
-  for (const key of ['prompts', 'workflows', 'skillMetadata', 'managedSkills'] as const) {
+  for (const key of ['prompts', 'workflows', 'projects', 'skillMetadata', 'managedSkills'] as const) {
     if (typeof record[key] === 'string' && record[key].trim()) result[key] = record[key].trim()
   }
   return result
@@ -523,6 +894,7 @@ function flattenGroupItems(groups: GroupItem[]): GroupItem[] {
 export function nodeFromPrompt(prompt: PromptItem, index: number, skill?: SkillItem, mcp?: McpServer): WorkflowNode {
   return {
     id: `node_${prompt.id}_${Date.now()}_${index}`.replace(/[^a-zA-Z0-9_]/g, '_'),
+    nodeKey: `prompt-${prompt.id}-${index + 1}`.replace(/[^a-zA-Z0-9_-]/g, '-'),
     type: 'prompt',
     refId: prompt.id,
     skillRefId: skill?.id,
@@ -535,6 +907,16 @@ export function nodeFromPrompt(prompt: PromptItem, index: number, skill?: SkillI
     inputs: {},
     outputs: ['prompt_output'],
     requiresReview: true,
+    stageKey: 'main',
+    order: index + 1,
+    resourceRef: {
+      resourceKey: `prompt:${prompt.id}`,
+      type: 'prompt',
+      expectedVersion: String(prompt.version),
+      fingerprint: sha256Text(prompt.content),
+      locator: prompt.id
+    },
+    applicabilityRules: [],
     position: { x: index * 280, y: 80 }
   }
 }
@@ -542,6 +924,7 @@ export function nodeFromPrompt(prompt: PromptItem, index: number, skill?: SkillI
 export function nodeFromSkill(skill: SkillItem, index: number): WorkflowNode {
   return {
     id: `node_${hashText(skill.id)}_${Date.now()}_${index}`,
+    nodeKey: `skill-${skill.name || hashText(skill.id)}-${index + 1}`.replace(/[^a-zA-Z0-9_-]/g, '-'),
     type: 'skill',
     refId: skill.id,
     title: skill.title || skill.name,
@@ -550,6 +933,16 @@ export function nodeFromSkill(skill: SkillItem, index: number): WorkflowNode {
     inputs: {},
     outputs: ['skill_output'],
     requiresReview: true,
+    stageKey: 'main',
+    order: index + 1,
+    resourceRef: {
+      resourceKey: `skill:${skill.name || hashText(skill.path)}`,
+      type: 'skill',
+      expectedVersion: '1',
+      fingerprint: skill.contentFingerprint || hashText(skill.contentPreview),
+      locator: skill.path
+    },
+    applicabilityRules: [],
     position: { x: index * 280, y: 80 }
   }
 }
@@ -557,6 +950,7 @@ export function nodeFromSkill(skill: SkillItem, index: number): WorkflowNode {
 export function nodeFromMcp(mcp: McpServer, index: number): WorkflowNode {
   return {
     id: `node_${hashText(mcp.id)}_${Date.now()}_${index}`,
+    nodeKey: `mcp-${mcp.id}-${index + 1}`.replace(/[^a-zA-Z0-9_-]/g, '-'),
     type: 'mcp',
     refId: mcp.id,
     title: mcp.name,
@@ -565,6 +959,16 @@ export function nodeFromMcp(mcp: McpServer, index: number): WorkflowNode {
     inputs: {},
     outputs: ['mcp_output'],
     requiresReview: true,
+    stageKey: 'main',
+    order: index + 1,
+    resourceRef: {
+      resourceKey: `mcp:${mcp.id}`,
+      type: 'mcp',
+      expectedVersion: '1',
+      fingerprint: hashText(JSON.stringify(mcp)),
+      locator: mcp.id
+    },
+    applicabilityRules: [],
     position: { x: index * 280, y: 80 }
   }
 }
@@ -572,13 +976,20 @@ export function nodeFromMcp(mcp: McpServer, index: number): WorkflowNode {
 export function approvalNode(index: number): WorkflowNode {
   return {
     id: newId('approval'),
-    type: 'approval',
+    nodeKey: `review-${index + 1}`,
+    type: 'review',
     title: '人工审查',
     summary: '检查上一步输出，确认后继续。',
     tags: ['approval'],
     inputs: {},
     outputs: ['review_decision'],
     requiresReview: true,
+    stageKey: 'main',
+    order: index + 1,
+    applicabilityRules: [],
+    reviewChecklist: [
+      { key: 'output-outline-confirmed', label: '已核对上一 Skill 的要求输出', required: true }
+    ],
     position: { x: index * 280, y: 80 }
   }
 }
@@ -821,8 +1232,8 @@ export function parseSkillMarkdown(content: string, filePath: string): SkillItem
     favorite: false,
     path: filePath,
     source: /[\\/]\.codex[\\/]skills[\\/]/.test(filePath) ? 'codex' : 'custom',
-    contentPreview: content.slice(0, 12000),
-    contentFingerprint: hashText(content.replace(/\r\n/g, '\n').trim()),
+    contentPreview: content.slice(0, SKILL_CONTENT_PREVIEW_LIMIT),
+    contentFingerprint: sha256Text(content),
     updatedAt: timestamp
   }
 }
@@ -959,20 +1370,6 @@ export function buildSmartSkillGroups(skills: SkillItem[], manualGroups: GroupIt
 
   return groups
 }
-export function createRunSteps(workflow: Workflow): RunStep[] {
-  return workflow.nodes.map((node) => ({
-    id: newId('step'),
-    nodeId: node.id,
-    title: node.title,
-    summary: node.summary,
-    type: node.type,
-    status: 'pending',
-    reviewedByHuman: false,
-    inputSnapshot: '',
-    output: ''
-  }))
-}
-
 export function buildExecutionPrompt(
   node: WorkflowNode,
   prompts: PromptItem[],
@@ -987,7 +1384,7 @@ export function buildExecutionPrompt(
   const mcpRefId = node.type === 'mcp' ? node.refId : node.mcpRefId
   const mcp = mcpRefId ? mcps.find((item) => item.id === mcpRefId) : undefined
 
-  if (node.type === 'approval') {
+  if (node.type === 'approval' || node.type === 'review') {
     return [
       `工作流节点：${node.title}`,
       '',
@@ -1113,10 +1510,11 @@ export function buildExecutionPrompt(
 
 function normalizeGroups(value: unknown, prompts: PromptItem[]): ResourceGroups {
   if (!isRecord(value)) return defaultGroups(prompts)
+  const workflowGroups = normalizeGroupList(value.workflows, [])
   return {
     prompts: normalizeGroupList(value.prompts, allTags(prompts)),
     skills: normalizeGroupList(value.skills, []),
-    workflows: normalizeGroupList(value.workflows, []),
+    workflows: workflowGroups.length > 0 ? workflowGroups : defaultWorkflowGroups(),
     mcps: normalizeGroupList(value.mcps, []),
     quickCalls: normalizeGroupList(value.quickCalls, allTags(prompts)),
     learning: normalizeGroupList(value.learning, ['hermes', '对话审查', '工程控制论学习用户习惯'])
@@ -1133,17 +1531,72 @@ function normalizeGroupList(value: unknown, fallbackTags: string[]): GroupItem[]
   }))
 }
 
+function normalizeWorkflowDescription(workflow: Workflow): string {
+  return workflow.description?.replaceAll('流程图', '工作流').replaceAll('流程', '工作流') || ''
+}
+
 function normalizeWorkflow(workflow: Workflow): Workflow {
-  return {
+  const timestamp = nowIso()
+  const stages = Array.isArray(workflow.stages) && workflow.stages.length > 0
+    ? workflow.stages
+    : [{ stageKey: 'main', title: '主要阶段', description: '', order: 1 }]
+  const nodes = (Array.isArray(workflow.nodes) ? workflow.nodes : []).map((node, index) => {
+    const normalizedType = node.type === 'approval' ? 'review' : node.type
+    const resourceType = normalizedType === 'prompt' || normalizedType === 'skill' || normalizedType === 'mcp'
+      ? normalizedType
+      : undefined
+    return {
+      ...node,
+      type: normalizedType,
+      nodeKey: node.nodeKey || `node-${node.id || index + 1}`.replace(/[^a-zA-Z0-9_-]/g, '-'),
+      stageKey: node.stageKey || stages[0].stageKey,
+      order: Number.isFinite(node.order) ? node.order : index + 1,
+      inputs: node.inputs && typeof node.inputs === 'object' ? node.inputs : {},
+      outputs: Array.isArray(node.outputs) ? node.outputs.map(String) : [],
+      applicabilityRules: Array.isArray(node.applicabilityRules) ? node.applicabilityRules : [],
+      reviewChecklist:
+        normalizedType === 'review'
+          ? Array.isArray(node.reviewChecklist) && node.reviewChecklist.length > 0
+            ? node.reviewChecklist
+            : [
+                { key: 'output-outline-confirmed', label: '已核对上一 Skill 的要求输出', required: true }
+              ]
+          : node.reviewChecklist,
+      resourceRef:
+        node.resourceRef || (resourceType && node.refId
+          ? {
+              resourceKey: `${resourceType}:${node.refId}`,
+              type: resourceType,
+              expectedVersion: 'legacy',
+              fingerprint: '',
+              locator: node.refId
+            }
+          : undefined)
+    } as WorkflowNode
+  })
+  const normalized: Workflow = {
     ...workflow,
+    templateKey: workflow.templateKey || workflow.id,
+    templateVersion: workflow.templateVersion || '0.1.0-legacy',
+    status: workflow.status || 'draft',
+    family: workflow.family || 'custom',
     title: workflow.title?.replaceAll('流程图', '工作流').replaceAll('流程', '工作流') || '工作流',
-    description: workflow.description?.replaceAll('流程图', '工作流').replaceAll('流程', '工作流') || '',
+    description: normalizeWorkflowDescription(workflow),
     tags: Array.isArray(workflow.tags) ? workflow.tags.map(normalizeTag).filter(Boolean) : [],
     variables: Array.isArray(workflow.variables) ? workflow.variables.map(String).filter(Boolean) : [],
     favorite: Boolean(workflow.favorite),
-    nodes: Array.isArray(workflow.nodes) ? workflow.nodes : [],
-    edges: Array.isArray(workflow.edges) ? workflow.edges : []
+    formSchema: Array.isArray(workflow.formSchema) ? workflow.formSchema : [],
+    stages,
+    checkpointBlueprint: Array.isArray(workflow.checkpointBlueprint) ? workflow.checkpointBlueprint : [],
+    applicability: workflow.applicability || defaultApplicabilityProfile(),
+    applicabilityTests: Array.isArray(workflow.applicabilityTests) ? workflow.applicabilityTests : [],
+    changeLog: Array.isArray(workflow.changeLog) ? workflow.changeLog : [],
+    nodes,
+    edges: Array.isArray(workflow.edges) ? workflow.edges : [],
+    createdAt: workflow.createdAt || timestamp,
+    updatedAt: workflow.updatedAt || timestamp
   }
+  return normalizeImportedSourceWorkflow(normalized)
 }
 
 function parseMcpJson(parsed: unknown): McpServer[] {

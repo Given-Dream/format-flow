@@ -11,8 +11,8 @@ import {
   createMcpServer,
   clonePromptToGroup,
   createPrompt,
-  createRunSteps,
   createWorkflow,
+  defaultStore,
   matchesTextAndTags,
   mergeSkillMetadata,
   nodeFromMcp,
@@ -23,10 +23,45 @@ import {
   parseMcpConfig,
   parsePromptImport,
   parseTags,
-  rebuildLinearEdges
+  rebuildLinearEdges,
+  SKILL_CONTENT_PREVIEW_LIMIT,
+  STORE_VERSION,
+  workflowGroupsForQuickCall
 } from './domain'
 
 describe('tag parsing and search', () => {
+  it('provides workflow groups alongside prompt and Skill groups', () => {
+    expect(defaultStore().groups.workflows.map((group) => group.name)).toEqual(['原创研究', 'SCI 综述', '发明专利', '自定义'])
+    expect(defaultStore().workflows).toEqual([])
+  })
+
+  it('uses configured workflow groups in quick call without exposing technical workflow tags', () => {
+    const store = defaultStore()
+    store.groups.quickCalls = [
+      { id: 'legacy-codex', name: 'codex', tag: 'codex', children: [] },
+      { id: 'legacy-default', name: 'default', tag: 'default', children: [] }
+    ]
+    store.workflows = [
+      createWorkflow({ tags: ['official', 'research'] }),
+      createWorkflow({ tags: ['migrated-v2', 'default', 'custom'] })
+    ]
+
+    expect(workflowGroupsForQuickCall(store.groups, store.workflows).map((group) => group.name)).toEqual([
+      '原创研究',
+      '自定义'
+    ])
+  })
+
+  it('restores default workflow groups when an older store has none', () => {
+    const store = defaultStore()
+    const normalized = normalizeStore({
+      ...store,
+      groups: { ...store.groups, workflows: [] }
+    })
+
+    expect(normalized.groups.workflows.map((group) => group.name)).toEqual(['原创研究', 'SCI 综述', '发明专利', '自定义'])
+  })
+
   it('normalizes comma separated tags without splitting spaces inside a tag', () => {
     expect(parseTags('Codex, #Review，safe safe')).toEqual(['codex', 'review', 'safe safe'])
     expect(parseTags('7- 结果')).toEqual(['7- 结果'])
@@ -126,6 +161,7 @@ describe('tag parsing and search', () => {
         dataDirectories: {
           prompts: ' D:/prompt-library ',
           workflows: '',
+          projects: ' D:/workflow-projects ',
           skillMetadata: 'D:/skill-index',
           managedSkills: 'C:/Users/test/.codex/skills'
         }
@@ -135,6 +171,7 @@ describe('tag parsing and search', () => {
     expect(settings.dataDirectory).toBe('D:/format-flow')
     expect(settings.dataDirectories).toEqual({
       prompts: 'D:/prompt-library',
+      projects: 'D:/workflow-projects',
       skillMetadata: 'D:/skill-index',
       managedSkills: 'C:/Users/test/.codex/skills'
     })
@@ -269,6 +306,26 @@ describe('skill parsing', () => {
     expect(skill.title).toBe('Test Skill')
     expect(skill.summary).toBe('Use when testing skill parsing.')
     expect(skill.source).toBe('codex')
+  })
+
+  it('keeps Skill content previews up to 256,000 characters', () => {
+    const content = [
+      '---',
+      'name: long-skill',
+      'description: Long Skill preview limit test.',
+      '---',
+      '',
+      '# Long Skill',
+      '',
+      'x'.repeat(SKILL_CONTENT_PREVIEW_LIMIT),
+      'TAIL'
+    ].join('\n')
+    const skill = parseSkillMarkdown(content, 'D:/skills/long-skill/SKILL.md')
+
+    expect(SKILL_CONTENT_PREVIEW_LIMIT).toBe(256_000)
+    expect(skill.contentPreview).toHaveLength(SKILL_CONTENT_PREVIEW_LIMIT)
+    expect(skill.contentPreview).toBe(content.slice(0, SKILL_CONTENT_PREVIEW_LIMIT))
+    expect(skill.contentPreview).not.toContain('TAIL')
   })
 
   it('does not create Skill tags from the installation path or Skill name', () => {
@@ -577,7 +634,30 @@ describe('prompt and MCP imports', () => {
 })
 
 describe('workflow execution planning', () => {
-  it('creates linear edges and run steps from workflow nodes', () => {
+  it('normalizes former built-in workflow records without exposing origin or changing custom workflow copy', () => {
+    const official = createWorkflow({
+      id: 'workflow_official',
+      templateKey: 'official-research-experiment',
+      description: '正式模板：测试。'
+    })
+    const custom = createWorkflow({
+      id: 'workflow_custom',
+      templateKey: 'custom-example',
+      description: '正式模板：测试。'
+    })
+
+    const normalizedWorkflows = normalizeStore({ version: STORE_VERSION, workflows: [official, custom] }).workflows
+    const normalizedOfficial = normalizedWorkflows.find((workflow) => workflow.id === official.id)
+    const normalizedCustom = normalizedWorkflows.find((workflow) => workflow.id === custom.id)
+
+    expect(normalizedOfficial?.description).toBe('测试。')
+    expect(normalizedOfficial?.sourcePackage?.origin).toBe('imported')
+    expect(normalizedOfficial?.tags).not.toContain('imported')
+    expect(normalizedOfficial?.tags).not.toContain('official')
+    expect(normalizedCustom?.description).toBe('正式模板：测试。')
+  })
+
+  it('creates linear edges with stable node keys', () => {
     const prompt = createPrompt({ id: 'prompt_a', title: 'A', summary: 'Alpha', tags: ['a'] })
     const first = nodeFromPrompt(prompt, 0)
     const second = approvalNode(1)
@@ -587,7 +667,7 @@ describe('workflow execution planning', () => {
     })
 
     expect(workflow.edges).toEqual([{ id: `edge_${first.id}_${second.id}`, source: first.id, target: second.id }])
-    expect(createRunSteps(workflow)).toHaveLength(2)
+    expect(workflow.nodes.map((node) => node.nodeKey)).toHaveLength(2)
   })
 
   it('builds an auditable Codex task for a prompt node', () => {

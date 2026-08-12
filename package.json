@@ -1,12 +1,13 @@
 {
   "name": "format-flow",
-  "version": "0.1.64",
+  "version": "0.1.65",
   "description": "Local prompt and Codex Skill workflow manager",
   "main": "./out/main/index.js",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:renderer": "vite --config vite.renderer.config.ts",
     "web:dev": "vite --config vite.web.config.ts --host 127.0.0.1",
     "web:build": "vite build --config vite.web.config.ts",
     "build": "tsc --noEmit && electron-vite build",

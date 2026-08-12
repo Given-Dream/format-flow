@@ -20,7 +20,8 @@ import type {
   TemporaryWordClipboardRequest,
   TemporaryWordCleanupResult,
   TemporaryWordFilesRequest,
-  TemporaryWordResult
+  TemporaryWordResult,
+  WorkflowSkillPackageResult
 } from '../shared/types'
 
 const api = {
@@ -52,6 +53,7 @@ const api = {
   importExistingSkills: (): Promise<ImportResult<SkillItem>> => ipcRenderer.invoke('skills:importExisting'),
   restoreSkillsFromBackup: (): Promise<ImportResult<SkillItem>> => ipcRenderer.invoke('skills:restoreBackup'),
   installSkillZip: (): Promise<ImportResult<SkillItem>> => ipcRenderer.invoke('skills:installZip'),
+  prepareWorkflowSkillPackage: (): Promise<WorkflowSkillPackageResult> => ipcRenderer.invoke('skills:prepareWorkflowPackage'),
   installGeneratedSkill: (name: string, content: string): Promise<ImportResult<SkillItem>> =>
     ipcRenderer.invoke('skills:installGenerated', name, content),
   getSkillDirectorySnapshot: (skillPath: string): Promise<SkillDirectorySnapshot> =>

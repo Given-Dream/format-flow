@@ -3,6 +3,7 @@ import type { AppStore, DataDirectoryOverrides } from './types'
 export type CategorizedStoreWritePlan = {
   prompts: boolean
   workflows: boolean
+  projects: boolean
   skillMetadata: boolean
 }
 
@@ -19,7 +20,7 @@ export function planCategorizedStoreWrites(
   next: AppStore
 ): CategorizedStoreWritePlan {
   if (!previous) {
-    return { prompts: true, workflows: true, skillMetadata: true }
+    return { prompts: true, workflows: true, projects: true, skillMetadata: true }
   }
 
   const previousDirectories = directories(previous)
@@ -35,6 +36,10 @@ export function planCategorizedStoreWrites(
       dataRootChanged ||
       (previousDirectories.workflows || '') !== (nextDirectories.workflows || '') ||
       !sameValue(previous.workflows, next.workflows),
+    projects:
+      dataRootChanged ||
+      (previousDirectories.projects || '') !== (nextDirectories.projects || '') ||
+      !sameValue(previous.projectFlowStates, next.projectFlowStates),
     skillMetadata:
       dataRootChanged ||
       (previousDirectories.skillMetadata || '') !== (nextDirectories.skillMetadata || '') ||

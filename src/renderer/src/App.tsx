@@ -1,28 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { JSX, MouseEvent, ReactNode } from 'react'
 import {
-  Background,
-  Controls,
-  MiniMap,
-  ReactFlow,
-  type Connection,
-  type Edge as FlowEdge,
-  type Node as FlowNode,
-  type NodeChange
-} from '@xyflow/react'
-import {
   allTags,
   analyzePromptImport,
   analyzeSkillImport,
-  approvalNode,
-  buildExecutionPrompt,
   buildSmartSkillGroups,
   clonePromptToGroup,
   createMcpServer,
   createPrompt,
   createPromptFromText,
-  createRunSteps,
-  createWorkflow,
   defaultStore,
   findPromptDuplicateGroups,
   findSkillDuplicateGroups,
@@ -30,16 +16,14 @@ import {
   matchesTextAndTags,
   mergeSkillMetadata,
   newId,
-  nodeFromMcp,
-  nodeFromPrompt,
-  nodeFromSkill,
   normalizeStore,
   normalizeTag,
   nowIso,
   parseTags,
   parsePromptImport,
-  rebuildLinearEdges,
-  tagsToText
+  SKILL_CONTENT_PREVIEW_LIMIT,
+  tagsToText,
+  workflowGroupsForQuickCall
 } from '@shared/domain'
 import {
   buildGithubRepositorySearchUrl,
@@ -50,6 +34,15 @@ import {
   RECOMMENDED_DISCOVERY_SOURCES
 } from '@shared/github-discovery'
 import { temporaryWordMarker } from '@shared/temporary-word'
+import { appendWorkflowSkillSnapshots } from '@shared/skill-resource-sync'
+import {
+  buildWorkflowSkillGrouping,
+  isWorkflowBoundSkill,
+  isWorkflowSkillGroupTag,
+  skillItemsForGroupPresentation,
+  WORKFLOW_SKILL_ROOT_TAG,
+  type WorkflowSkillMembership
+} from '@shared/workflow-skill-groups'
 import type {
   AppPaths,
   AppStore,
@@ -66,7 +59,6 @@ import type {
   PromptItem,
   PromptDuplicateGroup,
   PromptImportAnalysis,
-  RunStep,
   SkillDirectoryNode,
   SkillDirectorySnapshot,
   SkillDuplicateGroup,
@@ -78,10 +70,11 @@ import type {
   Workflow,
   WorkflowNode
 } from '@shared/types'
+import WorkflowStudio, { type WorkflowOpenRequest } from './WorkflowStudio'
+import { QuickDeliveryStepper, type QuickDeliveryMode } from './QuickDeliveryStepper'
 
-type TabId = 'prompts' | 'skills' | 'workflows' | 'runner' | 'mcps' | 'learning' | 'settings'
+type TabId = 'prompts' | 'skills' | 'workflows' | 'mcps' | 'learning' | 'settings'
 type LauncherMode = 'prompt' | 'skill' | 'workflow'
-type QuickDeliveryMode = 'copy-all' | 'copy-one-by-one' | 'browser-plugin'
 type QuickCallType = 'prompt' | 'skill' | 'workflow'
 type WorkflowPickerKind = 'workflow' | 'prompt' | 'skill' | 'mcp'
 type LearningMethod = 'conversation-review' | 'engineering-cybernetics'
@@ -334,7 +327,6 @@ const tabs: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'prompts', label: '提示词', description: '按分类标签管理、搜索和调用' },
   { id: 'skills', label: 'Skills', description: '扫描、导入、安装和索引 Skill' },
   { id: 'workflows', label: '工作流', description: '提示词节点选择调用哪个 Skill' },
-  { id: 'runner', label: '顺序运行', description: '审查后自动发送下一步任务' },
   { id: 'mcps', label: 'MCP', description: '导入和添加 MCP 服务配置' },
   { id: 'learning', label: '学习', description: '管理学习方法和生成的 Skill' },
   { id: 'settings', label: '设置', description: '快捷键、Skill 路径和数据位置' }
@@ -376,6 +368,8 @@ export function App(): JSX.Element {
   const [notice, setNotice] = useState('正在加载本地数据...')
   const [isBusy, setIsBusy] = useState(true)
   const [launcherOpen, setLauncherOpen] = useState(false)
+  const [workflowOpenRequest, setWorkflowOpenRequest] = useState<WorkflowOpenRequest | null>(null)
+  const [editingWorkflowSkill, setEditingWorkflowSkill] = useState<SkillItem | null>(null)
   const lastLauncherOpenRef = useRef(0)
   const committedStoreRef = useRef<AppStore | null>(null)
   const optimisticStoreRef = useRef<AppStore | null>(null)
@@ -610,6 +604,38 @@ export function App(): JSX.Element {
     setNotice(`扫描完成：${scanned.length} 个 Skill`)
   }
 
+  async function preserveWorkflowSkillBeforeWrite(
+    skill: SkillItem,
+    relativePath: string,
+    previousContent: string
+  ): Promise<void> {
+    if (relativePath.replace(/\\/g, '/').toLowerCase() !== 'skill.md') return
+    await commit((current) => {
+      const resourceVersions = appendWorkflowSkillSnapshots(current, skill, previousContent)
+      return resourceVersions === current.resourceVersions ? current : { ...current, resourceVersions }
+    })
+  }
+
+  async function saveWorkflowSkillMetadata(skill: SkillItem, metadata: SkillMetadata): Promise<void> {
+    await commit((current) => ({
+      ...current,
+      skillIndex: {
+        ...current.skillIndex,
+        [skill.id]: {
+          ...metadata,
+          assignedTags: workflowSkillAssignedTags(
+            skill,
+            metadata.tags,
+            current.skillIndex[skill.id]?.assignedTags,
+            isWorkflowBoundSkill(skill.id, buildWorkflowSkillGrouping(current.workflows, skills))
+          )
+        }
+      }
+    }))
+    setEditingWorkflowSkill(null)
+    setNotice(`已更新共享 Skill：${skill.title}`)
+  }
+
   async function refreshPaths(): Promise<void> {
     setPaths(await formatFlow.getPaths())
   }
@@ -702,25 +728,34 @@ export function App(): JSX.Element {
               skills={skills}
               commit={commit}
               scanSkills={scanSkills}
+              beforeSaveSkillFile={preserveWorkflowSkillBeforeWrite}
               openPath={(targetPath) => formatFlow.openPath(targetPath)}
               setNotice={setNotice}
             />
           )}
-          {activeTab === 'workflows' && <WorkflowPanel store={store} skills={skills} commit={commit} setNotice={setNotice} />}
-          {activeTab === 'runner' && (
-            <RunnerPanel
+          {activeTab === 'workflows' && (
+            <WorkflowStudio
               store={store}
               skills={skills}
+              paths={paths}
               commit={commit}
               setNotice={setNotice}
-              pluginStatus={pluginStatus}
-              pluginOutput={pluginOutput}
-              requestPluginStatus={requestPluginStatus}
+              refreshSkills={() => scanSkills()}
+              editSkill={setEditingWorkflowSkill}
+              openRequest={workflowOpenRequest}
+              libraryUi={{ ResourceGroupManager, PanelHeader, SearchBox }}
             />
           )}
           {activeTab === 'mcps' && <McpPanel store={store} commit={commit} setNotice={setNotice} />}
           {activeTab === 'learning' && (
-            <LearningPanel store={store} skills={skills} commit={commit} scanSkills={scanSkills} setNotice={setNotice} />
+            <LearningPanel
+              store={store}
+              skills={skills}
+              commit={commit}
+              scanSkills={scanSkills}
+              beforeSaveSkillFile={preserveWorkflowSkillBeforeWrite}
+              setNotice={setNotice}
+            />
           )}
           {activeTab === 'settings' && (
             <SettingsPanel
@@ -740,11 +775,25 @@ export function App(): JSX.Element {
           store={store}
           skills={skills}
           close={() => setLauncherOpen(false)}
-          setActiveTab={setActiveTab}
+          openWorkflow={(workflowId) => {
+            setWorkflowOpenRequest({ workflowId, nonce: Date.now() })
+            setActiveTab('workflows')
+            setLauncherOpen(false)
+          }}
           pasteQuickCall={pasteQuickCall}
           setNotice={setNotice}
           pluginStatus={pluginStatus}
           requestPluginStatus={requestPluginStatus}
+        />
+      )}
+      {editingWorkflowSkill && (
+        <SkillEditorModal
+          skill={editingWorkflowSkill}
+          close={() => setEditingWorkflowSkill(null)}
+          save={saveWorkflowSkillMetadata}
+          beforeSaveFile={preserveWorkflowSkillBeforeWrite}
+          onContentSaved={() => scanSkills()}
+          contextNote="此处与 Skills → 工作流 Skill 分组编辑的是同一个本地 Skill 目录。正文、scripts、references 和 assets 的修改会在两个入口同步显示；已有项目资源锁不会自动改变。"
         />
       )}
     </div>
@@ -1173,7 +1222,7 @@ function PromptPanel({
 
   function renderPromptCard(prompt: PromptItem): JSX.Element {
     return (
-      <article key={prompt.id} className="tile-card prompt-card">
+      <article key={prompt.id} className="resource-card tile-card prompt-card">
         <div className="prompt-card-main">
           <strong>{prompt.title}</strong>
           <p>{prompt.summary}</p>
@@ -1410,6 +1459,7 @@ function SkillPanel({
   skills,
   commit,
   scanSkills,
+  beforeSaveSkillFile,
   openPath,
   setNotice
 }: {
@@ -1417,6 +1467,7 @@ function SkillPanel({
   skills: SkillItem[]
   commit: CommitStore
   scanSkills: (directories?: string[]) => Promise<void>
+  beforeSaveSkillFile: (skill: SkillItem, relativePath: string, previousContent: string) => Promise<void>
   openPath: (path: string) => Promise<string>
   setNotice: (notice: string) => void
 }): JSX.Element {
@@ -1433,26 +1484,84 @@ function SkillPanel({
   const [skillDuplicateGroups, setSkillDuplicateGroups] = useState<SkillDuplicateGroup[] | null>(null)
   const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
   const [skillClipboard, setSkillClipboard] = useState<SkillItem | null>(null)
-  const skillGroups = mergeSkillGroups(store.groups.skills, skills)
+  const workflowSkillGrouping = useMemo(
+    () => buildWorkflowSkillGrouping(store.workflows, skills),
+    [store.workflows, skills]
+  )
+  const groupedSkillItems = useMemo(
+    () => skillItemsForGroupPresentation(skills, workflowSkillGrouping, store.skillIndex),
+    [skills, store.skillIndex, workflowSkillGrouping]
+  )
+  const editableSkillGroups = useMemo(
+    () => mergeSkillGroups(store.groups.skills, groupedSkillItems),
+    [groupedSkillItems, store.groups.skills]
+  )
+  const workflowSkillGroups = workflowSkillGrouping.root ? [workflowSkillGrouping.root] : []
+  const skillGroups = [...editableSkillGroups, ...workflowSkillGroups]
   const skillDiscoverySources = normalizeDiscoverySources(store.settings.discoverySources).filter((source) =>
     discoverySourceSupports(source, 'skill')
   )
   const selectedSkillGroup = selectedGroup === 'all' ? undefined : findGroupByTag(skillGroups, selectedGroup)
   const effectiveTags = selectedSkillGroup ? collectGroupTags(selectedSkillGroup) : selectedGroup === 'all' ? [] : [selectedGroup]
   const effectiveTagSet = new Set(effectiveTags.map(normalizeTag))
-  const visibleSkills = skills.filter(
-    (skill) =>
-      matchesTextAndTags(skill, query, []) &&
-      (selectedGroup === 'all' || skill.tags.some((tag) => effectiveTagSet.has(normalizeTag(tag))))
+  const selectedWorkflowMemberships = selectedGroup === 'all'
+    ? undefined
+    : workflowSkillGrouping.membershipsByTag.get(selectedGroup)
+  const skillsById = new Map(groupedSkillItems.map((skill) => [skill.id, skill]))
+  const visibleSkills = selectedWorkflowMemberships
+    ? selectedWorkflowMemberships
+        .map((membership) => skillsById.get(membership.skillId))
+        .filter((skill): skill is SkillItem => Boolean(skill && matchesTextAndTags(skill, query, [])))
+    : groupedSkillItems.filter(
+        (skill) =>
+          matchesTextAndTags(skill, query, []) &&
+          (selectedGroup === 'all' || skill.tags.some((tag) => effectiveTagSet.has(normalizeTag(tag))))
+      )
+  const visibleWorkflowMembershipBySkillId = new Map(
+    (selectedWorkflowMemberships || workflowSkillGrouping.membershipsByTag.get(WORKFLOW_SKILL_ROOT_TAG) || [])
+      .map((membership) => [membership.skillId, membership])
   )
-  const activeSkillGroupTag = selectedGroup === 'all' ? '' : selectedGroup
+  const activeSkillGroupTag = selectedGroup === 'all' || isWorkflowSkillGroupTag(selectedGroup) ? '' : selectedGroup
+
+  useEffect(() => {
+    if (selectedGroup !== 'all' && !findGroupByTag(skillGroups, selectedGroup)) setSelectedGroup('all')
+  }, [selectedGroup, skillGroups])
+
+  function countSkillsForTag(tag: string): number {
+    const workflowMemberships = workflowSkillGrouping.membershipsByTag.get(tag)
+    if (workflowMemberships) return workflowMemberships.length
+    const normalized = normalizeTag(tag)
+    return groupedSkillItems.filter((skill) => skill.tags.some((skillTag) => normalizeTag(skillTag) === normalized)).length
+  }
+
+  function countSkillsForTags(tags: string[]): number {
+    const skillIds = new Set<string>()
+    const normalizedTags = new Set(tags.map(normalizeTag))
+    for (const tag of tags) {
+      for (const membership of workflowSkillGrouping.membershipsByTag.get(tag) || []) {
+        skillIds.add(membership.skillId)
+      }
+    }
+    for (const skill of groupedSkillItems) {
+      if (skill.tags.some((tag) => normalizedTags.has(normalizeTag(tag)))) skillIds.add(skill.id)
+    }
+    return skillIds.size
+  }
 
   async function saveMetadata(skill: SkillItem, metadata: SkillMetadata): Promise<void> {
     await commit((current) => ({
       ...current,
       skillIndex: {
         ...current.skillIndex,
-        [skill.id]: { ...metadata, assignedTags: metadata.tags }
+        [skill.id]: {
+          ...metadata,
+          assignedTags: workflowSkillAssignedTags(
+            skill,
+            metadata.tags,
+            current.skillIndex[skill.id]?.assignedTags,
+            isWorkflowBoundSkill(skill.id, buildWorkflowSkillGrouping(current.workflows, skills))
+          )
+        }
       }
     }))
     setEditing(null)
@@ -1827,13 +1936,14 @@ function SkillPanel({
     <section className="panel library-layout">
       <ResourceGroupManager
         title="Skill 分组"
-        detail="Skill 分组可排序，也可建立小类"
+        detail="常规分组可维护；工作流 Skill 按节点顺序自动生成"
         allLabel="全部 Skill"
         allCount={skills.length}
-        groups={skillGroups}
+        groups={editableSkillGroups}
+        readOnlyGroups={workflowSkillGroups}
         selectedTag={selectedGroup}
-        countForTag={(tag) => skills.filter((skill) => skill.tags.includes(tag)).length}
-        countForTags={(tags) => skills.filter((skill) => skill.tags.some((tag) => tags.includes(tag))).length}
+        countForTag={countSkillsForTag}
+        countForTags={countSkillsForTags}
         onSelect={setSelectedGroup}
         onChange={updateGroups}
         onRename={renameGroup}
@@ -1856,8 +1966,8 @@ function SkillPanel({
               <div className="clipboard-note">
                 <strong>已复制条目</strong>
                 <span>{skillClipboard.title}</span>
-                {selectedGroup !== 'all' && (
-                  <button type="button" onClick={() => void pasteSkillItemToGroup(findGroupByTag(skillGroups, selectedGroup) || groupFromTag(selectedGroup))}>
+                {activeSkillGroupTag && (
+                  <button type="button" onClick={() => void pasteSkillItemToGroup(findGroupByTag(editableSkillGroups, activeSkillGroupTag) || groupFromTag(activeSkillGroupTag))}>
                     粘贴到当前分组
                   </button>
                 )}
@@ -1868,7 +1978,14 @@ function SkillPanel({
       />
 
       <div className="library-main">
-        <PanelHeader title="Skill 管理" detail={`${visibleSkills.length} / ${skills.length} 个 Skill`} />
+        <PanelHeader
+          title="Skill 管理"
+          detail={
+            selectedWorkflowMemberships
+              ? `${visibleSkills.length} 个 Skill · 按工作流节点顺序排列`
+              : `${visibleSkills.length} / ${skills.length} 个 Skill`
+          }
+        />
         <SearchBox query={query} setQuery={setQuery} placeholder="搜索 Skill 名称、摘要或标签" />
         <div className="import-strip">
           <button className="primary-action" type="button" onClick={() => setManualSkillOpen(true)}>
@@ -1906,36 +2023,40 @@ function SkillPanel({
         </div>
 
         <div className="tile-grid">
-          {visibleSkills.map((skill) => (
-            <article key={skill.id} className="tile-card skill-card">
-              <div className="skill-card-main">
-                <strong>{skill.title}</strong>
-                <p>{skill.summary}</p>
-              </div>
-              <TagRow tags={skill.tags} />
-              <div className="inline-actions skill-card-actions">
-                <button type="button" onClick={() => setEditing(skill)}>
-                  编辑
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void writeClipboardText(formatSkillReferenceText(skill)).then((result) =>
-                      setNotice(result.ok ? `已复制 Skill 名称和本地路径：${skill.title}` : result.message)
-                    )
-                  }
-                >
-                  复制 Skill 名称
-                </button>
-                <button type="button" onClick={() => copySkillItem(skill)}>
-                  复制条目
-                </button>
-                <button type="button" onClick={() => void openPath(skill.path)}>
-                  打开
-                </button>
-              </div>
-            </article>
-          ))}
+          {visibleSkills.map((skill) => {
+            const workflowMembership = visibleWorkflowMembershipBySkillId.get(skill.id)
+            return (
+              <article key={skill.id} className={`resource-card tile-card skill-card${workflowMembership ? ' workflow-skill-card' : ''}`}>
+                {workflowMembership && <WorkflowSkillOrder membership={workflowMembership} />}
+                <div className="skill-card-main">
+                  <strong>{skill.title}</strong>
+                  <p>{skill.summary}</p>
+                </div>
+                <TagRow tags={skill.tags} />
+                <div className="inline-actions skill-card-actions">
+                  <button type="button" onClick={() => setEditing(skill)}>
+                    编辑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void writeClipboardText(formatSkillReferenceText(skill)).then((result) =>
+                        setNotice(result.ok ? `已复制 Skill 名称和本地路径：${skill.title}` : result.message)
+                      )
+                    }
+                  >
+                    复制 Skill 名称
+                  </button>
+                  <button type="button" onClick={() => copySkillItem(skill)}>
+                    复制条目
+                  </button>
+                  <button type="button" onClick={() => void openPath(skill.path)}>
+                    打开
+                  </button>
+                </div>
+              </article>
+            )
+          })}
         </div>
       </div>
 
@@ -1945,6 +2066,11 @@ function SkillPanel({
           close={() => setEditing(null)}
           save={saveMetadata}
           deleteSkill={deleteSkill}
+          beforeSaveFile={beforeSaveSkillFile}
+          onContentSaved={() => scanSkills()}
+          contextNote={selectedWorkflowMemberships
+            ? '当前条目来自按工作流名称生成的 Skill 分组；这里与工作流资源页编辑的是同一个本地 Skill，不会创建副本。'
+            : undefined}
         />
       )}
       {githubDiscoveryOpen && (
@@ -1977,7 +2103,7 @@ function SkillPanel({
       {githubPreview && (
         <GithubSkillPreviewModal
           preview={githubPreview}
-          groups={skillGroups}
+          groups={editableSkillGroups}
           initialTag={activeSkillGroupTag}
           close={() => setGithubPreview(null)}
           install={installGithubSkill}
@@ -1989,1139 +2115,6 @@ function SkillPanel({
           close={() => setManualSkillOpen(false)}
           save={installManualSkill}
         />
-      )}
-    </section>
-  )
-}
-
-function WorkflowPanel({
-  store,
-  skills,
-  commit,
-  setNotice
-}: {
-  store: AppStore
-  skills: SkillItem[]
-  commit: CommitStore
-  setNotice: (notice: string) => void
-}): JSX.Element {
-  const [query, setQuery] = useState('')
-  const [selectedGroup, setSelectedGroup] = useState('all')
-  const [metadataEditing, setMetadataEditing] = useState<Workflow | null>(null)
-  const [workflowClipboard, setWorkflowClipboard] = useState<Workflow | null>(null)
-  const [editingWorkflowId, setEditingWorkflowId] = useState('')
-  const [pickerOpen, setPickerOpen] = useState<WorkflowPickerKind | null>(null)
-  const [workflowId, setWorkflowId] = useState(store.workflows[0]?.id || '')
-  const workflow = editingWorkflowId ? store.workflows.find((item) => item.id === editingWorkflowId) : undefined
-  const [selectedNodeId, setSelectedNodeId] = useState(workflow?.nodes[0]?.id || '')
-  const [promptToAdd, setPromptToAdd] = useState(store.prompts[0]?.id || '')
-  const [skillToAdd, setSkillToAdd] = useState(skills[0]?.id || '')
-  const [mcpToAdd, setMcpToAdd] = useState(store.mcpServers[0]?.id || '')
-  const [exportFormat, setExportFormat] = useState<ExportFormat>('markdown')
-  const [workflowTitleDraft, setWorkflowTitleDraft] = useState(workflow?.title || '')
-  const [workflowDescriptionDraft, setWorkflowDescriptionDraft] = useState(workflow?.description || '')
-  const [nodePositionOverrides, setNodePositionOverrides] = useState<Record<string, { x: number; y: number }>>({})
-  const workflowTextSaveTimerRef = useRef<number | null>(null)
-  const pendingWorkflowTextRef = useRef(new Map<string, {
-    title?: string
-    description?: string
-  }>())
-  const workflowTextFlushPromiseRef = useRef<Promise<void> | null>(null)
-  const nodeAction = useExclusiveAsyncAction<'prompt' | 'skill' | 'mcp' | 'approval'>()
-  const selectedNode = workflow?.nodes.find((node) => node.id === selectedNodeId)
-  const workflowGroups = mergeGroupsWithTags(store.groups.workflows || [], allTags(store.workflows))
-  const effectiveTags = selectedGroup === 'all' ? [] : [selectedGroup]
-  const visibleWorkflows = store.workflows.filter((item) => matchesTextAndTags(item, query, effectiveTags))
-  const activeWorkflowGroupTag = selectedGroup === 'all' ? '' : selectedGroup
-  const selectedPrompt = store.prompts.find((item) => item.id === promptToAdd)
-  const selectedSkill = skills.find((item) => item.id === skillToAdd)
-  const selectedMcp = store.mcpServers.find((item) => item.id === mcpToAdd)
-
-  useEffect(() => {
-    if (!workflowId && store.workflows[0]) setWorkflowId(store.workflows[0].id)
-  }, [workflowId, store.workflows])
-
-  useEffect(() => {
-    if (promptToAdd && store.prompts.some((prompt) => prompt.id === promptToAdd)) return
-    setPromptToAdd(store.prompts[0]?.id || '')
-  }, [promptToAdd, store.prompts])
-
-  useEffect(() => {
-    if (skillToAdd && skills.some((skill) => skill.id === skillToAdd)) return
-    setSkillToAdd(skills[0]?.id || '')
-  }, [skillToAdd, skills])
-
-  useEffect(() => {
-    if (mcpToAdd && store.mcpServers.some((mcp) => mcp.id === mcpToAdd)) return
-    setMcpToAdd(store.mcpServers[0]?.id || '')
-  }, [mcpToAdd, store.mcpServers])
-
-  useEffect(() => {
-    setWorkflowTitleDraft(workflow?.title || '')
-    setWorkflowDescriptionDraft(workflow?.description || '')
-    setNodePositionOverrides({})
-    return () => {
-      void flushWorkflowText().catch(() => undefined)
-    }
-  }, [workflow?.id])
-
-  useEffect(() => {
-    function flushWhenHidden(): void {
-      if (document.visibilityState === 'hidden') void flushWorkflowText().catch(() => undefined)
-    }
-    function flushBeforeUnload(): void {
-      void flushWorkflowText().catch(() => undefined)
-    }
-    document.addEventListener('visibilitychange', flushWhenHidden)
-    window.addEventListener('beforeunload', flushBeforeUnload)
-    return () => {
-      document.removeEventListener('visibilitychange', flushWhenHidden)
-      window.removeEventListener('beforeunload', flushBeforeUnload)
-    }
-  }, [workflow?.id])
-
-  async function mutateWorkflow(workflowId: string, mutation: (current: Workflow) => Workflow): Promise<void> {
-    await commit((current) => ({
-      ...current,
-      workflows: current.workflows.map((item) => (item.id === workflowId ? mutation(item) : item))
-    }))
-  }
-
-  function queueWorkflowText(patch: { title?: string; description?: string }): void {
-    if (!workflow) return
-    pendingWorkflowTextRef.current.set(workflow.id, {
-      ...pendingWorkflowTextRef.current.get(workflow.id),
-      ...patch
-    })
-    if (workflowTextSaveTimerRef.current !== null) window.clearTimeout(workflowTextSaveTimerRef.current)
-    workflowTextSaveTimerRef.current = window.setTimeout(() => {
-      void flushWorkflowText().catch(() => undefined)
-    }, 400)
-  }
-
-  function flushWorkflowText(): Promise<void> {
-    if (workflowTextSaveTimerRef.current !== null) {
-      window.clearTimeout(workflowTextSaveTimerRef.current)
-      workflowTextSaveTimerRef.current = null
-    }
-    if (workflowTextFlushPromiseRef.current) {
-      return workflowTextFlushPromiseRef.current.then(() =>
-        pendingWorkflowTextRef.current.size > 0 ? flushWorkflowText() : undefined
-      )
-    }
-    const batch = Array.from(pendingWorkflowTextRef.current.entries())
-    if (batch.length === 0) return Promise.resolve()
-    pendingWorkflowTextRef.current.clear()
-    const run = (async () => {
-      for (let index = 0; index < batch.length; index += 1) {
-        const [workflowId, pending] = batch[index]
-        try {
-          await mutateWorkflow(workflowId, (current) => ({
-            ...current,
-            ...(pending.title === undefined ? {} : { title: pending.title }),
-            ...(pending.description === undefined ? {} : { description: pending.description }),
-            updatedAt: nowIso()
-          }))
-        } catch (error) {
-          for (const [retryWorkflowId, retryPatch] of batch.slice(index)) {
-            pendingWorkflowTextRef.current.set(retryWorkflowId, {
-              ...retryPatch,
-              ...pendingWorkflowTextRef.current.get(retryWorkflowId)
-            })
-          }
-          throw error
-        }
-      }
-    })()
-    let tracked: Promise<void>
-    tracked = run.finally(() => {
-      if (workflowTextFlushPromiseRef.current === tracked) workflowTextFlushPromiseRef.current = null
-    })
-    workflowTextFlushPromiseRef.current = tracked
-    return tracked
-  }
-
-  async function updateWorkflow(nextWorkflow: Workflow): Promise<void> {
-    await commit((current) => {
-      const exists = current.workflows.some((item) => item.id === nextWorkflow.id)
-      return {
-        ...current,
-        workflows: exists
-          ? current.workflows.map((item) => (item.id === nextWorkflow.id ? nextWorkflow : item))
-          : [nextWorkflow, ...current.workflows]
-      }
-    })
-  }
-
-  function createNewWorkflow(): void {
-    const next = createWorkflow({ tags: activeWorkflowGroupTag ? [activeWorkflowGroupTag] : [] })
-    setWorkflowId(next.id)
-    setEditingWorkflowId('')
-    setMetadataEditing(next)
-    setNotice('正在新建工作流；保存后才会创建')
-  }
-
-  async function saveWorkflowMetadata(nextWorkflow: Workflow): Promise<void> {
-    try {
-      await updateWorkflow({
-        ...nextWorkflow,
-        variables: nextWorkflow.variables.length > 0 ? nextWorkflow.variables : extractVariables(nextWorkflow.description),
-        updatedAt: nowIso()
-      })
-      setMetadataEditing(null)
-      setNotice(`已保存工作流：${nextWorkflow.title}`)
-    } catch (error) {
-      setNotice(error instanceof Error ? `工作流保存失败：${error.message}` : '工作流保存失败')
-    }
-  }
-
-  async function deleteWorkflow(target: Workflow): Promise<void> {
-    if (!confirmDestructiveAction(`确认删除工作流“${target.title}”？`, ['此操作会从工作流列表中移除该条目。'])) return
-    await commit((current) => ({
-      ...current,
-      workflows: current.workflows.filter((item) => item.id !== target.id),
-      runs: current.runs.filter((run) => run.workflowId !== target.id)
-    }))
-    if (workflowClipboard?.id === target.id) setWorkflowClipboard(null)
-    if (editingWorkflowId === target.id) setEditingWorkflowId('')
-    if (workflowId === target.id) setWorkflowId(store.workflows.find((item) => item.id !== target.id)?.id || '')
-    setMetadataEditing(null)
-    setNotice(`已删除工作流：${target.title}`)
-  }
-
-  function copyWorkflowItem(target: Workflow): void {
-    setWorkflowClipboard(target)
-    setNotice(`已复制工作流条目：${target.title}；可在目标分组菜单中粘贴`)
-  }
-
-  async function pasteWorkflowItemToGroup(group: GroupItem): Promise<void> {
-    if (!workflowClipboard) {
-      setNotice('请先在工作流卡片中点击“复制条目”')
-      return
-    }
-    await commit((current) => {
-      const copiedWorkflow = cloneWorkflowToGroup(
-        workflowClipboard,
-        group.tag,
-        uniqueWorkflowCopyTitle(workflowClipboard.title, current.workflows)
-      )
-      return { ...current, workflows: [copiedWorkflow, ...current.workflows] }
-    })
-    setSelectedGroup(group.tag)
-    setNotice(`已将工作流条目“${workflowClipboard.title}”粘贴到“${group.name}”分组`)
-  }
-
-  async function updateGroups(groups: GroupItem[]): Promise<void> {
-    await commit((current) => ({ ...current, groups: { ...current.groups, workflows: groups } }))
-  }
-
-  async function renameGroup(group: GroupItem, renamedGroup: GroupItem, groups: GroupItem[]): Promise<void> {
-    const nextTag = renamedGroup.tag
-    await commit((current) => ({
-      ...current,
-      workflows: current.workflows.map((item) => ({
-        ...item,
-        tags: replaceTag(item.tags, group.tag, nextTag),
-        updatedAt: item.tags.includes(group.tag) ? nowIso() : item.updatedAt
-      })),
-      groups: { ...current.groups, workflows: groups }
-    }))
-    if (selectedGroup === group.tag) setSelectedGroup(nextTag)
-  }
-
-  async function deleteGroup(group: GroupItem): Promise<void> {
-    const tags = collectGroupTags(group)
-    const affectedCount = store.workflows.filter((item) => item.tags.some((tag) => tags.includes(tag))).length
-    if (
-      !confirmDestructiveAction(`确认删除工作流分组“${group.name}”？`, [
-        group.children.length > 0 ? `会同时删除 ${group.children.length} 个下级分组。` : '',
-        `会从 ${affectedCount} 个工作流中移除该分组标签，但不会删除工作流。`
-      ])
-    ) {
-      return
-    }
-    await commit((current) => ({
-      ...current,
-      workflows: current.workflows.map((item) => ({
-        ...item,
-        tags: item.tags.filter((tag) => !tags.includes(tag)),
-        updatedAt: nowIso()
-      })),
-      groups: { ...current.groups, workflows: removeGroupById(current.groups.workflows || [], group.id) }
-    }))
-    if (tags.includes(selectedGroup)) setSelectedGroup('all')
-  }
-
-  async function appendPromptNode(): Promise<void> {
-    await nodeAction.run('prompt', async () => {
-      if (!workflow) return
-      const prompt = store.prompts.find((item) => item.id === promptToAdd)
-      if (!prompt) return
-      let nextNodeId = ''
-      await mutateWorkflow(workflow.id, (current) => {
-        const nextNode = nodeFromPrompt(prompt, current.nodes.length)
-        nextNodeId = nextNode.id
-        const nodes = [...current.nodes, nextNode]
-        return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
-      })
-      setSelectedNodeId(nextNodeId)
-    })
-  }
-
-  async function appendSkillNode(): Promise<void> {
-    await nodeAction.run('skill', async () => {
-      if (!workflow) return
-      const skill = skills.find((item) => item.id === skillToAdd)
-      if (!skill) return
-      let nextNodeId = ''
-      await mutateWorkflow(workflow.id, (current) => {
-        const nextNode = nodeFromSkill(skill, current.nodes.length)
-        nextNodeId = nextNode.id
-        const nodes = [...current.nodes, nextNode]
-        return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
-      })
-      setSelectedNodeId(nextNodeId)
-    })
-  }
-
-  async function appendMcpNode(): Promise<void> {
-    await nodeAction.run('mcp', async () => {
-      if (!workflow) return
-      const mcp = store.mcpServers.find((item) => item.id === mcpToAdd)
-      if (!mcp) return
-      let nextNodeId = ''
-      await mutateWorkflow(workflow.id, (current) => {
-        const nextNode = nodeFromMcp(mcp, current.nodes.length)
-        nextNodeId = nextNode.id
-        const nodes = [...current.nodes, nextNode]
-        return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
-      })
-      setSelectedNodeId(nextNodeId)
-    })
-  }
-
-  async function appendApprovalNode(): Promise<void> {
-    await nodeAction.run('approval', async () => {
-      if (!workflow) return
-      let nextNodeId = ''
-      await mutateWorkflow(workflow.id, (current) => {
-        const nextNode = approvalNode(current.nodes.length)
-        nextNodeId = nextNode.id
-        const nodes = [...current.nodes, nextNode]
-        return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
-      })
-      setSelectedNodeId(nextNodeId)
-    })
-  }
-
-  async function removeNode(nodeId: string): Promise<void> {
-    if (!workflow) return
-    const node = workflow.nodes.find((item) => item.id === nodeId)
-    if (!confirmDestructiveAction(`确认删除节点“${node?.title || '未命名节点'}”？`, ['此操作会从当前工作流中移除该节点并重新生成执行顺序。'])) return
-    await mutateWorkflow(workflow.id, (current) => {
-      const nodes = current.nodes.filter((node) => node.id !== nodeId)
-      return { ...current, nodes, edges: rebuildLinearEdges(nodes), updatedAt: nowIso() }
-    })
-  }
-
-  function selectWorkflowForEditing(nextWorkflowId: string): void {
-    const nextWorkflow = store.workflows.find((item) => item.id === nextWorkflowId)
-    if (!nextWorkflow) return
-    setWorkflowId(nextWorkflow.id)
-    setEditingWorkflowId(nextWorkflow.id)
-    setSelectedNodeId(nextWorkflow.nodes[0]?.id || '')
-  }
-
-  async function updateSelectedNode(patch: Partial<WorkflowNode>): Promise<void> {
-    if (!workflow || !selectedNode) return
-    const workflowId = workflow.id
-    const nodeId = selectedNode.id
-    await mutateWorkflow(workflowId, (current) => ({
-      ...current,
-      nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, ...patch } : node)),
-      updatedAt: nowIso()
-    }))
-  }
-
-  async function moveNode(nodeId: string, direction: -1 | 1): Promise<void> {
-    if (!workflow) return
-    await mutateWorkflow(workflow.id, (current) => {
-      const index = current.nodes.findIndex((node) => node.id === nodeId)
-      const target = index + direction
-      if (index < 0 || target < 0 || target >= current.nodes.length) return current
-      const nodes = [...current.nodes]
-      const [node] = nodes.splice(index, 1)
-      nodes.splice(target, 0, node)
-      const positioned = nodes.map((item, itemIndex) => ({ ...item, position: { x: itemIndex * 280, y: item.position.y } }))
-      return { ...current, nodes: positioned, edges: rebuildLinearEdges(positioned), updatedAt: nowIso() }
-    })
-  }
-
-  function onNodeChanges(changes: NodeChange[]): void {
-    setNodePositionOverrides((current) => {
-      let changed = false
-      const next = { ...current }
-      for (const change of changes) {
-        if (change.type !== 'position' || !change.position) continue
-        next[change.id] = change.position
-        changed = true
-      }
-      return changed ? next : current
-    })
-  }
-
-  async function persistNodePosition(nodeId: string, position: { x: number; y: number }): Promise<void> {
-    if (!workflow) return
-    setNodePositionOverrides((current) => {
-      const next = { ...current }
-      delete next[nodeId]
-      return next
-    })
-    await mutateWorkflow(workflow.id, (current) => ({
-      ...current,
-      nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, position } : node)),
-      updatedAt: nowIso()
-    }))
-  }
-
-  function onConnect(connection: Connection): void {
-    if (!workflow || !connection.source || !connection.target) return
-    const edge = { id: `edge_${connection.source}_${connection.target}`, source: connection.source, target: connection.target }
-    void mutateWorkflow(workflow.id, (current) => ({
-      ...current,
-      edges: [...current.edges.filter((item) => item.id !== edge.id), edge],
-      updatedAt: nowIso()
-    }))
-  }
-
-  async function exportWorkflowItems(items: Workflow[], scope: string): Promise<void> {
-    const result = await exportResourceFile({
-      kind: 'workflows',
-      scope,
-      format: exportFormat,
-      content: formatWorkflowsExport(items, store, skills, exportFormat),
-      emptyMessage: '没有可导出的工作流'
-    })
-    setNotice(result.message)
-  }
-
-  if (!editingWorkflowId) {
-    return (
-      <section className="panel library-layout">
-        <ResourceGroupManager
-          title="工作流分组"
-          detail="工作流分组可排序，也可建立小类"
-          allLabel="全部工作流"
-          allCount={store.workflows.length}
-          groups={workflowGroups}
-          selectedTag={selectedGroup}
-          countForTag={(tag) => store.workflows.filter((item) => item.tags.includes(tag)).length}
-          countForTags={(tags) => store.workflows.filter((item) => item.tags.some((tag) => tags.includes(tag))).length}
-          onSelect={setSelectedGroup}
-          onChange={updateGroups}
-          onRename={renameGroup}
-          onDelete={deleteGroup}
-          renderGroupContextActions={(group, closeMenu) => (
-            <button
-              type="button"
-              disabled={!workflowClipboard}
-              onClick={() => void pasteWorkflowItemToGroup(group).then(closeMenu)}
-            >
-              粘贴工作流条目
-            </button>
-          )}
-          footer={
-            workflowClipboard ? (
-              <div className="clipboard-note">
-                <strong>已复制条目</strong>
-                <span>{workflowClipboard.title}</span>
-                {selectedGroup !== 'all' && (
-                  <button type="button" onClick={() => void pasteWorkflowItemToGroup(findGroupByTag(workflowGroups, selectedGroup) || groupFromTag(selectedGroup))}>
-                    粘贴到当前分组
-                  </button>
-                )}
-              </div>
-            ) : undefined
-          }
-        />
-        <div className="library-main">
-          <PanelHeader title="工作流管理" detail={`${visibleWorkflows.length} / ${store.workflows.length} 个工作流`} />
-          <div className="toolbar-grid">
-            <SearchBox query={query} setQuery={setQuery} placeholder="搜索工作流标题、说明或标签" />
-            <div className="group-selection-note">
-              当前分组：{selectedGroup === 'all' ? '全部工作流' : groupNameForTag(workflowGroups, selectedGroup)}
-            </div>
-            <button className="primary-action" type="button" onClick={() => void createNewWorkflow()}>
-              新建工作流
-            </button>
-          </div>
-          <div className="export-strip">
-            <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)} aria-label="工作流导出格式">
-              <option value="markdown">Markdown</option>
-              <option value="txt">TXT</option>
-              <option value="json">JSON</option>
-            </select>
-            <button type="button" onClick={() => void exportWorkflowItems(visibleWorkflows, selectedGroup === 'all' && !query.trim() ? 'all' : 'filtered')}>
-              导出当前列表
-            </button>
-            <button type="button" onClick={() => void exportWorkflowItems(store.workflows, 'all')}>
-              导出全部工作流
-            </button>
-          </div>
-          <div className="tile-grid">
-            {visibleWorkflows.map((item) => (
-              <article key={item.id} className="tile-card workflow-card">
-                <div className="workflow-card-main">
-                  <strong>{item.title}</strong>
-                  <p>{item.description}</p>
-                </div>
-                <TagRow tags={item.favorite ? ['收藏', ...item.tags] : item.tags} />
-                <div className="inline-actions workflow-card-actions">
-                  <button type="button" onClick={() => setMetadataEditing(item)}>
-                    编辑
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setWorkflowId(item.id)
-                      setEditingWorkflowId(item.id)
-                      setSelectedNodeId(item.nodes[0]?.id || '')
-                    }}
-                  >
-                    编排
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void writeClipboardText(formatWorkflowsExport([item], store, skills, 'markdown')).then((result) =>
-                        setNotice(result.ok ? `已复制工作流内容：${item.title}` : result.message)
-                      )
-                    }
-                  >
-                    复制内容
-                  </button>
-                  <button type="button" onClick={() => copyWorkflowItem(item)}>
-                    复制条目
-                  </button>
-                  <button className="danger" type="button" onClick={() => void deleteWorkflow(item)}>
-                    删除
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-        {metadataEditing && (
-          <WorkflowMetadataModal
-            workflow={metadataEditing}
-            isNew={!store.workflows.some((item) => item.id === metadataEditing.id)}
-            close={() => setMetadataEditing(null)}
-            save={saveWorkflowMetadata}
-            deleteWorkflow={deleteWorkflow}
-          />
-        )}
-      </section>
-    )
-  }
-
-  if (!workflow) {
-    return (
-      <section className="panel centered">
-        <EmptyState title="还没有工作流" detail="创建一个工作流后开始编排。" />
-        <button className="primary-action" type="button" onClick={() => void createNewWorkflow()}>
-          新建工作流
-        </button>
-      </section>
-    )
-  }
-
-  const flowNodes: FlowNode[] = workflow.nodes.map((node) => ({
-    id: node.id,
-    position: nodePositionOverrides[node.id] || node.position,
-    data: {
-      label: (
-        <FlowNodeCard
-          node={node}
-          skill={skills.find((skill) => skill.id === (node.type === 'skill' ? node.refId : node.skillRefId))}
-          mcp={store.mcpServers.find((mcp) => mcp.id === (node.type === 'mcp' ? node.refId : node.mcpRefId))}
-        />
-      )
-    },
-    style: {
-      border: selectedNodeId === node.id ? '2px solid #165dff' : '1px solid rgba(18,18,18,0.14)',
-      borderRadius: 18,
-      background: node.type === 'approval' ? '#fff7df' : '#ffffff',
-      color: '#121212',
-      width: 240
-    }
-  }))
-
-  const flowEdges: FlowEdge[] = workflow.edges.map((edge) => ({
-    ...edge,
-    animated: true,
-    style: { stroke: '#165dff', strokeWidth: 2 }
-  }))
-
-  return (
-    <section className="panel workflow-layout">
-      <div className="workflow-toolbar">
-        <div>
-          <PanelHeader title="工作流编排" detail="把提示词、Skill、MCP 作为节点串联，按顺序运行" />
-          <div className="inline-actions">
-            <button className="picker-trigger wide" type="button" onClick={() => setPickerOpen('workflow')}>
-              <span>{workflow?.title || '选择工作流'}</span>
-            </button>
-            <button type="button" onClick={() => void createNewWorkflow()}>
-              新建工作流
-            </button>
-            <button type="button" onClick={() => setEditingWorkflowId('')}>
-              返回列表
-            </button>
-          </div>
-          <div className="export-strip compact">
-            <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as ExportFormat)} aria-label="工作流导出格式">
-              <option value="markdown">Markdown</option>
-              <option value="txt">TXT</option>
-              <option value="json">JSON</option>
-            </select>
-            <button type="button" onClick={() => void exportWorkflowItems([workflow], 'current')}>
-              导出当前工作流
-            </button>
-            <button type="button" onClick={() => void exportWorkflowItems(store.workflows, 'all')}>
-              导出全部工作流
-            </button>
-          </div>
-        </div>
-
-        <div className="node-adders workflow-adders">
-          <button className="picker-trigger" type="button" onClick={() => setPickerOpen('prompt')}>
-            <span>{selectedPrompt?.title || '选择提示词'}</span>
-          </button>
-          <button className="picker-trigger" type="button" onClick={() => setPickerOpen('skill')}>
-            <span>{selectedSkill ? selectedSkill.title : '选择 Skill'}</span>
-          </button>
-          <button className="picker-trigger" type="button" onClick={() => setPickerOpen('mcp')}>
-            <span>{selectedMcp ? selectedMcp.name : '选择 MCP'}</span>
-          </button>
-          <button className="primary-action" type="button" disabled={nodeAction.busy || !selectedPrompt} onClick={() => void appendPromptNode().catch(() => undefined)}>
-            {nodeAction.busyAction === 'prompt' ? '添加中...' : '添加提示词节点'}
-          </button>
-          <button className="primary-action" type="button" disabled={nodeAction.busy || !selectedSkill} onClick={() => void appendSkillNode().catch(() => undefined)}>
-            {nodeAction.busyAction === 'skill' ? '添加中...' : '添加 Skill 节点'}
-          </button>
-          <button className="primary-action" type="button" disabled={nodeAction.busy || !selectedMcp} onClick={() => void appendMcpNode().catch(() => undefined)}>
-            {nodeAction.busyAction === 'mcp' ? '添加中...' : '添加 MCP 节点'}
-          </button>
-          <button type="button" disabled={nodeAction.busy} onClick={() => void appendApprovalNode().catch(() => undefined)}>
-            {nodeAction.busyAction === 'approval' ? '添加中...' : '添加审查节点'}
-          </button>
-        </div>
-      </div>
-
-      {pickerOpen === 'workflow' && (
-        <ResourcePickerModal
-          title="选择工作流"
-          groups={workflowGroups}
-          allLabel="全部工作流"
-          items={store.workflows.map(workflowToPickerItem)}
-          selectedId={workflow?.id || ''}
-          close={() => setPickerOpen(null)}
-          select={(id) => {
-            selectWorkflowForEditing(id)
-            setPickerOpen(null)
-          }}
-        />
-      )}
-      {pickerOpen === 'prompt' && (
-        <ResourcePickerModal
-          title="选择提示词"
-          groups={mergeGroupsWithTags(store.groups.prompts, allTags(store.prompts))}
-          allLabel="全部提示词"
-          items={store.prompts.map(promptToPickerItem)}
-          selectedId={promptToAdd}
-          close={() => setPickerOpen(null)}
-          select={(id) => {
-            setPromptToAdd(id)
-            setPickerOpen(null)
-          }}
-        />
-      )}
-      {pickerOpen === 'skill' && (
-        <ResourcePickerModal
-          title="选择 Skill 节点"
-          groups={mergeSkillGroups(store.groups.skills, skills)}
-          allLabel="全部 Skill"
-          items={skills.map(skillToPickerItem)}
-          selectedId={skillToAdd}
-          close={() => setPickerOpen(null)}
-          select={(id) => {
-            setSkillToAdd(id)
-            setPickerOpen(null)
-          }}
-        />
-      )}
-      {pickerOpen === 'mcp' && (
-        <ResourcePickerModal
-          title="选择 MCP"
-          groups={mergeGroupsWithTags(store.groups.mcps, allTags(store.mcpServers))}
-          allLabel="全部 MCP"
-          items={store.mcpServers.map(mcpToPickerItem)}
-          selectedId={mcpToAdd}
-          close={() => setPickerOpen(null)}
-          select={(id) => {
-            setMcpToAdd(id)
-            setPickerOpen(null)
-          }}
-        />
-      )}
-
-      <div className="workflow-main">
-        <div className="flow-canvas">
-          <ReactFlow
-            nodes={flowNodes}
-            edges={flowEdges}
-            onNodesChange={onNodeChanges}
-            onNodeDragStop={(_, node) => void persistNodePosition(node.id, node.position)}
-            onConnect={onConnect}
-            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-            fitView
-          >
-            <MiniMap pannable zoomable />
-            <Controls />
-            <Background gap={26} color="rgba(22, 93, 255, 0.09)" />
-          </ReactFlow>
-        </div>
-        <aside className="inspector">
-          <label>
-            工作流标题
-            <input
-              value={workflowTitleDraft}
-              onChange={(event) => {
-                setWorkflowTitleDraft(event.target.value)
-                queueWorkflowText({ title: event.target.value })
-              }}
-              onBlur={() => void flushWorkflowText().catch(() => undefined)}
-            />
-          </label>
-          <label>
-            工作流说明
-            <textarea
-              value={workflowDescriptionDraft}
-              onChange={(event) => {
-                setWorkflowDescriptionDraft(event.target.value)
-                queueWorkflowText({ description: event.target.value })
-              }}
-              onBlur={() => void flushWorkflowText().catch(() => undefined)}
-            />
-          </label>
-          <h3>执行顺序</h3>
-          <div className="sequence-list">
-            {workflow.nodes.map((node, index) => (
-              <button key={node.id} type="button" className={node.id === selectedNodeId ? 'sequence-item active' : 'sequence-item'} onClick={() => setSelectedNodeId(node.id)}>
-                <span>{index + 1}</span>
-                <strong>{node.title}</strong>
-              </button>
-            ))}
-          </div>
-          {selectedNode ? (
-            <NodeInspector
-              key={selectedNode.id}
-              node={selectedNode}
-              prompt={store.prompts.find((prompt) => prompt.id === selectedNode.refId)}
-              skill={skills.find((skill) => skill.id === (selectedNode.type === 'skill' ? selectedNode.refId : selectedNode.skillRefId))}
-              mcp={store.mcpServers.find((mcp) => mcp.id === (selectedNode.type === 'mcp' ? selectedNode.refId : selectedNode.mcpRefId))}
-              skills={skills}
-              mcps={store.mcpServers}
-              updateNode={updateSelectedNode}
-              removeNode={removeNode}
-              moveNode={moveNode}
-            />
-          ) : (
-            <EmptyState title="未选择节点" detail="点击工作流中的节点查看详情。" />
-          )}
-        </aside>
-      </div>
-    </section>
-  )
-}
-
-function RunnerPanel({
-  store,
-  skills,
-  commit,
-  setNotice,
-  pluginStatus,
-  pluginOutput,
-  requestPluginStatus
-}: {
-  store: AppStore
-  skills: SkillItem[]
-  commit: CommitStore
-  setNotice: (notice: string) => void
-  pluginStatus: AiPluginStatus
-  pluginOutput: AiPluginOutput | null
-  requestPluginStatus: () => void
-}): JSX.Element {
-  const [workflowId, setWorkflowId] = useState(store.workflows[0]?.id || '')
-  const [targetKind, setTargetKind] = useState<'clipboard' | 'browser-plugin'>('clipboard')
-  const [outputDraft, setOutputDraft] = useState('')
-  const [reviewDraft, setReviewDraft] = useState('')
-  const [reviewDialog, setReviewDialog] = useState<ReviewMessage[]>([])
-  const [taskFillDraft, setTaskFillDraft] = useState<PromptFillDraft | null>(null)
-  const lastPluginOutputRef = useRef<number>(0)
-  const runAction = useExclusiveAsyncAction<'start'>()
-  const workflow = store.workflows.find((item) => item.id === workflowId) || store.workflows[0]
-  const activeRun =
-    store.runs.find((run) => run.workflowId === workflow?.id && run.status !== 'completed') ||
-    store.runs.find((run) => run.workflowId === workflow?.id)
-  const currentStep = activeRun?.steps[activeRun.currentStepIndex]
-  const currentNode = workflow?.nodes.find((node) => node.id === currentStep?.nodeId)
-  const previousOutput = activeRun && activeRun.currentStepIndex > 0 ? activeRun.steps[activeRun.currentStepIndex - 1].output : ''
-  const executionPrompt = currentNode ? buildExecutionPrompt(currentNode, store.prompts, skills, previousOutput, store.mcpServers) : ''
-  const taskFillSlots = taskFillDraft ? extractPromptFillSlots(taskFillDraft.content) : []
-  const taskFillPreview = taskFillDraft ? fillPromptPlaceholders(taskFillDraft.content, taskFillDraft.values) : ''
-  const taskFillReady = taskFillDraft ? taskFillSlots.every((slot) => taskFillDraft.values[slot.label]?.trim()) : false
-
-  useEffect(() => {
-    setOutputDraft(currentStep?.output || '')
-    setReviewDraft('')
-    setReviewDialog([])
-    setTaskFillDraft(null)
-    lastPluginOutputRef.current = 0
-  }, [activeRun?.id, currentStep?.id])
-
-  useEffect(() => {
-    if (!pluginOutput || pluginOutput.updatedAt <= lastPluginOutputRef.current) return
-    lastPluginOutputRef.current = pluginOutput.updatedAt
-    setOutputDraft(pluginOutput.text)
-  }, [pluginOutput])
-
-  useEffect(() => {
-    if (targetKind !== 'browser-plugin') return
-    requestPluginStatus()
-    const quickRefresh = window.setInterval(requestPluginStatus, 1200)
-    const stopQuickRefresh = window.setTimeout(() => window.clearInterval(quickRefresh), 6000)
-    return () => {
-      window.clearInterval(quickRefresh)
-      window.clearTimeout(stopQuickRefresh)
-    }
-  }, [targetKind, requestPluginStatus])
-
-  async function startRun(): Promise<void> {
-    await runAction.run('start', async () => {
-      if (!workflow) return
-      const timestamp = nowIso()
-      const run = {
-        id: `run_${Date.now()}`,
-        workflowId: workflow.id,
-        workflowTitle: workflow.title,
-        status: 'reviewing' as const,
-        currentStepIndex: 0,
-        steps: createRunSteps(workflow),
-        createdAt: timestamp,
-        updatedAt: timestamp
-      }
-      await commit((current) => ({ ...current, runs: [run, ...current.runs] }))
-    })
-  }
-
-  async function updateRun(steps: RunStep[], patch: Partial<typeof activeRun> = {}): Promise<void> {
-    if (!activeRun) return
-    const activeRunId = activeRun.id
-    const updatedAt = nowIso()
-    await commit((current) => ({
-      ...current,
-      runs: current.runs.map((run) =>
-        run.id === activeRunId ? { ...run, ...patch, steps, updatedAt } : run
-      )
-    }))
-  }
-
-  async function sendCurrentTask(): Promise<void> {
-    if (!executionPrompt) return
-    const slots = extractPromptFillSlots(executionPrompt)
-    if (slots.length > 0) {
-      setTaskFillDraft({
-        title: `填写工作流节点：${currentStep?.title || currentNode?.title || '当前节点'}`,
-        content: executionPrompt,
-        submitLabel: '填充并发送当前任务',
-        cancelLabel: '暂不发送',
-        values: Object.fromEntries(slots.map((slot) => [slot.label, ''])),
-        attachments: {},
-        submit: (filledTask) => {
-          setTaskFillDraft(null)
-          void sendTaskText(filledTask)
-        }
-      })
-      return
-    }
-    await sendTaskText(executionPrompt)
-  }
-
-  async function sendTaskText(taskText: string): Promise<void> {
-    const clipboardResult = await writeClipboardText(taskText)
-    if (!clipboardResult.ok) {
-      setNotice(clipboardResult.message)
-      return
-    }
-    if (targetKind === 'browser-plugin') {
-      const result = await queueBrowserPluginTask({
-        text: taskText,
-        workflowId: workflow?.id,
-        workflowTitle: workflow?.title,
-        stepTitle: currentStep?.title
-      })
-      setNotice(result.ok ? `${result.message} 同时已复制到剪贴板。` : result.message)
-      if (!result.ok) return
-    } else {
-      setNotice('当前任务已复制到剪贴板')
-    }
-    await markCurrentRunning(taskText)
-  }
-
-  async function markCurrentRunning(taskText = executionPrompt): Promise<void> {
-    if (!activeRun || !currentStep) return
-    const steps = activeRun.steps.map((step, index) => {
-      if (index !== activeRun.currentStepIndex) return step
-      return {
-        ...step,
-        status: 'running' as const,
-        reviewedByHuman: true,
-        inputSnapshot: taskText,
-        startedAt: step.startedAt || nowIso()
-      }
-    })
-    await updateRun(steps, { status: 'running' })
-  }
-
-  async function sendReviewMessage(): Promise<void> {
-    const reviewText = reviewDraft.trim()
-    if (!reviewText) return
-    const message: ReviewMessage = {
-      id: newId('review'),
-      role: 'human',
-      text: reviewText,
-      createdAt: nowIso()
-    }
-    const linkedPrompt = [
-      '人工审查意见：',
-      reviewText,
-      '',
-      '请基于当前任务、上一轮输出和这条审查意见继续修正或补充。完成后输出可直接进入 Format Flow 的节点输出。'
-    ].join('\n')
-
-    setReviewDialog((items) => [...items, message])
-    setReviewDraft('')
-    const clipboardResult = await writeClipboardText(linkedPrompt)
-    if (!clipboardResult.ok) {
-      setNotice(clipboardResult.message)
-      return
-    }
-    if (targetKind === 'browser-plugin') {
-      const result = await queueBrowserPluginTask({
-        text: linkedPrompt,
-        mode: 'review',
-        workflowId: workflow?.id,
-        workflowTitle: workflow?.title,
-        stepTitle: currentStep?.title
-      })
-      setNotice(result.ok ? `${result.message} 同时已复制到剪贴板。` : result.message)
-      return
-    }
-    setNotice('人工审查意见已复制到剪贴板')
-  }
-
-  async function completeCurrent(): Promise<void> {
-    if (!activeRun || !currentStep) return
-    const isLast = activeRun.currentStepIndex >= activeRun.steps.length - 1
-    const steps = activeRun.steps.map((step, index) =>
-      index === activeRun.currentStepIndex ? { ...step, status: 'done' as const, output: outputDraft, finishedAt: nowIso() } : step
-    )
-    await updateRun(steps, {
-      status: isLast ? 'completed' : 'reviewing',
-      currentStepIndex: isLast ? activeRun.currentStepIndex : activeRun.currentStepIndex + 1
-    })
-    setOutputDraft('')
-  }
-
-  async function failCurrent(): Promise<void> {
-    if (!activeRun || !currentStep) return
-    const steps = activeRun.steps.map((step, index) =>
-      index === activeRun.currentStepIndex ? { ...step, status: 'failed' as const, output: outputDraft, finishedAt: nowIso() } : step
-    )
-    await updateRun(steps, { status: 'failed' })
-  }
-
-  return (
-    <section className="panel runner-layout">
-      <div className="runner-left">
-        <PanelHeader title="顺序运行" detail="不再手动重复输入提示词；审查后自动生成并发送下一步" />
-        <label>
-          选择工作流
-          <select value={workflow?.id || ''} onChange={(event) => setWorkflowId(event.target.value)}>
-            {store.workflows.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.title}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          连接方式
-          <select value={targetKind} onChange={(event) => setTargetKind(event.target.value as 'clipboard' | 'browser-plugin')}>
-            <option value="clipboard">剪贴板连接</option>
-            <option value="browser-plugin">浏览器插件连接</option>
-          </select>
-        </label>
-        <p className="hint">
-          剪贴板连接只复制当前任务；浏览器插件连接会把任务发给已加载的 Format Flow Browser Bridge 插件，由插件注入已打开的 AI 网页输入框。
-        </p>
-        {targetKind === 'browser-plugin' && (
-          <div className={pluginStatus.connected ? 'plugin-status connected' : 'plugin-status'}>
-            <span className="ai-icon">{pluginStatus.connected ? pluginStatus.aiIcon || 'AI' : 'AI'}</span>
-            <div>
-              <strong>
-                {pluginStatus.connected
-                  ? `已连接 ${pluginStatus.aiName || 'AI'}`
-                  : pluginStatus.bridgeConnected
-                    ? '插件已连接，未找到已打开的 AI 页面'
-                    : '当前浏览器未连接扩展'}
-              </strong>
-              <small>
-                {pluginStatus.message ||
-                  pluginStatus.tabTitle ||
-                  '请在已加载 browser-extension 的 Chrome/Edge 中打开当前地址，并打开受支持的 AI 网页。'}
-              </small>
-            </div>
-            <button type="button" onClick={requestPluginStatus}>
-              刷新
-            </button>
-          </div>
-        )}
-        <button
-          className="primary-action save-action"
-          type="button"
-          disabled={runAction.busy || !workflow?.nodes.length}
-          onClick={() => void startRun().catch(() => undefined)}
-        >
-          {runAction.busy ? '正在创建...' : '创建运行记录'}
-        </button>
-        {activeRun ? (
-          <div className="run-card">
-            <strong>{activeRun.workflowTitle}</strong>
-            <span>状态：{activeRun.status}</span>
-            <div className="run-steps">
-              {activeRun.steps.map((step, index) => (
-                <div key={step.id} className={index === activeRun.currentStepIndex ? 'run-step active' : 'run-step'}>
-                  <span>{index + 1}</span>
-                  <strong>{step.title}</strong>
-                  <small>{step.status}</small>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <EmptyState title="暂无运行记录" detail="选择一个工作流并创建运行记录。" />
-        )}
-      </div>
-
-      <div className="runner-right">
-        {currentStep && currentNode ? (
-          <>
-            <PanelHeader title={currentStep.title} detail={currentStep.summary} />
-            <div className="runner-content-scroll">
-              <label className="runner-field runner-task-field">
-                待执行任务
-                <textarea className="content-editor readonly" readOnly value={executionPrompt} />
-              </label>
-              <div className="review-dialog-panel">
-                <div className="review-dialog-header">
-                  <strong>人工审查意见</strong>
-                  <span>第一次结果不满意时，在这里继续给已连接 AI 发修改意见。</span>
-                </div>
-                <div className="review-thread">
-                  {reviewDialog.length > 0 ? (
-                    reviewDialog.map((message) => (
-                      <div key={message.id} className={`review-message ${message.role}`}>
-                        <strong>{message.role === 'human' ? '人工审查' : '系统'}</strong>
-                        <p>{message.text}</p>
-                      </div>
-                    ))
-                  ) : (
-                    <span>暂无审查对话。节点输出会由插件同步到下方文本框，也可手动编辑。</span>
-                  )}
-                </div>
-                <textarea
-                  value={reviewDraft}
-                  onChange={(event) => setReviewDraft(event.target.value)}
-                  placeholder="输入给 AI 的追加审查意见，例如：结果不够具体，请补充可执行步骤和风险说明。"
-                />
-                <div className="inline-actions review-dialog-actions">
-                  <button type="button" onClick={() => void sendReviewMessage()}>
-                    发送审查意见
-                  </button>
-                </div>
-              </div>
-              <label className="runner-field runner-output-field">
-                节点输出
-                <textarea
-                  value={outputDraft}
-                  onChange={(event) => setOutputDraft(event.target.value)}
-                  placeholder="浏览器插件同步的 AI 输出会写入这里；也可以人工修订后再标记完成。"
-                />
-              </label>
-            </div>
-            <div className="inline-actions runner-actions">
-              <button type="button" onClick={() => void sendCurrentTask()}>
-                发送当前任务
-              </button>
-              <button type="button" onClick={() => void completeCurrent()}>
-                标记完成并进入下一步
-              </button>
-              <button className="danger" type="button" onClick={() => void failCurrent()}>
-                标记失败
-              </button>
-            </div>
-          </>
-        ) : (
-          <EmptyState title="没有可运行节点" detail="请先在工作流里添加节点。" />
-        )}
-      </div>
-      {taskFillDraft && (
-        <Modal title={taskFillDraft.title} close={() => setTaskFillDraft(null)}>
-          <div className="prompt-fill-layout">
-            <div className="prompt-fill-fields">
-              {taskFillSlots.map((slot) => (
-                <label key={slot.label}>
-                  {slot.label}
-                  <textarea
-                    autoFocus={slot === taskFillSlots[0]}
-                    value={taskFillDraft.values[slot.label] || ''}
-                    placeholder={`请输入${slot.label}...`}
-                    onChange={(event) =>
-                      setTaskFillDraft({
-                        ...taskFillDraft,
-                        values: { ...taskFillDraft.values, [slot.label]: event.target.value }
-                      })
-                    }
-                  />
-                </label>
-              ))}
-            </div>
-            <label className="prompt-fill-preview">
-              填充预览
-              <textarea className="content-editor readonly" readOnly value={taskFillPreview} />
-            </label>
-            <div className="inline-actions">
-              <button className="primary-action" type="button" disabled={!taskFillReady} onClick={() => taskFillDraft.submit(taskFillPreview, taskFillDraft.values)}>
-                {taskFillDraft.submitLabel}
-              </button>
-              <button type="button" onClick={() => setTaskFillDraft(null)}>
-                {taskFillDraft.cancelLabel || '返回'}
-              </button>
-            </div>
-          </div>
-        </Modal>
       )}
     </section>
   )
@@ -3291,7 +2284,7 @@ function McpPanel({
         <PanelHeader title="MCP 服务" detail={`${visibleServers.length} / ${store.mcpServers.length} 个配置`} />
         <div className="tile-grid">
           {visibleServers.map((server) => (
-            <article key={server.id} className="tile-card">
+            <article key={server.id} className="resource-card tile-card">
               <div>
                 <strong>{server.name}</strong>
                 <p>{server.url || [server.command, ...server.args].filter(Boolean).join(' ') || '未配置启动方式'}</p>
@@ -3322,12 +2315,14 @@ function LearningPanel({
   skills,
   commit,
   scanSkills,
+  beforeSaveSkillFile,
   setNotice
 }: {
   store: AppStore
   skills: SkillItem[]
   commit: CommitStore
   scanSkills: (directories?: string[]) => Promise<void>
+  beforeSaveSkillFile: (skill: SkillItem, relativePath: string, previousContent: string) => Promise<void>
   setNotice: (notice: string) => void
 }): JSX.Element {
   const [selectedGroup, setSelectedGroup] = useState('all')
@@ -3463,7 +2458,7 @@ function LearningPanel({
             const skill = skills.find((item) => item.name === definition.name)
             if (!skill) {
               return (
-                <article key={definition.method} className="tile-card skill-card learning-method-skill-empty">
+                <article key={definition.method} className="resource-card tile-card skill-card learning-method-skill-empty">
                   <div className="skill-card-main">
                     <strong>{definition.title}</strong>
                     <p>本地尚未扫描到此内置学习 Skill。</p>
@@ -3477,7 +2472,7 @@ function LearningPanel({
               )
             }
             return (
-              <article key={skill.id} className="tile-card skill-card">
+              <article key={skill.id} className="resource-card tile-card skill-card">
                 <div className="skill-card-main">
                   <strong>{skill.title}</strong>
                   <p>{skill.summary}</p>
@@ -3555,6 +2550,8 @@ function LearningPanel({
           }}
           save={saveMetadata}
           deleteSkill={deleteSkill}
+          beforeSaveFile={beforeSaveSkillFile}
+          onContentSaved={() => scanSkills()}
         />
       )}
     </section>
@@ -3583,6 +2580,7 @@ function SettingsPanel({
     data: store.settings.dataDirectory || '',
     prompts: store.settings.dataDirectories?.prompts || '',
     workflows: store.settings.dataDirectories?.workflows || '',
+    projects: store.settings.dataDirectories?.projects || '',
     skillMetadata: store.settings.dataDirectories?.skillMetadata || '',
     managedSkills: store.settings.dataDirectories?.managedSkills || ''
   }))
@@ -3697,7 +2695,7 @@ function SettingsPanel({
 
   async function saveDataDirectories(): Promise<void> {
     const overrides: DataDirectoryOverrides = {}
-    for (const key of ['prompts', 'workflows', 'skillMetadata', 'managedSkills'] as const) {
+    for (const key of ['prompts', 'workflows', 'projects', 'skillMetadata', 'managedSkills'] as const) {
       const value = dataDirectories[key].trim()
       if (value) overrides[key] = value
     }
@@ -4041,6 +3039,7 @@ function SettingsPanel({
             <option value="data">应用数据与设置</option>
             <option value="prompts">Prompt 数据</option>
             <option value="workflows">工作流数据</option>
+            <option value="projects">工作流项目</option>
             <option value="skillMetadata">Skill 元数据</option>
             <option value="managedSkills">托管 Skill</option>
           </select>
@@ -4078,6 +3077,8 @@ function SettingsPanel({
           <dd>{paths?.promptDirectory || '未加载'}</dd>
           <dt>工作流分类目录</dt>
           <dd>{paths?.workflowDirectory || '未加载'}</dd>
+          <dt>工作流项目目录</dt>
+          <dd>{paths?.projectDirectory || '未加载'}</dd>
           <dt>Skill 元数据文件</dt>
           <dd>{paths?.skillMetadataPath || '未加载'}</dd>
           <dt>托管 Skill 目录</dt>
@@ -5204,12 +4205,18 @@ function SkillEditorModal({
   skill,
   close,
   save,
-  deleteSkill
+  deleteSkill,
+  beforeSaveFile,
+  onContentSaved,
+  contextNote
 }: {
   skill: SkillItem
   close: () => void
   save: (skill: SkillItem, metadata: SkillMetadata) => Promise<void>
-  deleteSkill: (skill: SkillItem) => Promise<void>
+  deleteSkill?: (skill: SkillItem) => Promise<void>
+  beforeSaveFile?: (skill: SkillItem, relativePath: string, previousContent: string) => Promise<void>
+  onContentSaved?: (skill: SkillItem, relativePath: string) => Promise<void>
+  contextNote?: string
 }): JSX.Element {
   const [summaryOverride, setSummaryOverride] = useState(skill.summary)
   const [tagText, setTagText] = useState(tagsToText(skill.tags))
@@ -5274,11 +4281,17 @@ function SkillEditorModal({
       return
     }
     const relativePath = normalizeDisplayPath(snapshot.root, node.path)
-    const result = await formatFlow.writeSkillTextFile({ skillPath: skill.path, relativePath, content: draftContent })
-    setStatus(result.ok ? skillEditorLabels.saved : result.message)
-    if (result.ok) {
-      setEditingPath('')
-      await loadSnapshot()
+    try {
+      await beforeSaveFile?.(skill, relativePath, node.content || '')
+      const result = await formatFlow.writeSkillTextFile({ skillPath: skill.path, relativePath, content: draftContent })
+      setStatus(result.ok ? skillEditorLabels.saved : result.message)
+      if (result.ok) {
+        setEditingPath('')
+        await loadSnapshot()
+        await onContentSaved?.(skill, relativePath)
+      }
+    } catch (saveError) {
+      setStatus(saveError instanceof Error ? saveError.message : skillEditorLabels.unsupportedWrite)
     }
   }
 
@@ -5293,7 +4306,10 @@ function SkillEditorModal({
     if (!name) return
     const result = await formatFlow.createSkillEntry({ skillPath: skill.path, parentRelativePath, name, kind, content: content || defaultSkillFileContent(`${parentRelativePath}/${name}`) })
     setStatus(result.ok ? skillEditorLabels.created : result.message)
-    if (result.ok) await loadSnapshot()
+    if (result.ok) {
+      await loadSnapshot()
+      await onContentSaved?.(skill, [parentRelativePath, name].filter(Boolean).join('/'))
+    }
   }
 
   const actions: SkillNodeActions = {
@@ -5310,6 +4326,7 @@ function SkillEditorModal({
 
   return (
     <Modal title={`${skillEditorLabels.editTitle}: ${skill.title}`} close={close} className="skill-editor-modal">
+      {contextNote && <p className="skill-editor-context">{contextNote}</p>}
       <div className="skill-editor-layout">
         <div className="skill-editor-form">
           <label>
@@ -5346,9 +4363,11 @@ function SkillEditorModal({
             <button type="button" onClick={() => setFavorite(!favorite)}>
               {favorite ? skillEditorLabels.unfavorite : skillEditorLabels.favorite}
             </button>
-            <button className="danger" type="button" onClick={() => void deleteSkill(skill)}>
-              {skillEditorLabels.delete}
-            </button>
+            {deleteSkill && (
+              <button className="danger" type="button" onClick={() => void deleteSkill(skill)}>
+                {skillEditorLabels.delete}
+              </button>
+            )}
           </div>
         </div>
 
@@ -5901,7 +4920,7 @@ function LauncherModal({
   store,
   skills,
   close,
-  setActiveTab,
+  openWorkflow,
   pasteQuickCall,
   setNotice,
   pluginStatus,
@@ -5910,7 +4929,7 @@ function LauncherModal({
   store: AppStore
   skills: SkillItem[]
   close: () => void
-  setActiveTab: (tab: TabId) => void
+  openWorkflow: (workflowId: string) => void
   pasteQuickCall: (
     text: string,
     success: string,
@@ -5944,9 +4963,18 @@ function LauncherModal({
         ? allTags(skills)
         : allTags(store.workflows)
   const quickGroupSource =
-    mode === 'prompt' ? store.groups.prompts : mode === 'skill' ? store.groups.skills : store.groups.quickCalls || []
-  const mergedQuickGroups = mode === 'skill' ? mergeSkillGroups(quickGroupSource, skills) : mergeGroupsWithTags(quickGroupSource, quickGroupTags)
-  const quickGroups = filterGroupsWithTags(mergedQuickGroups, quickGroupTags)
+    mode === 'prompt'
+      ? store.groups.prompts
+      : mode === 'skill'
+        ? store.groups.skills
+        : workflowGroupsForQuickCall(store.groups, store.workflows)
+  const mergedQuickGroups =
+    mode === 'skill'
+      ? mergeSkillGroups(quickGroupSource, skills)
+      : mode === 'workflow'
+        ? quickGroupSource
+        : mergeGroupsWithTags(quickGroupSource, quickGroupTags)
+  const quickGroups = mode === 'workflow' ? mergedQuickGroups : filterGroupsWithTags(mergedQuickGroups, quickGroupTags)
   const groupOptions = flattenGroups(quickGroups)
   const selectedQuickGroup = selectedGroup === 'all' ? undefined : findGroupByTag(quickGroups, selectedGroup)
   const selectedQuickTags = selectedQuickGroup ? collectGroupTags(selectedQuickGroup) : selectedGroup === 'all' ? [] : [selectedGroup]
@@ -6261,71 +5289,25 @@ function LauncherModal({
       rememberQuickCall(skill.id, skill.title || skill.name, values)
       await pasteQuickCall(filledContent, `已复制 Skill 名称和本地路径：${skill.title}`)
     }
-    const copySkill = (filledContent: string, attachments: TemporaryWordAttachment[] = []) =>
-      copySkillText(filledContent, {})
-        .then(() => {
+    setFillDraft({
+      title: `${slots.length > 0 ? '填写并调用' : '调用'} Skill：${skill.title || skill.name}`,
+      content,
+      submitLabel: '交付 Skill',
+      historyKey,
+      values: readStoredQuickLauncherFillValues(historyKey, slots),
+      attachments: {},
+      copyText: copySkillText,
+      submit: (filledContent, values, attachments = []) => {
+        void copySkillText(filledContent, values).then(() => {
           if (attachments.length === 0) close()
         })
-        .catch(() => undefined)
-    if (slots.length > 0) {
-      setFillDraft({
-        title: `填写 Skill：${skill.title || skill.name}`,
-        content,
-        submitLabel: '复制填充后 Skill',
-        historyKey,
-        values: readStoredQuickLauncherFillValues(historyKey, slots),
-        attachments: {},
-        copyText: copySkillText,
-        submit: (filledContent, values, attachments = []) => {
-          void copySkillText(filledContent, values).then(() => {
-            if (attachments.length === 0) close()
-          })
-        }
-      })
-      return
-    }
-    rememberQuickCall(skill.id, skill.title || skill.name)
-    void copySkill(content)
+      }
+    })
   }
 
   function callWorkflow(workflow: Workflow): void {
-    const firstNode = workflow.nodes[0]
-    const task = firstNode
-      ? buildExecutionPrompt(firstNode, store.prompts, skills, '', store.mcpServers)
-      : `调用工作流：${workflow.title}\n${workflow.description}`
-    const slots = extractPromptFillSlots(task)
-    const historyKey = quickLauncherHistoryKey(mode, workflow.id)
-    const copyWorkflowText = async (filledTask: string, values: Record<string, string>): Promise<void> => {
-      rememberQuickCall(workflow.id, workflow.title, values)
-      await pasteQuickCall(filledTask, `已复制工作流首个顺序运行任务文本：${workflow.title}`)
-      setActiveTab('runner')
-    }
-    const copyWorkflowTask = (filledTask: string, attachments: TemporaryWordAttachment[] = []) =>
-      copyWorkflowText(filledTask, {})
-        .then(() => {
-          setActiveTab('runner')
-          if (attachments.length === 0) close()
-        })
-        .catch(() => undefined)
-    if (slots.length > 0) {
-      setFillDraft({
-        title: `填写工作流节点：${workflow.title}`,
-        content: task,
-        submitLabel: '复制填充后任务',
-        historyKey,
-        values: readStoredQuickLauncherFillValues(historyKey, slots),
-        attachments: {},
-        copyText: copyWorkflowText,
-        submit: (filledTask, values, attachments = []) => {
-          void copyWorkflowText(filledTask, values).then(() => {
-            if (attachments.length === 0) close()
-          })
-        }
-      })
-      return
-    }
     rememberQuickCall(workflow.id, workflow.title)
-    void copyWorkflowTask(task)
+    openWorkflow(workflow.id)
   }
 
   function quickGroupCount(group: GroupItem): number {
@@ -6617,104 +5599,19 @@ function LauncherModal({
               )}
             </section>
           )}
-          <section className="quick-delivery-stepper" aria-label="快捷调用交付方式">
-            <header className="quick-delivery-header">
-              <div>
-                <strong>选择交付方式</strong>
-                <span>选择会被记住，下次快捷调用自动沿用。</span>
-              </div>
-              <span className="quick-delivery-memory">已记忆</span>
-            </header>
-            <div className="quick-delivery-modes" role="radiogroup" aria-label="快捷调用交付方式">
-              <label className={deliveryMode === 'copy-all' ? 'active' : ''}>
-                <input
-                  type="radio"
-                  name="quick-delivery-mode"
-                  checked={deliveryMode === 'copy-all'}
-                  onChange={() => chooseDeliveryMode('copy-all')}
-                />
-                <span>
-                  <strong>复制文本 + 全部附件</strong>
-                  <small>1. 复制填充后内容　2. 一次复制全部附件</small>
-                </span>
-              </label>
-              <label className={deliveryMode === 'copy-one-by-one' ? 'active' : ''}>
-                <input
-                  type="radio"
-                  name="quick-delivery-mode"
-                  checked={deliveryMode === 'copy-one-by-one'}
-                  onChange={() => chooseDeliveryMode('copy-one-by-one')}
-                />
-                <span>
-                  <strong>复制文本 + 逐个附件</strong>
-                  <small>1. 复制填充后内容　2. 逐个复制直到最后</small>
-                </span>
-              </label>
-              <label className={deliveryMode === 'browser-plugin' ? 'active' : ''}>
-                <input
-                  type="radio"
-                  name="quick-delivery-mode"
-                  checked={deliveryMode === 'browser-plugin'}
-                  onChange={() => chooseDeliveryMode('browser-plugin')}
-                />
-                <span>
-                  <strong>浏览器插件填充</strong>
-                  <small>通过浏览器插件注入文本和全部附件，不自动发送</small>
-                </span>
-              </label>
-            </div>
-            <div className="quick-delivery-steps">
-              {deliveryMode !== 'browser-plugin' ? (
-                <>
-                  <div className={deliveryStep === 1 ? 'quick-delivery-step active' : 'quick-delivery-step complete'}>
-                    <b>1</b>
-                    <span>复制填充后内容</span>
-                    {deliveryStep === 1 ? (
-                      <button className="primary-action" type="button" disabled={!fillReady} onClick={() => void copyFilledContentStep()}>
-                        复制填充后内容
-                      </button>
-                    ) : (
-                      <small>已完成</small>
-                    )}
-                  </div>
-                  <div className={deliveryStep === 2 ? 'quick-delivery-step active' : 'quick-delivery-step'}>
-                    <b>2</b>
-                    <span>{deliveryMode === 'copy-all' ? '一次复制全部附件' : '逐个复制附件'}</span>
-                    {fillAttachmentPaths.length > 0 ? (
-                      deliveryMode === 'copy-all' ? (
-                        <button type="button" disabled={deliveryStep !== 2} onClick={() => void copyAttachmentFiles(fillAttachments)}>
-                          一次复制全部附件
-                        </button>
-                      ) : (
-                        <button type="button" disabled={deliveryStep !== 2} onClick={() => void copyNextAttachment()}>
-                          {attachmentCopyIndex < fillAttachmentPaths.length
-                            ? attachmentCopyIndex === 0
-                              ? `逐个复制 1/${fillAttachmentPaths.length}`
-                              : `复制下一个 ${attachmentCopyIndex + 1}/${fillAttachmentPaths.length}`
-                            : '附件复制完成'}
-                        </button>
-                      )
-                    ) : (
-                      <small>没有附件，步骤自动跳过</small>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <div className="quick-delivery-plugin-step">
-                  <span>注入文本和附件</span>
-                  <button
-                    className="primary-action"
-                    type="button"
-                    disabled={!fillReady}
-                    title={pluginStatus.connected ? '不自动发送' : '浏览器插件未连接'}
-                    onClick={() => void fillThroughBrowserPlugin()}
-                  >
-                    浏览器插件填充
-                  </button>
-                </div>
-              )}
-            </div>
-          </section>
+          <QuickDeliveryStepper
+            mode={deliveryMode}
+            step={deliveryStep}
+            fillReady={fillReady}
+            attachmentCount={fillAttachmentPaths.length}
+            attachmentCopyIndex={attachmentCopyIndex}
+            pluginConnected={pluginStatus.connected}
+            onMode={chooseDeliveryMode}
+            onCopyText={() => void copyFilledContentStep()}
+            onCopyAllAttachments={() => void copyAttachmentFiles(fillAttachments)}
+            onCopyNextAttachment={() => void copyNextAttachment()}
+            onBrowserPlugin={() => void fillThroughBrowserPlugin()}
+          />
           <div className="inline-actions">
             <button type="button" onClick={() => setFillDraft(null)}>
               {fillDraft.cancelLabel || '返回列表'}
@@ -6989,6 +5886,16 @@ function TagRow({ tags }: { tags: string[] }): JSX.Element {
   )
 }
 
+function WorkflowSkillOrder({ membership }: { membership: WorkflowSkillMembership }): JSX.Element {
+  return (
+    <div className="workflow-skill-order" title={`工作流节点：${membership.nodeKey} · 原始顺序 ${membership.nodeOrder}`}>
+      <span>节点 {String(membership.skillSequence).padStart(2, '0')}</span>
+      <strong>{membership.workflowTitle}</strong>
+      <code>{membership.nodeKey}</code>
+    </div>
+  )
+}
+
 function EmptyState({ title, detail }: { title: string; detail: string }): JSX.Element {
   return (
     <div className="empty-state">
@@ -7004,6 +5911,7 @@ function ResourceGroupManager({
   allLabel,
   allCount,
   groups,
+  readOnlyGroups = [],
   selectedTag,
   countForTag,
   countForTags,
@@ -7020,6 +5928,7 @@ function ResourceGroupManager({
   allLabel: string
   allCount: number
   groups: GroupItem[]
+  readOnlyGroups?: GroupItem[]
   selectedTag: string
   countForTag: (tag: string) => number
   countForTags?: (tags: string[]) => number
@@ -7062,12 +5971,12 @@ function ResourceGroupManager({
   }, [contextMenu])
 
   useEffect(() => {
-    const availableIds = new Set(flattenGroups(groups).map((group) => group.id))
+    const availableIds = new Set(flattenGroups([...groups, ...readOnlyGroups]).map((group) => group.id))
     setCollapsedGroupIds((current) => {
       const next = new Set(Array.from(current).filter((id) => availableIds.has(id)))
       return next.size === current.size ? current : next
     })
-  }, [groups])
+  }, [groups, readOnlyGroups])
 
   useEffect(() => {
     if (!contextMenu) return
@@ -7253,6 +6162,28 @@ function ResourceGroupManager({
             }}
           />
         ))}
+        {readOnlyGroups.map((group) => (
+          <GroupTreeItem
+            key={group.id}
+            group={group}
+            selectedTag={selectedTag}
+            countForTag={countForTag}
+            countForTags={countForTags}
+            onSelect={onSelect}
+            moveGroup={moveGroup}
+            deleteGroup={deleteGroup}
+            draggedGroupId={draggedGroupId}
+            dragOverGroupId={dragOverGroupId}
+            setDraggedGroupId={setDraggedGroupId}
+            setDragOverGroupId={setDragOverGroupId}
+            canDropGroupOnTarget={canDropGroupOnTarget}
+            dropGroupOnParent={dropGroupOnParent}
+            collapsedGroupIds={collapsedGroupIds}
+            toggleGroupCollapsed={toggleGroupCollapsed}
+            openMenu={() => undefined}
+            readOnly
+          />
+        ))}
       </div>
       <button type="button" disabled={groupAction.busy} onClick={() => setGroupDraft({ mode: 'root', name: '' })}>
         添加分组
@@ -7405,6 +6336,7 @@ function GroupTreeItem({
   collapsedGroupIds,
   toggleGroupCollapsed,
   openMenu,
+  readOnly = false,
   depth = 0
 }: {
   group: GroupItem
@@ -7423,10 +6355,11 @@ function GroupTreeItem({
   collapsedGroupIds: Set<string>
   toggleGroupCollapsed: (groupId: string) => void
   openMenu: (group: GroupItem, event: MouseEvent) => void
+  readOnly?: boolean
   depth?: number
 }): JSX.Element {
   const isDragged = draggedGroupId === group.id
-  const canDropHere = Boolean(draggedGroupId) && canDropGroupOnTarget(group)
+  const canDropHere = !readOnly && Boolean(draggedGroupId) && canDropGroupOnTarget(group)
   const isDropTarget = dragOverGroupId === group.id && canDropHere
   const groupTags = collectGroupTags(group)
   const groupCount = countForTags ? countForTags(groupTags) : groupTags.reduce((total, tag) => total + countForTag(tag), 0)
@@ -7440,10 +6373,12 @@ function GroupTreeItem({
           'category group-row',
           selectedTag === group.tag ? 'active' : '',
           isDragged ? 'dragging' : '',
-          isDropTarget ? 'drop-target' : ''
+          isDropTarget ? 'drop-target' : '',
+          readOnly ? 'read-only' : ''
         ].filter(Boolean).join(' ')}
-        draggable
+        draggable={!readOnly}
         onDragStart={(event) => {
+          if (readOnly) return
           event.dataTransfer.effectAllowed = 'move'
           event.dataTransfer.setData('text/plain', group.id)
           setDraggedGroupId(group.id)
@@ -7466,8 +6401,14 @@ function GroupTreeItem({
           event.preventDefault()
           void dropGroupOnParent(group)
         }}
-        onContextMenu={(event) => openMenu(group, event)}
-        title="可拖动到其他分组下；右键管理分组"
+        onContextMenu={(event) => {
+          if (readOnly) {
+            event.preventDefault()
+            return
+          }
+          openMenu(group, event)
+        }}
+        title={readOnly ? '由工作流节点自动生成；请在工作流编排中调整' : '可拖动到其他分组下；右键管理分组'}
       >
         {hasChildren ? (
           <button
@@ -7489,9 +6430,13 @@ function GroupTreeItem({
           <span>{group.name}</span>
           <strong>{groupCount}</strong>
         </button>
-        <button className="group-menu-trigger" type="button" onClick={(event) => openMenu(group, event)} aria-label="打开分组菜单">
-          ⋯
-        </button>
+        {readOnly && depth === 0 ? (
+          <span className="group-auto-badge" title="由工作流节点自动生成">自动</span>
+        ) : !readOnly ? (
+          <button className="group-menu-trigger" type="button" onClick={(event) => openMenu(group, event)} aria-label="打开分组菜单">
+            ⋯
+          </button>
+        ) : null}
       </div>
       {!isCollapsed && group.children.map((child) => (
         <GroupTreeItem
@@ -7512,6 +6457,7 @@ function GroupTreeItem({
           collapsedGroupIds={collapsedGroupIds}
           toggleGroupCollapsed={toggleGroupCollapsed}
           openMenu={openMenu}
+          readOnly={readOnly}
           depth={depth + 1}
         />
       ))}
@@ -8161,6 +7107,18 @@ function mergeTags(existing: string[], additions: string[]): string[] {
   return Array.from(new Set([...existing, ...additions].map(normalizeTag).filter(Boolean)))
 }
 
+function workflowSkillAssignedTags(skill: SkillItem, editedTags: string[], previousAssignedTags: string[] = [], workflowBound = false): string[] {
+  if (!workflowBound) return editedTags.map(normalizeTag).filter(Boolean)
+  const originalTags = new Set(skill.tags.map(normalizeTag).filter(Boolean))
+  const previous = new Set(previousAssignedTags.map(normalizeTag).filter(Boolean))
+  return Array.from(new Set(
+    editedTags
+      .map(normalizeTag)
+      .filter(Boolean)
+      .filter((tag) => previous.has(tag) || !originalTags.has(tag))
+  ))
+}
+
 function newestItem<T extends { updatedAt: string }>(items: T[]): T {
   return items.reduce((latest, item) => item.updatedAt > latest.updatedAt ? item : latest)
 }
@@ -8752,21 +7710,6 @@ function createLearningSource(
   }
 }
 
-function runToLearningText(run: AppStore['runs'][number]): string {
-  return [
-    `工作流：${run.workflowTitle}`,
-    `状态：${run.status}`,
-    '',
-    ...run.steps.flatMap((step, index) => [
-      `## 步骤 ${index + 1}：${step.title}`,
-      `摘要：${step.summary}`,
-      `输入：\n${step.inputSnapshot || '(无)'}`,
-      `输出：\n${step.output || '(无)'}`,
-      ''
-    ])
-  ].join('\n')
-}
-
 function valueToLearningText(value: unknown, depth = 0): string {
   if (depth > 5) return ''
   if (typeof value === 'string') return value
@@ -9243,6 +8186,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
     storePath: 'localStorage:format-flow-store',
     promptDirectory: 'browser-downloads/prompts',
     workflowDirectory: 'browser-downloads/workflows',
+    projectDirectory: 'browser-localStorage/projects',
     skillMetadataPath: 'browser-localStorage:skillIndex',
     managedSkillDirectory: '~/.codex/skills',
     dataDirectoryPreferencePath: '',
@@ -9252,6 +8196,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
       data: 'browser-localStorage',
       prompts: 'browser-downloads/prompts',
       workflows: 'browser-downloads/workflows',
+      projects: 'browser-localStorage/projects',
       skillMetadata: 'browser-localStorage/skills',
       managedSkills: '~/.codex/skills'
     }
@@ -9314,7 +8259,7 @@ function createBrowserFallbackApi(): Partial<FormatFlowApi> {
         favorite: false,
         path: result.htmlUrl,
         source: 'custom',
-        contentPreview: content.slice(0, 12000),
+        contentPreview: content.slice(0, SKILL_CONTENT_PREVIEW_LIMIT),
         updatedAt: nowIso()
       }
       return { ok: true, message: `已导入 GitHub Skill 预览：${skill.title}`, items: [skill] }

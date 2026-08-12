@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { defaultStore } from './domain'
+import { createWorkflow, defaultStore } from './domain'
 import { planCategorizedStoreWrites } from './store-persistence'
 
 describe('planCategorizedStoreWrites', () => {
@@ -7,6 +7,7 @@ describe('planCategorizedStoreWrites', () => {
     expect(planCategorizedStoreWrites(null, defaultStore())).toEqual({
       prompts: true,
       workflows: true,
+      projects: true,
       skillMetadata: true
     })
   })
@@ -18,6 +19,7 @@ describe('planCategorizedStoreWrites', () => {
     expect(planCategorizedStoreWrites(previous, next)).toEqual({
       prompts: false,
       workflows: false,
+      projects: false,
       skillMetadata: false
     })
   })
@@ -30,11 +32,11 @@ describe('planCategorizedStoreWrites', () => {
     })
     const workflowPlan = planCategorizedStoreWrites(previous, {
       ...previous,
-      workflows: [...previous.workflows, { ...previous.workflows[0], id: 'workflow-new' }]
+      workflows: [...previous.workflows, createWorkflow({ id: 'workflow-new' })]
     })
 
-    expect(promptPlan).toEqual({ prompts: true, workflows: false, skillMetadata: false })
-    expect(workflowPlan).toEqual({ prompts: false, workflows: true, skillMetadata: false })
+    expect(promptPlan).toEqual({ prompts: true, workflows: false, projects: false, skillMetadata: false })
+    expect(workflowPlan).toEqual({ prompts: false, workflows: true, projects: false, skillMetadata: false })
   })
 
   it('rewrites skill metadata for index changes without touching prompt or workflow files', () => {
@@ -55,6 +57,7 @@ describe('planCategorizedStoreWrites', () => {
     expect(planCategorizedStoreWrites(previous, next)).toEqual({
       prompts: false,
       workflows: false,
+      projects: false,
       skillMetadata: true
     })
   })
@@ -69,6 +72,7 @@ describe('planCategorizedStoreWrites', () => {
     expect(planCategorizedStoreWrites(previous, next)).toEqual({
       prompts: true,
       workflows: true,
+      projects: true,
       skillMetadata: true
     })
   })
@@ -86,6 +90,48 @@ describe('planCategorizedStoreWrites', () => {
     expect(planCategorizedStoreWrites(previous, next)).toEqual({
       prompts: true,
       workflows: false,
+      projects: false,
+      skillMetadata: false
+    })
+  })
+
+  it('rewrites only project files when an autosaved project changes', () => {
+    const previous = defaultStore()
+    const next = {
+      ...previous,
+      projectFlowStates: [
+        {
+          id: 'project-a:workflow-a:1.0.0',
+          projectId: 'project-a',
+          projectTitle: '自动保存项目',
+          workflowId: 'workflow-a',
+          templateKey: 'workflow-a',
+          templateVersion: '1.0.0',
+          status: 'blocked' as const,
+          projectFields: { topic: '测试' },
+          workflowApplicability: {
+            status: 'blocked' as const,
+            outcome: 'block' as const,
+            reason: '待填写',
+            evaluatedAt: '2026-08-11T00:00:00.000Z',
+            inputSnapshot: { topic: '测试' }
+          },
+          currentNodeKey: '',
+          nodeStates: {},
+          deliveryRecords: [],
+          reviewAttempts: [],
+          checkpoints: [],
+          resourceLocks: {},
+          createdAt: '2026-08-11T00:00:00.000Z',
+          updatedAt: '2026-08-11T00:00:00.000Z'
+        }
+      ]
+    }
+
+    expect(planCategorizedStoreWrites(previous, next)).toEqual({
+      prompts: false,
+      workflows: false,
+      projects: true,
       skillMetadata: false
     })
   })

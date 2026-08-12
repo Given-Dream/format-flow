@@ -1,4 +1,142 @@
-export type NodeKind = 'prompt' | 'skill' | 'mcp' | 'approval'
+export type NodeKind =
+  | 'prompt'
+  | 'skill'
+  | 'mcp'
+  | 'review'
+  | 'adapter'
+  | 'wait'
+  | 'route'
+  /** @deprecated v2 data is normalized to `review` on load. */
+  | 'approval'
+
+export type DeliveryMode = 'copy-all' | 'copy-one-by-one' | 'browser-plugin'
+
+export type ApplicabilityOutcome = 'enable' | 'skip' | 'block' | 'review' | 'route'
+
+export type ApplicabilityOperator =
+  | 'equals'
+  | 'notEquals'
+  | 'contains'
+  | 'notContains'
+  | 'in'
+  | 'exists'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'range'
+
+export type ApplicabilityCondition =
+  | {
+      kind: 'predicate'
+      field: string
+      operator: ApplicabilityOperator
+      value?: unknown
+      min?: number
+      max?: number
+    }
+  | { kind: 'all'; conditions: ApplicabilityCondition[] }
+  | { kind: 'any'; conditions: ApplicabilityCondition[] }
+  | { kind: 'not'; condition: ApplicabilityCondition }
+
+export type ApplicabilityRule = {
+  id: string
+  version: number
+  priority: number
+  outcome: ApplicabilityOutcome
+  reason: string
+  condition: ApplicabilityCondition
+  routeTargetNodeKey?: string
+  enabled: boolean
+}
+
+export type ApplicabilityProfile = {
+  researchTypes: string[]
+  scenarios: string[]
+  targetArtifacts: string[]
+  requiredInputs: string[]
+  optionalInputs: string[]
+  prerequisites: string[]
+  exclusions: string[]
+  requiredPromptKeys: string[]
+  requiredSkillKeys: string[]
+  requiredMcpKeys: string[]
+  externalSoftware: string[]
+  humanPermissions: string[]
+  supportedOperatingSystems: string[]
+  supportedAiPlatforms: string[]
+  supportedDeliveryModes: DeliveryMode[]
+  /** Compatibility metadata retained for imported templates; not shown in the primary workflow UI. */
+  riskLevel: 'low' | 'medium' | 'high'
+  /** Compatibility metadata retained for imported templates; not shown in the primary workflow UI. */
+  maturity: 'draft' | 'pilot' | 'stable'
+  maintainer: string
+  rules: ApplicabilityRule[]
+}
+
+export type ApplicabilityDecision = {
+  status: 'highly-applicable' | 'conditionally-applicable' | 'not-recommended' | 'blocked'
+  outcome: ApplicabilityOutcome
+  reason: string
+  ruleId?: string
+  ruleVersion?: number
+  routeTargetNodeKey?: string
+  evaluatedAt: string
+  inputSnapshot: Record<string, unknown>
+}
+
+export type WorkflowFormField = {
+  key: string
+  label: string
+  type: 'text' | 'textarea' | 'number' | 'boolean' | 'select' | 'multiselect' | 'path' | 'file'
+  required: boolean
+  description?: string
+  defaultValue?: unknown
+  options?: Array<{ label: string; value: string }>
+}
+
+export type WorkflowStage = {
+  stageKey: string
+  title: string
+  description: string
+  order: number
+}
+
+export type ResourceReference = {
+  resourceKey: string
+  type: 'prompt' | 'skill' | 'mcp'
+  expectedVersion: string
+  fingerprint: string
+  locator: string
+}
+
+export type ReviewChecklistItem = {
+  key: string
+  label: string
+  description?: string
+  required: boolean
+}
+
+export type CheckpointBlueprint = {
+  checkpointKey: string
+  title: string
+  afterNodeKey: string
+  requiredArtifacts: string[]
+}
+
+export type ApplicabilityTestCase = {
+  id: string
+  title: string
+  projectFields: Record<string, unknown>
+  expectedStatus: ApplicabilityDecision['status']
+  expectedNodeKeys?: string[]
+}
+
+export type WorkflowChangeLogEntry = {
+  version: string
+  publishedAt: string
+  summary: string
+}
 
 export type PromptItem = {
   id: string
@@ -110,11 +248,12 @@ export type DiscoverySource = {
   enabled: boolean
 }
 
-export type DataDirectoryKind = 'data' | 'prompts' | 'workflows' | 'skillMetadata' | 'managedSkills'
+export type DataDirectoryKind = 'data' | 'prompts' | 'workflows' | 'projects' | 'skillMetadata' | 'managedSkills'
 
 export type DataDirectoryOverrides = {
   prompts?: string
   workflows?: string
+  projects?: string
   skillMetadata?: string
   managedSkills?: string
 }
@@ -164,6 +303,7 @@ export type McpServer = {
 
 export type WorkflowNode = {
   id: string
+  nodeKey: string
   type: NodeKind
   refId?: string
   skillRefId?: string
@@ -174,6 +314,16 @@ export type WorkflowNode = {
   inputs: Record<string, string>
   outputs: string[]
   requiresReview: boolean
+  stageKey: string
+  order: number
+  resourceRef?: ResourceReference
+  applicabilityRules: ApplicabilityRule[]
+  reviewChecklist?: ReviewChecklistItem[]
+  checkpointKey?: string
+  executionPolicy?: {
+    kind: 'single' | 'batch' | 'manual'
+    batchField?: string
+  }
   position: {
     x: number
     y: number
@@ -184,44 +334,40 @@ export type WorkflowEdge = {
   id: string
   source: string
   target: string
+  label?: string
+  condition?: ApplicabilityCondition
 }
 
 export type Workflow = {
   id: string
+  templateKey: string
+  templateVersion: string
+  /** Internal lifecycle compatibility field; not presented as workflow card information. */
+  status: 'draft' | 'published' | 'archived'
+  family: 'research' | 'review' | 'patent' | 'custom'
   title: string
   description: string
   tags: string[]
   variables: string[]
   favorite: boolean
+  formSchema: WorkflowFormField[]
+  stages: WorkflowStage[]
+  checkpointBlueprint: CheckpointBlueprint[]
+  applicability: ApplicabilityProfile
+  applicabilityTests: ApplicabilityTestCase[]
+  changeLog: WorkflowChangeLogEntry[]
+  sourcePackage?: {
+    name: string
+    path: string
+    excluded?: boolean
+    /** Distinguishes user-imported workflow packages from application defaults. */
+    origin?: 'imported' | 'legacy'
+    /** Stable recipe identity used to make source-package imports idempotent. */
+    templateId?: string
+    importedAt?: string
+  }
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
-  createdAt: string
-  updatedAt: string
-}
-
-export type RunStepStatus = 'pending' | 'approved' | 'running' | 'done' | 'failed'
-
-export type RunStep = {
-  id: string
-  nodeId: string
-  title: string
-  summary: string
-  type: NodeKind
-  status: RunStepStatus
-  reviewedByHuman: boolean
-  inputSnapshot: string
-  output: string
-  startedAt?: string
-  finishedAt?: string
-}
-
-export type WorkflowRun = {
-  id: string
-  workflowId: string
-  workflowTitle: string
-  status: 'reviewing' | 'running' | 'completed' | 'failed'
-  currentStepIndex: number
-  steps: RunStep[]
   createdAt: string
   updatedAt: string
 }
@@ -240,6 +386,126 @@ export type AppSettings = {
   discoverySources?: DiscoverySource[]
 }
 
+export type WorkflowTemplate = Workflow
+
+export type ReviewAttempt = {
+  id: string
+  projectId: string
+  workflowId: string
+  templateVersion: string
+  nodeKey: string
+  attempt: number
+  checklist: Record<string, boolean>
+  passed: boolean
+  changeReason: string
+  reviewedAt: string
+  deliveryRecordIds: string[]
+  /** Files supplied with a Review change reason. Optional for legacy project records. */
+  attachmentPaths?: string[]
+  source?: 'workflow-v3' | 'legacy-v2'
+}
+
+export type DeliveryRecord = {
+  id: string
+  projectId: string
+  workflowId: string
+  templateVersion: string
+  nodeKey: string
+  mode: DeliveryMode
+  text: string
+  attachmentPaths: string[]
+  createdAt: string
+  source?: 'workflow-v3' | 'legacy-v2-output'
+}
+
+export type NodeExecutionState = {
+  nodeKey: string
+  status: 'pending' | 'ready' | 'delivered' | 'waiting-review' | 'passed' | 'skipped' | 'blocked' | 'completed'
+  applicability?: ApplicabilityDecision
+  formValues: Record<string, unknown>
+  deliveryRecordIds: string[]
+  reviewAttemptIds: string[]
+  enteredAt?: string
+  completedAt?: string
+}
+
+export type ProjectCheckpoint = {
+  checkpointKey: string
+  nodeKey: string
+  createdAt: string
+  deliveryRecordIds: string[]
+}
+
+export type ResourceLock = ResourceReference & {
+  lockedAt: string
+}
+
+export type LegacyRunStepSnapshot = {
+  sourceStepId: string
+  sourceNodeId: string
+  nodeKey: string
+  title: string
+  type: string
+  status: string
+  reviewedByHuman: boolean
+  inputSnapshot: string
+  output: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export type LegacyRunMigration = {
+  sourceStoreVersion: number
+  sourceRunId: string
+  sourceWorkflowId: string
+  sourceWorkflowTitle: string
+  sourceStatus: string
+  sourceCurrentStepIndex: number
+  migratedAt: string
+  steps: LegacyRunStepSnapshot[]
+}
+
+export type ProjectFlowState = {
+  id: string
+  projectId: string
+  projectTitle: string
+  workflowId: string
+  templateKey: string
+  templateVersion: string
+  status: 'active' | 'blocked' | 'waiting' | 'completed'
+  projectFields: Record<string, unknown>
+  workflowApplicability: ApplicabilityDecision
+  currentNodeKey: string
+  nodeStates: Record<string, NodeExecutionState>
+  deliveryRecords: DeliveryRecord[]
+  reviewAttempts: ReviewAttempt[]
+  checkpoints: ProjectCheckpoint[]
+  resourceLocks: Record<string, ResourceLock>
+  legacyMigration?: LegacyRunMigration
+  createdAt: string
+  updatedAt: string
+}
+
+export type LegacyWorkflowArchive = {
+  storeVersion: number
+  workflows: Workflow[]
+  runs: unknown[]
+  archivedAt: string
+  reason: string
+}
+
+export type ResourceVersion = {
+  id: string
+  resourceKey: string
+  type: 'prompt' | 'skill' | 'mcp'
+  version: string
+  fingerprint: string
+  locator: string
+  metadata: Record<string, unknown>
+  contentSnapshot?: string
+  createdAt: string
+}
+
 export type AppStore = {
   version: number
   prompts: PromptItem[]
@@ -247,7 +513,9 @@ export type AppStore = {
   groups: ResourceGroups
   mcpServers: McpServer[]
   workflows: Workflow[]
-  runs: WorkflowRun[]
+  projectFlowStates: ProjectFlowState[]
+  resourceVersions: ResourceVersion[]
+  legacyWorkflowArchive?: LegacyWorkflowArchive
   tagRecoveries: DeletedTagRecovery[]
   settings: AppSettings
 }
@@ -259,6 +527,7 @@ export type AppPaths = {
   storePath: string
   promptDirectory?: string
   workflowDirectory?: string
+  projectDirectory?: string
   skillMetadataPath?: string
   managedSkillDirectory: string
   browserExtensionDirectory?: string
@@ -281,6 +550,39 @@ export type ImportResult<T> = {
   items: T[]
   installedPaths?: string[]
   managedDirectory?: string
+}
+
+export type WorkflowSkillPackageEntry = {
+  order: number
+  directoryName: string
+  frontmatterName: string
+  title: string
+  sourcePath: string
+  installedPath?: string
+  skillFileRelativePath: string
+  fingerprint: string
+}
+
+export type WorkflowSkillPackageMetadata = {
+  format: 'format-flow-workflow-skill-package'
+  schemaVersion: 1
+  packageId: string
+  name: string
+  sourceDirectory: string
+  sourceArchivePath?: string
+  managedDirectory: string
+  installedPackageDirectory: string
+  createdAt: string
+  entries: WorkflowSkillPackageEntry[]
+}
+
+export type WorkflowSkillPackageResult = {
+  ok: boolean
+  message: string
+  metadata?: WorkflowSkillPackageMetadata
+  metadataPath?: string
+  installedSkills: SkillItem[]
+  installedPaths: string[]
 }
 
 export type BackupResult = {

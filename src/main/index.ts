@@ -10,6 +10,7 @@ import AdmZip from 'adm-zip'
 import { parse as parseHtml } from 'node-html-parser'
 import { migrateTemplateDirectory, syncTemplateDirectory } from './builtin-skills'
 import { activateLicense, getLicenseStatus } from './license'
+import { zipFilenameDecoder } from './zip-filename'
 import {
   captureWordSelection,
   cleanupTemporaryWordAttachments,
@@ -25,6 +26,11 @@ import {
 } from './temporary-word'
 import { createPromptFromText, normalizeStore, parseMcpConfig, parsePromptImport, parseSkillMarkdown } from '../shared/domain'
 import { planCategorizedStoreWrites, type CategorizedStoreWritePlan } from '../shared/store-persistence'
+import {
+  extractWorkflowSkillFrontmatterName,
+  safeManagedSkillDirectoryName,
+  validateWorkflowSkillInventoryEntries
+} from '../shared/workflow-skill-package'
 import {
   buildGithubRepositorySearchUrl,
   buildWebsiteSearchUrl,
@@ -56,7 +62,10 @@ import type {
   SkillDirectorySnapshot,
   SkillItem,
   TemporaryWordClipboardRequest,
-  TemporaryWordFilesRequest
+  TemporaryWordFilesRequest,
+  WorkflowSkillPackageEntry,
+  WorkflowSkillPackageMetadata,
+  WorkflowSkillPackageResult
 } from '../shared/types'
 
 const SKILL_TEXT_EXTENSIONS = new Set([
@@ -148,7 +157,7 @@ function readDataDirectoryPreference(): DataDirectoryPreference {
       ? (parsed.dataDirectories as Record<string, unknown>)
       : {}
     const dataDirectories: DataDirectoryOverrides = {}
-    for (const key of ['prompts', 'workflows', 'skillMetadata', 'managedSkills'] as const) {
+    for (const key of ['prompts', 'workflows', 'projects', 'skillMetadata', 'managedSkills'] as const) {
       if (typeof directories[key] === 'string' && directories[key].trim()) dataDirectories[key] = directories[key].trim()
     }
     return {
@@ -173,6 +182,7 @@ type StoreStorageTargets = {
   storePath: string
   promptDirectory: string
   workflowDirectory: string
+  projectDirectory: string
   skillMetadataDirectory: string
   skillMetadataPath: string
   managedSkillDirectory: string
@@ -190,12 +200,14 @@ function storageTargetsForStore(store: AppStore): StoreStorageTargets {
   const overrides = store.settings.dataDirectories || {}
   const promptDirectory = overrides.prompts?.trim() || path.join(dataRoot, 'prompts')
   const workflowDirectory = overrides.workflows?.trim() || path.join(dataRoot, 'workflows')
+  const projectDirectory = overrides.projects?.trim() || path.join(dataRoot, 'projects')
   const skillMetadataDirectory = overrides.skillMetadata?.trim() || path.join(dataRoot, 'skills')
   const targets = {
     dataRoot,
     storePath: path.join(dataRoot, 'format-flow-store.json'),
     promptDirectory,
     workflowDirectory,
+    projectDirectory,
     skillMetadataDirectory,
     skillMetadataPath: path.join(skillMetadataDirectory, 'metadata.json'),
     managedSkillDirectory: overrides.managedSkills?.trim() || getDefaultManagedSkillDirectory()
@@ -208,6 +220,7 @@ function assertSafeStorageTargets(targets: StoreStorageTargets): void {
   const managedDirectories = [
     ['提示词', targets.promptDirectory],
     ['工作流', targets.workflowDirectory],
+    ['工作流项目', targets.projectDirectory],
     ['Skill 元数据', targets.skillMetadataDirectory],
     ['托管 Skill', targets.managedSkillDirectory]
   ] as const
@@ -269,6 +282,10 @@ function getWorkflowDirectory(): string {
   return readDataDirectoryPreference().dataDirectories.workflows || path.join(getDataRoot(), 'workflows')
 }
 
+function getProjectDirectory(): string {
+  return readDataDirectoryPreference().dataDirectories.projects || path.join(getDataRoot(), 'projects')
+}
+
 function getSkillMetadataDirectory(): string {
   return readDataDirectoryPreference().dataDirectories.skillMetadata || path.join(getDataRoot(), 'skills')
 }
@@ -279,6 +296,7 @@ function getDefaultDataDirectories(): Record<DataDirectoryKind, string> {
     data: app.getPath('userData'),
     prompts: path.join(dataRoot, 'prompts'),
     workflows: path.join(dataRoot, 'workflows'),
+    projects: path.join(dataRoot, 'projects'),
     skillMetadata: path.join(dataRoot, 'skills'),
     managedSkills: getDefaultManagedSkillDirectory()
   }
@@ -938,9 +956,18 @@ function sendJson(response: http.ServerResponse, statusCode: number, payload: un
 async function loadStoreFromDisk(): Promise<AppStore> {
   const preference = readDataDirectoryPreference()
   let normalized: AppStore
+  let migratedLegacyStore = false
   try {
     const content = await fs.readFile(getStorePath(), 'utf8')
-    normalized = normalizeStore(JSON.parse(content) as Partial<AppStore>)
+    const parsed = JSON.parse(content) as Partial<AppStore>
+    if (typeof parsed.version !== 'number' || parsed.version < 3) {
+      await backupLegacyStoreBeforeV3(content, parsed.version)
+      migratedLegacyStore = true
+    }
+    normalized = normalizeStore(parsed)
+    if (migratedLegacyStore) {
+      await writeTextFileAtomic(getStorePath(), `${JSON.stringify(normalized, null, 2)}\n`)
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     if (preference.dataDirectory) {
@@ -959,7 +986,7 @@ async function loadStoreFromDisk(): Promise<AppStore> {
   try {
     await saveCategorizedStoreFiles(
       normalized,
-      { prompts: true, workflows: true, skillMetadata: true },
+      { prompts: true, workflows: true, projects: true, skillMetadata: true },
       storageTargetsForStore(normalized)
     )
     categorizedStoreBaseline = normalized
@@ -967,6 +994,36 @@ async function loadStoreFromDisk(): Promise<AppStore> {
     console.warn('Unable to refresh categorized store mirrors; canonical store remains available.', error)
   }
   return normalized
+}
+
+async function backupLegacyStoreBeforeV3(content: string, version: number | undefined): Promise<void> {
+  const backupRoot = path.join(app.getPath('userData'), 'migration-backups')
+  await fs.mkdir(backupRoot, { recursive: true })
+  const existing = (await fs.readdir(backupRoot).catch(() => []))
+    .find((name) => name.startsWith('store-v2-to-v3-'))
+  if (existing) return
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  const target = path.join(backupRoot, `store-v2-to-v3-${stamp}`)
+  await fs.mkdir(target, { recursive: true })
+  await fs.writeFile(path.join(target, 'format-flow-store.json'), content, 'utf8')
+  const sources = [
+    { label: 'prompts', source: getPromptDirectory() },
+    { label: 'workflows', source: getWorkflowDirectory() },
+    { label: 'skill-metadata', source: getSkillMetadataDirectory() },
+    { label: 'managed-skills-legacy', source: getLegacyManagedSkillDirectory() }
+  ]
+  const copied: Array<{ label: string; source: string; copied: boolean }> = []
+  for (const item of sources) {
+    const exists = await fs.stat(item.source).then((stat) => stat.isDirectory()).catch(() => false)
+    if (exists) await fs.cp(item.source, path.join(target, item.label), { recursive: true, force: false, errorOnExist: false })
+    copied.push({ ...item, copied: exists })
+  }
+  await fs.writeFile(
+    path.join(target, 'migration-manifest.json'),
+    `${JSON.stringify({ fromStoreVersion: version ?? 0, toStoreVersion: 3, createdAt: new Date().toISOString(), copied }, null, 2)}\n`,
+    'utf8'
+  )
 }
 
 async function loadStore(): Promise<AppStore> {
@@ -1089,6 +1146,20 @@ async function saveCategorizedStoreFiles(
     )
   }
 
+  if (writePlan.projects) {
+    const projectFiles = store.projectFlowStates.map(
+      (project) => `${safeSegment(project.projectTitle)}-${safeSegment(project.id)}.json`
+    )
+    await synchronizeManagedDataDirectory(
+      targets.projectDirectory,
+      'projects',
+      store.projectFlowStates.map((project, index) => ({
+        fileName: projectFiles[index],
+        content: `${JSON.stringify(project, null, 2)}\n`
+      }))
+    )
+  }
+
   if (writePlan.skillMetadata) {
     await fs.mkdir(targets.skillMetadataDirectory, { recursive: true })
     await writeTextFileAtomic(
@@ -1111,7 +1182,7 @@ async function saveCategorizedStoreFiles(
 
 async function synchronizeManagedDataDirectory(
   directory: string,
-  kind: 'prompts' | 'workflows',
+  kind: 'prompts' | 'workflows' | 'projects',
   entries: Array<{ fileName: string; content: string }>
 ): Promise<void> {
   await fs.mkdir(directory, { recursive: true })
@@ -1146,13 +1217,13 @@ async function synchronizeManagedDataDirectory(
   await writeManagedDataManifest(directory, kind, entries.map((entry) => entry.fileName))
 }
 
-function managedDataManifestPath(directory: string, kind: 'prompts' | 'workflows'): string {
+function managedDataManifestPath(directory: string, kind: 'prompts' | 'workflows' | 'projects'): string {
   return path.join(directory, `.format-flow-${kind}-manifest.json`)
 }
 
 async function writeManagedDataManifest(
   directory: string,
-  kind: 'prompts' | 'workflows',
+  kind: 'prompts' | 'workflows' | 'projects',
   files: string[]
 ): Promise<void> {
   await writeTextFileAtomic(
@@ -1169,6 +1240,7 @@ function getPaths(): AppPaths {
     storePath: getStorePath(),
     promptDirectory: getPromptDirectory(),
     workflowDirectory: getWorkflowDirectory(),
+    projectDirectory: getProjectDirectory(),
     skillMetadataPath: getSkillMetadataPath(),
     managedSkillDirectory: getManagedSkillDirectory(),
     browserExtensionDirectory: getBrowserExtensionDirectory(),
@@ -1185,6 +1257,7 @@ async function chooseDataDirectory(kind: DataDirectoryKind = 'data'): Promise<{ 
     data: '选择 Format Flow 应用数据目录',
     prompts: '选择 Prompt 数据目录',
     workflows: '选择工作流数据目录',
+    projects: '选择工作流项目目录',
     skillMetadata: '选择 Skill 元数据目录',
     managedSkills: '选择托管 Skill 目录'
   }
@@ -1505,7 +1578,9 @@ async function extractSkillZip(zipPath: string): Promise<ImportResult<SkillItem>
   const managedDirectory = getManagedSkillDirectory()
   await fs.mkdir(managedDirectory, { recursive: true })
   const destination = await uniqueDirectory(path.join(managedDirectory, safeSegment(path.basename(zipPath, '.zip'))))
-  const zip = new AdmZip(zipPath)
+  const zip = new AdmZip(zipPath, {
+    decoder: zipFilenameDecoder
+  } as unknown as Partial<AdmZip.InitOptions>)
 
   for (const entry of zip.getEntries()) {
     const targetPath = path.resolve(destination, entry.entryName)
@@ -1682,7 +1757,7 @@ async function buildBackupPayload(normalized: AppStore, timestamp: string): Prom
   const skills = await collectSkillBackups(normalized.settings.skillDirectories)
   return {
     format: 'format-flow-backup',
-    version: 1,
+    version: 3,
     createdAt: timestamp,
     prompts: normalized.prompts,
     skills,
@@ -1690,6 +1765,9 @@ async function buildBackupPayload(normalized: AppStore, timestamp: string): Prom
     groups: normalized.groups,
     mcpServers: normalized.mcpServers,
     workflows: normalized.workflows,
+    projectFlowStates: normalized.projectFlowStates,
+    resourceVersions: normalized.resourceVersions,
+    legacyWorkflowArchive: normalized.legacyWorkflowArchive,
     settings: {
       shortcut: normalized.settings.shortcut,
       skillDirectories: normalized.settings.skillDirectories,
@@ -1991,6 +2069,183 @@ async function searchGithub(kind: 'skill' | 'prompt', query: string): Promise<Gi
 
   return results.slice(0, 20)
 }
+
+async function prepareWorkflowSkillPackage(): Promise<WorkflowSkillPackageResult> {
+  const selection = await dialog.showOpenDialog({
+    title: '选择 Skill 目录或包含 Skill 压缩包的上级目录',
+    properties: ['openDirectory']
+  })
+  if (selection.canceled || !selection.filePaths[0]) {
+    return { ok: false, message: '已取消选择 Skill 目录', installedSkills: [], installedPaths: [] }
+  }
+
+  const selectedDirectory = path.resolve(selection.filePaths[0])
+  let sourceDirectory = selectedDirectory
+  let sourceArchivePath = ''
+  let skillFiles = await findSkillFiles(sourceDirectory, 0)
+  let packageDestination = ''
+
+  if (skillFiles.length === 0) {
+    const entries = await fs.readdir(selectedDirectory, { withFileTypes: true }).catch(() => [])
+    const archiveCandidates: Array<{ path: string; skillCount: number }> = []
+    for (const entry of entries.filter((item) => item.isFile() && path.extname(item.name).toLocaleLowerCase() === '.zip')) {
+      const archivePath = path.join(selectedDirectory, entry.name)
+      try {
+        const archive = new AdmZip(archivePath, {
+          decoder: zipFilenameDecoder
+        } as unknown as Partial<AdmZip.InitOptions>)
+        const skillCount = archive.getEntries().filter((item) => !item.isDirectory && /(^|\/)SKILL\.md$/i.test(item.entryName.replace(/\\/g, '/'))).length
+        if (skillCount > 0) archiveCandidates.push({ path: archivePath, skillCount })
+      } catch {
+        // Ignore unrelated or unreadable ZIP files in the selected parent directory.
+      }
+    }
+    if (archiveCandidates.length === 0) {
+      return { ok: false, message: '所选目录中没有 SKILL.md，也没有包含 SKILL.md 的 ZIP 压缩包。', installedSkills: [], installedPaths: [] }
+    }
+    if (archiveCandidates.length > 1) {
+      return {
+        ok: false,
+        message: `所选目录中有 ${archiveCandidates.length} 个 Skill 压缩包，请将目标压缩包单独放入一个目录后重试：${archiveCandidates.map((item) => path.basename(item.path)).join('、')}`,
+        installedSkills: [],
+        installedPaths: []
+      }
+    }
+    sourceArchivePath = archiveCandidates[0].path
+  }
+
+  const managedDirectory = path.resolve(getManagedSkillDirectory())
+  if (selectedDirectory.toLocaleLowerCase() === managedDirectory.toLocaleLowerCase() ||
+      `${selectedDirectory}${path.sep}`.toLocaleLowerCase().startsWith(`${managedDirectory}${path.sep}`.toLocaleLowerCase()) ||
+      `${managedDirectory}${path.sep}`.toLocaleLowerCase().startsWith(`${selectedDirectory}${path.sep}`.toLocaleLowerCase())) {
+    return {
+      ok: false,
+      message: '用户指定的 Skill 源目录不能与托管 Skill 目标目录相同或互相嵌套。请先在设置中选择独立的托管 Skill 目录。',
+      installedSkills: [],
+      installedPaths: []
+    }
+  }
+  await fs.mkdir(managedDirectory, { recursive: true })
+  packageDestination = await uniqueDirectory(path.join(
+    managedDirectory,
+    safeManagedSkillDirectoryName(sourceArchivePath ? path.basename(sourceArchivePath, path.extname(sourceArchivePath)) : path.basename(sourceDirectory))
+  ))
+
+  try {
+    if (sourceArchivePath) {
+      const archive = new AdmZip(sourceArchivePath, {
+        decoder: zipFilenameDecoder
+      } as unknown as Partial<AdmZip.InitOptions>)
+      for (const entry of archive.getEntries()) {
+        const targetPath = path.resolve(packageDestination, entry.entryName)
+        if (!isPathInside(targetPath, packageDestination)) throw new Error(`检测到不安全的 ZIP 路径：${entry.entryName}`)
+      }
+      archive.extractAllTo(packageDestination, true)
+      sourceDirectory = packageDestination
+      skillFiles = await findSkillFiles(sourceDirectory, 0)
+    } else {
+      await fs.cp(sourceDirectory, packageDestination, { recursive: true, force: false, errorOnExist: true })
+    }
+  } catch (error) {
+    await fs.rm(packageDestination, { recursive: true, force: true })
+    return {
+      ok: false,
+      message: `安装完整 Skill 包失败，已撤销本次复制：${error instanceof Error ? error.message : String(error)}`,
+      installedSkills: [],
+      installedPaths: []
+    }
+  }
+
+  const candidates: Array<{ entry: WorkflowSkillPackageEntry; skillFile: string; relativeSkillFile: string }> = []
+  for (const skillFile of skillFiles) {
+    const root = path.dirname(skillFile)
+    const directoryName = path.basename(root)
+    const match = directoryName.match(/^(\d{2})-/)
+    const content = await fs.readFile(skillFile, 'utf8')
+    const preview = parseSkillMarkdown(content, skillFile)
+    const frontmatterName = extractWorkflowSkillFrontmatterName(content)
+    candidates.push({
+      skillFile,
+      relativeSkillFile: path.relative(sourceDirectory, skillFile),
+      entry: {
+        order: match ? Number.parseInt(match[1], 10) : Number.NaN,
+        directoryName,
+        frontmatterName,
+        title: preview.title,
+        sourcePath: sourceArchivePath ? `${sourceArchivePath}!${path.sep}${path.relative(sourceDirectory, root)}` : root,
+        skillFileRelativePath: path.relative(root, skillFile),
+        fingerprint: preview.contentFingerprint || ''
+      }
+    })
+  }
+
+  const validationError = validateWorkflowSkillInventoryEntries(candidates.map((item) => item.entry))
+  if (validationError) {
+    await fs.rm(packageDestination, { recursive: true, force: true })
+    return { ok: false, message: validationError, installedSkills: [], installedPaths: [] }
+  }
+
+  candidates.sort((left, right) => left.entry.order - right.entry.order || left.entry.directoryName.localeCompare(right.entry.directoryName, 'zh-CN'))
+  const installedSkills: SkillItem[] = []
+  try {
+    for (const candidate of candidates) {
+      const installedSkillFile = path.join(packageDestination, candidate.relativeSkillFile)
+      const installedSkillRoot = path.dirname(installedSkillFile)
+      const content = await fs.readFile(installedSkillFile, 'utf8')
+      const stat = await fs.stat(installedSkillFile)
+      installedSkills.push({ ...parseSkillMarkdown(content, installedSkillFile), updatedAt: stat.mtime.toISOString() })
+      candidate.entry.installedPath = installedSkillRoot
+    }
+  } catch (error) {
+    await fs.rm(packageDestination, { recursive: true, force: true })
+    return {
+      ok: false,
+      message: `安装完整 Skill 包失败，已撤销本次复制：${error instanceof Error ? error.message : String(error)}`,
+      installedSkills: [],
+      installedPaths: []
+    }
+  }
+
+  const createdAt = new Date().toISOString()
+  const packageId = `skill-package_${createdAt.replace(/[^0-9]/g, '').slice(0, 14)}_${Math.random().toString(36).slice(2, 8)}`
+  const metadata: WorkflowSkillPackageMetadata = {
+    format: 'format-flow-workflow-skill-package',
+    schemaVersion: 1,
+    packageId,
+    name: sourceArchivePath ? path.basename(sourceArchivePath, path.extname(sourceArchivePath)) : path.basename(selectedDirectory),
+    sourceDirectory: selectedDirectory,
+    sourceArchivePath: sourceArchivePath || undefined,
+    managedDirectory,
+    installedPackageDirectory: packageDestination,
+    createdAt,
+    entries: candidates.map((candidate) => candidate.entry)
+  }
+  const metadataDirectory = getSkillMetadataDirectory()
+  const packageDirectory = path.join(metadataDirectory, 'workflow-packages')
+  const metadataPath = path.join(packageDirectory, `${safeSegment(metadata.name)}-${safeSegment(packageId)}.json`)
+  try {
+    await fs.mkdir(packageDirectory, { recursive: true })
+    await writeTextFileAtomic(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`)
+  } catch (error) {
+    await fs.rm(packageDestination, { recursive: true, force: true })
+    return {
+      ok: false,
+      message: `写入工作流元数据失败，已撤销本次 Skill 复制：${error instanceof Error ? error.message : String(error)}`,
+      installedSkills: [],
+      installedPaths: []
+    }
+  }
+
+  return {
+    ok: true,
+    message: `已完整安装 1 份 Skill 包（${installedSkills.length} 个 Skill），已列出全部 Skill 目录并保存 1 份工作流 JSON 元数据`,
+    metadata,
+    metadataPath,
+    installedSkills,
+    installedPaths: [packageDestination]
+  }
+}
+
 
 async function migrateLegacyManagedSkills(): Promise<void> {
   const legacyDirectory = path.resolve(getLegacyManagedSkillDirectory())
@@ -2542,6 +2797,7 @@ function registerIpc(): void {
   ipcMain.handle('skills:importExisting', () => importExistingSkills())
   ipcMain.handle('skills:restoreBackup', () => restoreSkillsFromBackup())
   ipcMain.handle('skills:installZip', () => installSkillZip())
+  ipcMain.handle('skills:prepareWorkflowPackage', () => prepareWorkflowSkillPackage())
   ipcMain.handle('skills:installGenerated', (_event, name: string, content: string) => installGeneratedSkill(name, content))
   ipcMain.handle('skills:delete', (_event, skill: SkillItem) => deleteSkill(skill))
   ipcMain.handle('skills:getDirectorySnapshot', (_event, skillPath: string) => readSkillDirectorySnapshot(skillPath))
